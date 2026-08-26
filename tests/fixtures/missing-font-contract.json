@@ -1,0 +1,28 @@
+{
+  "sources": [
+    {
+      "kind": "prompt",
+      "id": "prompt",
+      "text": "Proposal deck"
+    }
+  ],
+  "purpose": "proposal",
+  "audience": "customers",
+  "language": "en",
+  "slideCount": 3,
+  "brand": {
+    "kind": "file",
+    "path": "tests/fixtures/missing-font-brand.yaml"
+  },
+  "fonts": {
+    "heading": "Definitely Missing Font Family",
+    "body": "Segoe UI"
+  },
+  "fontDelivery": "managed_device",
+  "aspectRatio": "16:9",
+  "storyline": [
+    "opening",
+    "problem",
+    "design"
+  ]
+}

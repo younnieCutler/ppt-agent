@@ -1,0 +1,45 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+import { renderDeck } from "../../src/renderer";
+import { mergeQa, runPowerPointQa, structuralQa } from "../../src/qa";
+import { deckSchema } from "../../src/schema";
+
+const fixturePath = path.resolve(__dirname, "../fixtures/all-layouts.json");
+const fixture = deckSchema.parse(JSON.parse(fs.readFileSync(fixturePath, "utf8")));
+const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-integration-"));
+
+afterAll(() => {
+  fs.rmSync(runDir, { recursive: true, force: true });
+});
+
+describe("editable PPTX integration", () => {
+  const windowsOnly = process.platform !== "win32";
+
+  it.skipIf(windowsOnly)("renders every MVP semantic layout and passes PowerPoint QA", async () => {
+    const pptxPath = path.join(runDir, "all-layouts.pptx");
+    await renderDeck(fixture, pptxPath, process.cwd());
+    expect(fs.statSync(pptxPath).size).toBeGreaterThan(10000);
+    const structural = structuralQa(fixture, process.cwd());
+    expect(structural.status).toBe("pass");
+    const powerpoint = runPowerPointQa(pptxPath, fixture, runDir);
+    const report = mergeQa(structural, powerpoint);
+    expect(report.status).toBe("pass");
+    expect(report.findings).toEqual([]);
+  }, 120000);
+
+  it.skipIf(windowsOnly)("fails portable delivery when no font embedding exists", async () => {
+    const pptxPath = path.join(runDir, "portable-fonts.pptx");
+    const portable = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, fontDelivery: "portable" } });
+    await renderDeck(portable, pptxPath, process.cwd());
+    const powerpoint = runPowerPointQa(pptxPath, portable, runDir);
+    expect(powerpoint.status).toBe("fail");
+    expect((powerpoint.findings as Array<{ code: string }>).some((finding) => finding.code === "FONT_EMBEDDING_REQUIRED")).toBe(true);
+  }, 120000);
+
+  it("refuses to resize a 4:3 deck through the 16:9 renderer", async () => {
+    const templateDeck = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, aspectRatio: "4:3" } });
+    await expect(renderDeck(templateDeck, path.join(runDir, "must-not-render.pptx"), process.cwd())).rejects.toThrow(/native-template-fill/i);
+  });
+});

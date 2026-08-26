@@ -1,0 +1,33 @@
+{
+  "skill_name": "ppt",
+  "evals": [
+    {
+      "id": 1,
+      "name": "outline-and-font-gate",
+      "prompt": "/ppt Create a 6-slide technical overview from the attached project.md. Ask for purpose, audience, slide count, language, brand, and heading/body fonts; show the outline and wait for approval before rendering.",
+      "expected_output": "The skill asks the mandatory interview questions, confirms two installed fonts, writes an outline, and does not create a PPTX before explicit approval.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "semantic-pipeline-deck",
+      "prompt": "/ppt Turn the supplied markdown and PDF notes into a 10-slide engineering deck. Use a native pipeline and architecture slide, preserve numeric claims with source excerpts, and finish only after render and QA pass.",
+      "expected_output": "The output is an editable PPTX with semantic pipeline/architecture layouts, source-grounded numbers, montage QA, and a passing qa.json.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "font-hard-fail",
+      "prompt": "/ppt Use the supplied brand.yaml and create a proposal deck. The brand requests a missing font; do not silently substitute it. Ask me to choose an installed heading/body pair or stop before rendering.",
+      "expected_output": "The skill blocks generation until both confirmed fonts are installed and never reports a fallback deck as complete.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "compound-proposal-quality-gate",
+      "prompt": "/ppt Create an executive transformation proposal from the supplied audit. Keep the deck concise, explicitly select a composition for every slide, combine diagnosis, evidence, and action where that makes the message clearer, and require the user to confirm heading/body fonts plus delivery mode before rendering.",
+      "expected_output": "The outline contains valid layout/composition pairs, font delivery is explicit, repetitive composition is repaired before release, and the QA report contains observed-font and embedded-font evidence.",
+      "files": []
+    }
+  ]
+}

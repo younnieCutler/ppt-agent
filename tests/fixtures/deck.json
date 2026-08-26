@@ -1,0 +1,184 @@
+{
+  "contract": {
+    "sources": [
+      {
+        "kind": "prompt",
+        "id": "prompt",
+        "text": "A comparison and data flow deck"
+      }
+    ],
+    "purpose": "technical",
+    "audience": "engineering leaders",
+    "language": "en",
+    "slideCount": 3,
+    "brand": {
+      "kind": "default"
+    },
+    "fonts": {
+      "heading": "Arial",
+      "body": "Arial"
+    },
+    "fontDelivery": "managed_device",
+    "aspectRatio": "16:9",
+    "storyline": [
+      "opening",
+      "problem",
+      "design"
+    ]
+  },
+  "title": "Data flow overview",
+  "theme": {
+    "name": "default-corporate",
+    "palette": {
+      "background": "F7F9FC",
+      "surface": "FFFFFF",
+      "text": "162033",
+      "primary": "162033",
+      "accent": "3A70FF",
+      "muted": "61708A",
+      "border": "DCE3EF"
+    },
+    "fonts": {
+      "heading": "Arial",
+      "body": "Arial",
+      "locked": false
+    },
+    "footer": {
+      "showPageNumber": true,
+      "text": ""
+    }
+  },
+  "slides": [
+    {
+      "id": "S01",
+      "role": "opener",
+      "headline": "A reliable data flow starts with clear boundaries",
+      "executionLock": { "layoutId": "cover", "typeScale": "cover", "primaryVisual": "cover_typography", "requiredNativeObjects": ["text"] },
+      "composition": "cover",
+      "layout": "title",
+      "content": {
+        "kicker": "Technical overview",
+        "subtitle": "Comparison and pipeline structure"
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A comparison and data flow deck"
+        }
+      ],
+      "storyBeat": "opening",
+      "claims": [
+        {
+          "text": "A reliable data flow starts with clear boundaries",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "role": "comparison",
+      "headline": "Batch and streaming solve different operating needs",
+      "executionLock": { "layoutId": "two_column", "typeScale": "body_two_column", "primaryVisual": "comparison", "requiredNativeObjects": ["text", "shapes"] },
+      "composition": "two_column",
+      "layout": "comparison",
+      "content": {
+        "left": {
+          "label": "Batch",
+          "items": [
+            "Scheduled processing",
+            "Large volume windows"
+          ]
+        },
+        "right": {
+          "label": "Streaming",
+          "items": [
+            "Continuous events",
+            "Low-latency decisions"
+          ]
+        },
+        "delta": "Choose by decision latency, not fashion."
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A comparison and data flow deck"
+        }
+      ],
+      "storyBeat": "problem",
+      "claims": [
+        {
+          "text": "Batch and streaming solve different operating needs",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S03",
+      "role": "pipeline",
+      "headline": "Events move through explicit transformation stages",
+      "executionLock": { "layoutId": "pipeline_lanes", "typeScale": "body_one_column", "primaryVisual": "pipeline", "requiredNativeObjects": ["text", "shapes", "connectors"] },
+      "composition": "pipeline_lanes",
+      "layout": "pipeline",
+      "content": {
+        "lanes": [
+          {
+            "id": "raw",
+            "label": "Raw"
+          },
+          {
+            "id": "model",
+            "label": "Model"
+          }
+        ],
+        "nodes": [
+          {
+            "id": "source",
+            "label": "Source",
+            "laneId": "raw"
+          },
+          {
+            "id": "transform",
+            "label": "Transform",
+            "laneId": "model"
+          },
+          {
+            "id": "mart",
+            "label": "Analytics mart",
+            "laneId": "model"
+          }
+        ],
+        "edges": [
+          {
+            "from": "source",
+            "to": "transform",
+            "label": "events"
+          },
+          {
+            "from": "transform",
+            "to": "mart",
+            "label": "facts"
+          }
+        ]
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A comparison and data flow deck"
+        }
+      ],
+      "storyBeat": "design",
+      "claims": [
+        {
+          "text": "Events move through explicit transformation stages",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    }
+  ]
+}

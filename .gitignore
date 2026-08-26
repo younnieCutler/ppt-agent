@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+*.pdf
+dist/
+output/
+.ppt-agent/
+.scratch/
+*.pptx
+*.pptm
+*.png
+*.jpg
+*.jpeg

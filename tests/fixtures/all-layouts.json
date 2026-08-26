@@ -1,0 +1,433 @@
+{
+  "contract": {
+    "sources": [
+      {
+        "kind": "prompt",
+        "id": "prompt",
+        "text": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+      }
+    ],
+    "purpose": "technical",
+    "audience": "engineering leaders",
+    "language": "en",
+    "slideCount": 9,
+    "brand": {
+      "kind": "default"
+    },
+    "fonts": {
+      "heading": "Arial",
+      "body": "Arial"
+    },
+    "aspectRatio": "16:9",
+    "fontDelivery": "managed_device",
+    "storyline": [
+      "opening",
+      "problem",
+      "evidence",
+      "insight",
+      "design",
+      "architecture",
+      "implementation",
+      "roadmap",
+      "closing"
+    ]
+  },
+  "title": "Semantic layout coverage",
+  "theme": {
+    "name": "default-corporate",
+    "palette": {
+      "background": "F7F9FC",
+      "surface": "FFFFFF",
+      "text": "162033",
+      "primary": "162033",
+      "accent": "3A70FF",
+      "muted": "61708A",
+      "border": "DCE3EF"
+    },
+    "fonts": {
+      "heading": "Arial",
+      "body": "Arial",
+      "locked": false
+    },
+    "footer": {
+      "showPageNumber": true,
+      "text": ""
+    }
+  },
+  "slides": [
+    {
+      "id": "S01",
+      "role": "opener",
+      "headline": "A semantic deck uses the right visual relationship",
+      "executionLock": { "layoutId": "cover", "typeScale": "cover", "primaryVisual": "cover_typography", "requiredNativeObjects": ["text"] },
+      "layout": "title",
+      "content": {
+        "kicker": "MVP coverage",
+        "subtitle": "Nine composition grammars, one deterministic renderer"
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "cover",
+      "storyBeat": "opening",
+      "claims": [
+        {
+          "text": "A semantic deck uses the right visual relationship",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "role": "statement",
+      "headline": "Meaning chooses the composition before decoration",
+      "executionLock": { "layoutId": "hero_evidence", "typeScale": "body_one_column", "primaryVisual": "evidence_panel", "requiredNativeObjects": ["text", "shapes"] },
+      "layout": "statement",
+      "content": {
+        "body": "The renderer receives intent and content, then computes geometry.",
+        "proofs": [
+          "No arbitrary coordinates in DeckSpec",
+          "Native editable objects",
+          "QA runs after PowerPoint export"
+        ]
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "hero_evidence",
+      "storyBeat": "problem",
+      "claims": [
+        {
+          "text": "Meaning chooses the composition before decoration",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S03",
+      "role": "comparison",
+      "headline": "Two operating modes imply a side-by-side comparison",
+      "executionLock": { "layoutId": "two_column", "typeScale": "body_two_column", "primaryVisual": "comparison", "requiredNativeObjects": ["text", "shapes"] },
+      "layout": "comparison",
+      "content": {
+        "left": {
+          "label": "Mode A",
+          "items": [
+            "Predictable cadence",
+            "Large batches"
+          ]
+        },
+        "right": {
+          "label": "Mode B",
+          "items": [
+            "Continuous flow",
+            "Fast feedback"
+          ]
+        },
+        "delta": "Choose by operating constraint."
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "two_column",
+      "storyBeat": "evidence",
+      "claims": [
+        {
+          "text": "Two operating modes imply a side-by-side comparison",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S04",
+      "role": "process",
+      "headline": "The work moves through explicit ordered steps",
+      "executionLock": { "layoutId": "sequence", "typeScale": "body_one_column", "primaryVisual": "process", "requiredNativeObjects": ["text", "shapes", "connectors"] },
+      "layout": "process",
+      "content": {
+        "steps": [
+          {
+            "id": "one",
+            "label": "Frame",
+            "detail": "Define the decision."
+          },
+          {
+            "id": "two",
+            "label": "Model",
+            "detail": "Choose the relationship."
+          },
+          {
+            "id": "three",
+            "label": "Render",
+            "detail": "Compute geometry."
+          }
+        ]
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "sequence",
+      "storyBeat": "insight",
+      "claims": [
+        {
+          "text": "The work moves through explicit ordered steps",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S05",
+      "role": "pipeline",
+      "headline": "Data moves through connected pipeline nodes",
+      "executionLock": { "layoutId": "pipeline_lanes", "typeScale": "body_one_column", "primaryVisual": "pipeline", "requiredNativeObjects": ["text", "shapes", "connectors"] },
+      "layout": "pipeline",
+      "content": {
+        "lanes": [
+          {
+            "id": "raw",
+            "label": "Raw"
+          },
+          {
+            "id": "model",
+            "label": "Model"
+          }
+        ],
+        "nodes": [
+          {
+            "id": "source",
+            "label": "Source",
+            "laneId": "raw"
+          },
+          {
+            "id": "transform",
+            "label": "Transform",
+            "laneId": "model"
+          },
+          {
+            "id": "mart",
+            "label": "Mart",
+            "laneId": "model"
+          }
+        ],
+        "edges": [
+          {
+            "from": "source",
+            "to": "transform",
+            "label": "events"
+          },
+          {
+            "from": "transform",
+            "to": "mart",
+            "label": "facts"
+          }
+        ]
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "pipeline_lanes",
+      "storyBeat": "design",
+      "claims": [
+        {
+          "text": "Data moves through connected pipeline nodes",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S06",
+      "role": "architecture",
+      "headline": "Architecture is explained as zones and relationships",
+      "executionLock": { "layoutId": "architecture_zones", "typeScale": "body_one_column", "primaryVisual": "architecture", "requiredNativeObjects": ["text", "shapes", "connectors"] },
+      "layout": "architecture",
+      "content": {
+        "zones": [
+          {
+            "id": "data",
+            "label": "Data",
+            "description": "Inputs and storage",
+            "nodes": [
+              "Ingest",
+              "Store"
+            ]
+          },
+          {
+            "id": "model",
+            "label": "Model",
+            "description": "Transformation",
+            "nodes": [
+              "Transform",
+              "Serve"
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "from": "data:Store",
+            "to": "model:Transform",
+            "label": "facts"
+          }
+        ]
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "architecture_zones",
+      "storyBeat": "architecture",
+      "claims": [
+        {
+          "text": "Architecture is explained as zones and relationships",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S07",
+      "role": "quantitative",
+      "headline": "A few explicit metrics make the decision concrete",
+      "executionLock": { "layoutId": "ranked_bars", "typeScale": "body_one_column", "primaryVisual": "chart", "requiredNativeObjects": ["text", "shapes"] },
+      "layout": "quantitative",
+      "content": {
+        "kind": "bar",
+        "metrics": [
+          {
+            "label": "Coverage",
+            "value": 12,
+            "unit": "%",
+            "period": "fixture period"
+          },
+          {
+            "label": "Latency",
+            "value": 8,
+            "unit": "ms",
+            "period": "fixture period"
+          },
+          {
+            "label": "Defects",
+            "value": 4,
+            "unit": "count",
+            "period": "fixture period"
+          }
+        ]
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "ranked_bars",
+      "storyBeat": "implementation",
+      "claims": [
+        {
+          "text": "A few explicit metrics make the decision concrete",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S08",
+      "role": "roadmap",
+      "headline": "The roadmap has a clear now-next-later rhythm",
+      "executionLock": { "layoutId": "now_next_later", "typeScale": "body_one_column", "primaryVisual": "timeline", "requiredNativeObjects": ["text", "shapes"] },
+      "layout": "timeline",
+      "content": {
+        "milestones": [
+          {
+            "label": "Now",
+            "date": "Now",
+            "detail": "Baseline"
+          },
+          {
+            "label": "Next",
+            "date": "Next",
+            "detail": "Pilot"
+          },
+          {
+            "label": "Later",
+            "date": "Later",
+            "detail": "Scale"
+          }
+        ]
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "now_next_later",
+      "storyBeat": "roadmap",
+      "claims": [
+        {
+          "text": "The roadmap has a clear now-next-later rhythm",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S09",
+      "role": "evidence",
+      "headline": "Evidence stays beside the claim it supports",
+      "executionLock": { "layoutId": "evidence_panel", "typeScale": "body_one_column", "primaryVisual": "evidence_panel", "requiredNativeObjects": ["text"] },
+      "layout": "evidence",
+      "content": {
+        "caption": "Source-backed observation",
+        "bullets": [
+          "Keep the excerpt close to the conclusion.",
+          "Separate observation from recommendation."
+        ]
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "locator": "prompt",
+          "excerpt": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence."
+        }
+      ],
+      "composition": "evidence_panel",
+      "storyBeat": "closing",
+      "claims": [
+        {
+          "text": "Evidence stays beside the claim it supports",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    }
+  ]
+}

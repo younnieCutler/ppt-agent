@@ -1,0 +1,422 @@
+import { z } from "zod";
+
+export const sourceRefSchema = z.object({
+  sourceId: z.string().min(1),
+  locator: z.string().min(1),
+  excerpt: z.string().min(1),
+});
+
+export const contentModelSchema = z.object({
+  version: z.literal(1),
+  sources: z.array(z.object({
+    sourceId: z.string().min(1),
+    excerpts: z.array(z.object({ locator: z.string().min(1), text: z.string().min(1) })).min(1),
+  })).min(1),
+});
+
+export const claimSchema = z
+  .object({
+    text: z.string().min(1),
+    kind: z.enum(["fact", "calculation", "interpretation"]),
+    status: z.enum(["verified", "needs_confirmation"]),
+    formula: z.string().min(1).optional(),
+  })
+  .superRefine((claim, ctx) => {
+    if (claim.kind === "calculation" && !claim.formula) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["formula"], message: "Calculated claims require an explicit formula." });
+    }
+    if (claim.kind !== "calculation" && claim.formula) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["formula"], message: "Only calculated claims may contain a formula." });
+    }
+  });
+
+export const storyBeatSchema = z.enum([
+  "opening",
+  "problem",
+  "evidence",
+  "insight",
+  "design",
+  "implementation",
+  "architecture",
+  "roadmap",
+  "closing",
+]);
+
+export const sourceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("prompt"), id: z.string().min(1), text: z.string().min(1) }),
+  z.object({
+    kind: z.literal("file"),
+    id: z.string().min(1),
+    path: z.string().min(1),
+    type: z.enum(["md", "txt", "pdf", "image"]),
+  }),
+]);
+
+export const contractSchema = z.object({
+  sources: z.array(sourceSchema).min(1),
+  purpose: z.enum(["technical", "proposal", "internal", "executive", "sales", "training", "other"]),
+  audience: z.string().min(1),
+  objective: z.string().min(1).optional(),
+  audienceDecision: z.string().min(1).optional(),
+  visualIntent: z
+    .array(z.enum(["comparison", "process", "pipeline", "hierarchy", "architecture", "trend", "evidence", "roadmap"]))
+    .min(1)
+    .max(3)
+    .optional(),
+  storyline: z.array(storyBeatSchema).min(3).max(9),
+  language: z.string().regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/, "language must be a BCP-47-like tag"),
+  slideCount: z.number().int().min(3).max(30),
+  brand: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("default") }),
+    z.object({ kind: z.literal("file"), path: z.string().min(1) }),
+  ]),
+  fonts: z.object({ heading: z.string().min(1), body: z.string().min(1) }),
+  fontDelivery: z.enum(["managed_device", "portable"]).default("managed_device"),
+  editability: z.literal("native_editable").default("native_editable"),
+  aspectRatio: z.enum(["16:9", "4:3"]),
+});
+
+export const paletteSchema = z.object({
+  background: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+  surface: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+  text: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+  primary: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+  accent: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+  muted: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+  border: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+});
+
+export const brandFileSchema = z.object({
+  name: z.string().min(1),
+  palette: paletteSchema,
+  fonts: z
+    .object({ heading: z.string().min(1), body: z.string().min(1), locked: z.boolean().default(false) })
+    .optional(),
+  logo: z
+    .object({ path: z.string().min(1) })
+    .optional(),
+  footer: z
+    .object({ showPageNumber: z.boolean().default(true), text: z.string().default("") })
+    .default({ showPageNumber: true, text: "" }),
+});
+
+const baseSlideSchema = z.object({
+  id: z.string().regex(/^S\d{2,}$/),
+  role: z.string().min(1),
+  storyBeat: storyBeatSchema,
+  headline: z.string().min(1),
+  headlineAlignment: z.enum(["left", "center", "right"]).default("left"),
+  executionLock: z.object({
+    // A page-level contract: planners choose semantics and roles, never coordinates.
+    layoutId: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/),
+    typeScale: z.enum(["cover", "headline", "body_one_column", "body_two_column", "dense_table"]),
+    primaryVisual: z.enum(["cover_typography", "evidence_panel", "comparison", "process", "pipeline", "architecture", "chart", "timeline"]),
+    requiredNativeObjects: z.array(z.enum(["text", "shapes", "connectors", "table", "chart", "source_image"])).min(1),
+  }),
+  claims: z.array(claimSchema).min(1).max(5),
+  composition: z.string().min(1),
+  sourceRefs: z.array(sourceRefSchema).min(1),
+});
+
+const titleSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("title"),
+  content: z.object({ kicker: z.string().optional(), subtitle: z.string().optional(), imagePath: z.string().optional() }),
+});
+
+const statementSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("statement"),
+  content: z.object({ body: z.string().min(1), proofs: z.array(z.string()).max(4).default([]) }),
+});
+
+const comparisonSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("comparison"),
+  content: z.object({
+    left: z.object({ label: z.string().min(1), items: z.array(z.string()).min(1).max(6) }),
+    right: z.object({ label: z.string().min(1), items: z.array(z.string()).min(1).max(6) }),
+    delta: z.string().optional(),
+  }),
+});
+
+const processSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("process"),
+  content: z.object({ steps: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), detail: z.string().optional() })).min(2).max(7) }),
+});
+
+function calculatePipelineRanks(nodes: Array<{ id: string }>, edges: Array<{ from: string; to: string }>): Map<string, number> | undefined {
+  const indegree = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  for (const edge of edges) {
+    if (!indegree.has(edge.from) || !indegree.has(edge.to)) return undefined;
+    outgoing.get(edge.from)?.push(edge.to);
+    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+  }
+  const rank = new Map(nodes.map((node) => [node.id, 0]));
+  const queue = nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
+  let visited = 0;
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    visited += 1;
+    for (const next of outgoing.get(id) ?? []) {
+      rank.set(next, Math.max(rank.get(next) ?? 0, (rank.get(id) ?? 0) + 1));
+      indegree.set(next, (indegree.get(next) ?? 0) - 1);
+      if (indegree.get(next) === 0) queue.push(next);
+    }
+  }
+  return visited === nodes.length ? rank : undefined;
+}
+
+const pipelineSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("pipeline"),
+  content: z.object({
+    lanes: z.array(z.object({ id: z.string().min(1), label: z.string().min(1) })).max(4).default([]),
+    nodes: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), laneId: z.string().optional(), detail: z.string().optional() })).min(2).max(10),
+    edges: z.array(z.object({ from: z.string().min(1), to: z.string().min(1), label: z.string().optional() })).min(1).max(14),
+  }).superRefine((content, ctx) => {
+    const nodeIds = new Set(content.nodes.map((node) => node.id));
+    if (nodeIds.size !== content.nodes.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nodes"], message: "Pipeline node ids must be unique." });
+    }
+    const laneIds = new Set(content.lanes.map((lane) => lane.id));
+    if (laneIds.size !== content.lanes.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lanes"], message: "Pipeline lane ids must be unique." });
+    }
+    content.nodes.forEach((node, index) => {
+      if (node.laneId && !laneIds.has(node.laneId)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nodes", index, "laneId"], message: `Pipeline node '${node.id}' references unknown lane '${node.laneId}'.` });
+      }
+    });
+    content.edges.forEach((edge, index) => {
+      if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["edges", index], message: `Pipeline edge references an unknown node: ${edge.from} -> ${edge.to}.` });
+      }
+      if (edge.from === edge.to) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["edges", index], message: "Pipeline edges may not self-reference." });
+      }
+    });
+    const ranks = calculatePipelineRanks(content.nodes, content.edges);
+    if (!ranks) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["edges"], message: "Pipeline must be acyclic so its flow can be laid out deterministically." });
+      return;
+    }
+    const rowsByLaneAndRank = new Map<string, number>();
+    content.nodes.forEach((node) => {
+      const lane = node.laneId ?? "__default__";
+      const key = `${lane}:${ranks.get(node.id)}`;
+      rowsByLaneAndRank.set(key, (rowsByLaneAndRank.get(key) ?? 0) + 1);
+    });
+    if ([...rowsByLaneAndRank.values()].some((count) => count > 4)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nodes"], message: "Pipeline places at most four parallel nodes in each lane/rank cell." });
+    }
+  }),
+});
+
+const architectureSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("architecture"),
+  content: z.object({
+    zones: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), description: z.string().optional(), nodes: z.array(z.string()).min(1).max(6) })).min(2).max(5),
+    edges: z.array(z.object({ from: z.string().min(1), to: z.string().min(1), label: z.string().optional() })).min(1).max(12),
+  }).superRefine((content, ctx) => {
+    const endpoints = new Set(content.zones.flatMap((zone) => zone.nodes.map((node) => `${zone.id}:${node}`)));
+    content.edges.forEach((edge, index) => {
+      if (!endpoints.has(edge.from) || !endpoints.has(edge.to)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["edges", index], message: `Architecture edge must reference an explicit zone:node endpoint: ${edge.from} -> ${edge.to}.` });
+      }
+      if (edge.from === edge.to) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["edges", index], message: "Architecture edges may not self-reference." });
+      }
+    });
+  }),
+});
+
+const quantitativeSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("quantitative"),
+  content: z.object({
+    kind: z.enum(["kpi", "bar", "line"]),
+    metrics: z.array(z.object({
+      label: z.string().min(1),
+      value: z.number(),
+      unit: z.string().min(1),
+      period: z.string().min(1),
+      comparisonBasis: z.string().min(1).optional(),
+      note: z.string().optional(),
+    })).min(1).max(8),
+  }),
+});
+
+const timelineSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("timeline"),
+  content: z.object({ milestones: z.array(z.object({ label: z.string().min(1), date: z.string().min(1), detail: z.string().optional() })).min(2).max(8) }),
+});
+
+const evidenceSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("evidence"),
+  content: z.object({ assetPath: z.string().optional(), caption: z.string().optional(), bullets: z.array(z.string()).max(5).default([]) }),
+});
+
+export const slideSchema = z.discriminatedUnion("layout", [
+  titleSlideSchema,
+  statementSlideSchema,
+  comparisonSlideSchema,
+  processSlideSchema,
+  pipelineSlideSchema,
+  architectureSlideSchema,
+  quantitativeSlideSchema,
+  timelineSlideSchema,
+  evidenceSlideSchema,
+]);
+
+export const themeSchema = z.object({
+  name: z.string().min(1),
+  palette: paletteSchema,
+  fonts: z.object({ heading: z.string().min(1), body: z.string().min(1), locked: z.boolean() }),
+  logoPath: z.string().optional(),
+  footer: z.object({ showPageNumber: z.boolean(), text: z.string() }),
+});
+
+const deckShapeSchema = z.object({
+  contract: contractSchema,
+  title: z.string().min(1),
+  theme: themeSchema,
+  slides: z.array(slideSchema).min(3).max(30),
+});
+
+export const deckSchema = z
+  .preprocess((input, ctx) => {
+    const forbidden = new Set(["x", "y", "w", "h", "width", "height"]);
+    const visit = (value: unknown, location: string): void => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => visit(item, `${location}[${index}]`));
+        return;
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (forbidden.has(key)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [location, key], message: `Arbitrary geometry field '${key}' is not allowed in DeckSpec.` });
+        visit(child, `${location}.${key}`);
+      }
+    };
+    visit(input, "deck");
+    return input;
+  }, deckShapeSchema)
+  .superRefine((deck, ctx) => {
+    if (deck.contract.slideCount !== deck.slides.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["contract", "slideCount"], message: "contract.slideCount must equal slides.length." });
+    }
+    const ids = deck.slides.map((slide) => slide.id);
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slides"], message: "slide ids must be unique." });
+    }
+    const sourceIds = deck.contract.sources.map((source) => source.id);
+    if (new Set(sourceIds).size !== sourceIds.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["contract", "sources"], message: "source ids must be unique." });
+    }
+    const sourceSet = new Set(sourceIds);
+    deck.slides.forEach((slide, slideIndex) => {
+      if (slide.claims[0].text !== slide.headline) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "claims", 0, "text"],
+          message: "The first claim must exactly match the slide headline so the primary message remains explicit.",
+        });
+      }
+      slide.sourceRefs.forEach((ref, refIndex) => {
+        if (!sourceSet.has(ref.sourceId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slides", slideIndex, "sourceRefs", refIndex, "sourceId"], message: `Unknown source id '${ref.sourceId}'.` });
+      });
+      const allowedCompositions: Record<string, string[]> = {
+        title: ["cover"],
+        statement: ["hero_evidence", "claim_actions"],
+        comparison: ["two_column", "diagnosis_matrix", "ownership_split"],
+        process: ["sequence", "stage_gate"],
+        pipeline: ["pipeline_lanes"],
+        architecture: ["architecture_zones"],
+        quantitative: ["kpi_row", "ranked_bars", "metric_story"],
+        timeline: ["linear_roadmap", "now_next_later"],
+        evidence: ["evidence_list", "evidence_panel"],
+      };
+      if (!allowedCompositions[slide.layout].includes(slide.composition)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "composition"],
+          message: `Composition '${slide.composition}' is not supported by layout '${slide.layout}'.`,
+        });
+      }
+      if (slide.executionLock.layoutId !== slide.composition) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "executionLock", "layoutId"],
+          message: "For a new deck, executionLock.layoutId must equal the approved composition. Native template layout mapping is handled outside this renderer.",
+        });
+      }
+      const expectedVisual: Record<string, string> = {
+        title: "cover_typography",
+        statement: "evidence_panel",
+        comparison: "comparison",
+        process: "process",
+        pipeline: "pipeline",
+        architecture: "architecture",
+        quantitative: "chart",
+        timeline: "timeline",
+        evidence: "evidence_panel",
+      };
+      if (slide.executionLock.primaryVisual !== expectedVisual[slide.layout]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "executionLock", "primaryVisual"],
+          message: `Primary visual '${slide.executionLock.primaryVisual}' is incompatible with layout '${slide.layout}'.`,
+        });
+      }
+      const requiredByComposition: Record<string, string[]> = {
+        cover: ["text"], hero_evidence: ["text", "shapes"], claim_actions: ["text", "shapes"],
+        two_column: ["text", "shapes"], diagnosis_matrix: ["text", "shapes"], ownership_split: ["text", "shapes"],
+        sequence: ["text", "shapes", "connectors"], stage_gate: ["text", "shapes"],
+        pipeline_lanes: ["text", "shapes", "connectors"], architecture_zones: ["text", "shapes", "connectors"],
+        kpi_row: ["text", "shapes"], ranked_bars: ["text", "shapes"], metric_story: ["text", "shapes"],
+        linear_roadmap: ["text", "shapes", "connectors"], now_next_later: ["text", "shapes"],
+        evidence_list: ["text"], evidence_panel: ["text"],
+      };
+      const missingNativeObjects = requiredByComposition[slide.composition].filter((objectType) => !slide.executionLock.requiredNativeObjects.includes(objectType as never));
+      if (missingNativeObjects.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "executionLock", "requiredNativeObjects"],
+          message: `Composition '${slide.composition}' requires native objects: ${missingNativeObjects.join(", ")}.`,
+        });
+      }
+      const usesSourceImage = (slide.layout === "title" && Boolean(slide.content.imagePath)) || (slide.layout === "evidence" && Boolean(slide.content.assetPath));
+      if (usesSourceImage && !slide.executionLock.requiredNativeObjects.includes("source_image")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "executionLock", "requiredNativeObjects"],
+          message: "A source image must be declared as a source_image native-object requirement; decorative generated images are not supported.",
+        });
+      }
+      if (!deck.contract.storyline.includes(slide.storyBeat)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "storyBeat"],
+          message: `Story beat '${slide.storyBeat}' is absent from the GenerationContract storyline.`,
+        });
+      }
+    });
+  });
+
+export type SourceRef = z.infer<typeof sourceRefSchema>;
+export type ContentModel = z.infer<typeof contentModelSchema>;
+export type Claim = z.infer<typeof claimSchema>;
+export type Source = z.infer<typeof sourceSchema>;
+export type GenerationContract = z.infer<typeof contractSchema>;
+export type BrandFile = z.infer<typeof brandFileSchema>;
+export type ThemeTokens = z.infer<typeof themeSchema>;
+export type SlideSpec = z.infer<typeof slideSchema>;
+export type DeckSpec = z.infer<typeof deckSchema>;
+
+export const layoutNames = [
+  "title",
+  "statement",
+  "comparison",
+  "process",
+  "pipeline",
+  "architecture",
+  "quantitative",
+  "timeline",
+  "evidence",
+] as const;
