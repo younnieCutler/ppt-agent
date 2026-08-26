@@ -21,14 +21,14 @@ const commandDir = path.join(os.homedir(), ".claude", "commands");
 const commandFile = path.join(commandDir, "ppt.md");
 const command = [
   "---",
-  "description: Run the local ppt-agent /ppt workflow with its interview, template, and quality gates.",
+  "description: Run the local ppt-agent /ppt workflow with its interview and quality gates.",
   "---",
   "",
   "Execute the requested presentation task by reading and following the full workflow in:",
   "",
   "`~/.claude/skills/ppt/SKILL.md`",
   "",
-  "This command must use the local `ppt` Skill's Generation Contract, font confirmation, good/bad-case calibration, Company Template Pack rules, render QA, and quality judgment. Do not replace this workflow with a generic ppt-master-only flow.",
+  "This command must use the local `ppt` Skill's DeckSpec validation, font confirmation, render QA, and quality judgment.",
   "",
 ].join("\n");
 fs.mkdirSync(commandDir, { recursive: true });
