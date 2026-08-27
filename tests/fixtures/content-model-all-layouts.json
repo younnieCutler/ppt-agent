@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "sourceId": "prompt",
+      "excerpts": [
+        { "id": "R001", "locator": "prompt", "text": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence." }
+      ]
+    }
+  ]
+}

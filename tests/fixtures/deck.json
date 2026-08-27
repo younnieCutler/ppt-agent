@@ -53,7 +53,6 @@
       "id": "S01",
       "role": "opener",
       "headline": "A reliable data flow starts with clear boundaries",
-      "executionLock": { "layoutId": "cover", "typeScale": "cover", "primaryVisual": "cover_typography", "requiredNativeObjects": ["text"] },
       "composition": "cover",
       "layout": "title",
       "content": {
@@ -63,8 +62,7 @@
       "sourceRefs": [
         {
           "sourceId": "prompt",
-          "locator": "prompt",
-          "excerpt": "A comparison and data flow deck"
+          "excerptId": "R001"
         }
       ],
       "storyBeat": "opening",
@@ -80,7 +78,6 @@
       "id": "S02",
       "role": "comparison",
       "headline": "Batch and streaming solve different operating needs",
-      "executionLock": { "layoutId": "two_column", "typeScale": "body_two_column", "primaryVisual": "comparison", "requiredNativeObjects": ["text", "shapes"] },
       "composition": "two_column",
       "layout": "comparison",
       "content": {
@@ -103,8 +100,7 @@
       "sourceRefs": [
         {
           "sourceId": "prompt",
-          "locator": "prompt",
-          "excerpt": "A comparison and data flow deck"
+          "excerptId": "R001"
         }
       ],
       "storyBeat": "problem",
@@ -120,7 +116,6 @@
       "id": "S03",
       "role": "pipeline",
       "headline": "Events move through explicit transformation stages",
-      "executionLock": { "layoutId": "pipeline_lanes", "typeScale": "body_one_column", "primaryVisual": "pipeline", "requiredNativeObjects": ["text", "shapes", "connectors"] },
       "composition": "pipeline_lanes",
       "layout": "pipeline",
       "content": {
@@ -167,8 +162,7 @@
       "sourceRefs": [
         {
           "sourceId": "prompt",
-          "locator": "prompt",
-          "excerpt": "A comparison and data flow deck"
+          "excerptId": "R001"
         }
       ],
       "storyBeat": "design",

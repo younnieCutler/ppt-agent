@@ -1,6 +1,6 @@
 {
   "name": "ppt-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "A small, deterministic PPTX renderer with structural QA.",
   "type": "commonjs",
@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "jszip": "^3.10.1",
     "pptxgenjs": "^4.0.1",
     "yaml": "^2.7.0",
     "zod": "^3.24.0"

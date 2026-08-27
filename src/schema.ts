@@ -2,17 +2,23 @@ import { z } from "zod";
 
 export const sourceRefSchema = z.object({
   sourceId: z.string().min(1),
-  locator: z.string().min(1),
-  excerpt: z.string().min(1),
+  excerptId: z.string().min(1),
 });
 
-export const contentModelSchema = z.object({
-  version: z.literal(1),
-  sources: z.array(z.object({
-    sourceId: z.string().min(1),
-    excerpts: z.array(z.object({ locator: z.string().min(1), text: z.string().min(1) })).min(1),
-  })).min(1),
-});
+export const contentModelSchema = z
+  .object({
+    version: z.literal(1),
+    sources: z.array(z.object({
+      sourceId: z.string().min(1),
+      excerpts: z.array(z.object({ id: z.string().min(1), locator: z.string().min(1), text: z.string().min(1) })).min(1),
+    })).min(1),
+  })
+  .superRefine((model, ctx) => {
+    const ids = model.sources.flatMap((source) => source.excerpts.map((excerpt) => excerpt.id));
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["sources"], message: "content-model excerpt ids must be unique across the whole model." });
+    }
+  });
 
 export const claimSchema = z
   .object({
@@ -63,6 +69,7 @@ export const contractSchema = z.object({
     .min(1)
     .max(3)
     .optional(),
+  designDirection: z.enum(["auto", "dense", "balanced", "visual", "minimal", "reference"]).default("auto"),
   storyline: z.array(storyBeatSchema).min(3).max(9),
   language: z.string().regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/, "language must be a BCP-47-like tag"),
   slideCount: z.number().int().min(3).max(30),
@@ -106,13 +113,6 @@ const baseSlideSchema = z.object({
   storyBeat: storyBeatSchema,
   headline: z.string().min(1),
   headlineAlignment: z.enum(["left", "center", "right"]).default("left"),
-  executionLock: z.object({
-    // A page-level contract: planners choose semantics and roles, never coordinates.
-    layoutId: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/),
-    typeScale: z.enum(["cover", "headline", "body_one_column", "body_two_column", "dense_table"]),
-    primaryVisual: z.enum(["cover_typography", "evidence_panel", "comparison", "process", "pipeline", "architecture", "chart", "timeline"]),
-    requiredNativeObjects: z.array(z.enum(["text", "shapes", "connectors", "table", "chart", "source_image"])).min(1),
-  }),
   claims: z.array(claimSchema).min(1).max(5),
   composition: z.string().min(1),
   sourceRefs: z.array(sourceRefSchema).min(1),
@@ -339,56 +339,6 @@ export const deckSchema = z
           message: `Composition '${slide.composition}' is not supported by layout '${slide.layout}'.`,
         });
       }
-      if (slide.executionLock.layoutId !== slide.composition) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["slides", slideIndex, "executionLock", "layoutId"],
-          message: "For a new deck, executionLock.layoutId must equal the approved composition. Native template layout mapping is handled outside this renderer.",
-        });
-      }
-      const expectedVisual: Record<string, string> = {
-        title: "cover_typography",
-        statement: "evidence_panel",
-        comparison: "comparison",
-        process: "process",
-        pipeline: "pipeline",
-        architecture: "architecture",
-        quantitative: "chart",
-        timeline: "timeline",
-        evidence: "evidence_panel",
-      };
-      if (slide.executionLock.primaryVisual !== expectedVisual[slide.layout]) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["slides", slideIndex, "executionLock", "primaryVisual"],
-          message: `Primary visual '${slide.executionLock.primaryVisual}' is incompatible with layout '${slide.layout}'.`,
-        });
-      }
-      const requiredByComposition: Record<string, string[]> = {
-        cover: ["text"], hero_evidence: ["text", "shapes"], claim_actions: ["text", "shapes"],
-        two_column: ["text", "shapes"], diagnosis_matrix: ["text", "shapes"], ownership_split: ["text", "shapes"],
-        sequence: ["text", "shapes", "connectors"], stage_gate: ["text", "shapes"],
-        pipeline_lanes: ["text", "shapes", "connectors"], architecture_zones: ["text", "shapes", "connectors"],
-        kpi_row: ["text", "shapes"], ranked_bars: ["text", "shapes"], metric_story: ["text", "shapes"],
-        linear_roadmap: ["text", "shapes", "connectors"], now_next_later: ["text", "shapes"],
-        evidence_list: ["text"], evidence_panel: ["text"],
-      };
-      const missingNativeObjects = requiredByComposition[slide.composition].filter((objectType) => !slide.executionLock.requiredNativeObjects.includes(objectType as never));
-      if (missingNativeObjects.length > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["slides", slideIndex, "executionLock", "requiredNativeObjects"],
-          message: `Composition '${slide.composition}' requires native objects: ${missingNativeObjects.join(", ")}.`,
-        });
-      }
-      const usesSourceImage = (slide.layout === "title" && Boolean(slide.content.imagePath)) || (slide.layout === "evidence" && Boolean(slide.content.assetPath));
-      if (usesSourceImage && !slide.executionLock.requiredNativeObjects.includes("source_image")) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["slides", slideIndex, "executionLock", "requiredNativeObjects"],
-          message: "A source image must be declared as a source_image native-object requirement; decorative generated images are not supported.",
-        });
-      }
       if (!deck.contract.storyline.includes(slide.storyBeat)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -420,3 +370,44 @@ export const layoutNames = [
   "timeline",
   "evidence",
 ] as const;
+
+// Derived editability contract. `executionLock` used to be an LLM-authored field that
+// merely restated these facts; the renderer/QA layer now derives them directly from
+// `layout` and `composition` so the DeckSpec never repeats information the schema already knows.
+export const primaryVisuals = ["cover_typography", "evidence_panel", "comparison", "process", "pipeline", "architecture", "chart", "timeline"] as const;
+export type PrimaryVisual = (typeof primaryVisuals)[number];
+
+export const nativeObjectKinds = ["text", "shapes", "connectors", "table", "chart", "source_image"] as const;
+export type NativeObject = (typeof nativeObjectKinds)[number];
+
+const primaryVisualByLayout: Record<SlideSpec["layout"], PrimaryVisual> = {
+  title: "cover_typography",
+  statement: "evidence_panel",
+  comparison: "comparison",
+  process: "process",
+  pipeline: "pipeline",
+  architecture: "architecture",
+  quantitative: "chart",
+  timeline: "timeline",
+  evidence: "evidence_panel",
+};
+
+export function primaryVisualFor(layout: SlideSpec["layout"]): PrimaryVisual {
+  return primaryVisualByLayout[layout];
+}
+
+const requiredNativeObjectsByComposition: Record<string, NativeObject[]> = {
+  cover: ["text"], hero_evidence: ["text", "shapes"], claim_actions: ["text", "shapes"],
+  two_column: ["text", "shapes"], diagnosis_matrix: ["text", "shapes"], ownership_split: ["text", "shapes"],
+  sequence: ["text", "shapes", "connectors"], stage_gate: ["text", "shapes"],
+  pipeline_lanes: ["text", "shapes", "connectors"], architecture_zones: ["text", "shapes", "connectors"],
+  kpi_row: ["text", "shapes"], ranked_bars: ["text", "shapes"], metric_story: ["text", "shapes"],
+  linear_roadmap: ["text", "shapes", "connectors"], now_next_later: ["text", "shapes"],
+  evidence_list: ["text"], evidence_panel: ["text"],
+};
+
+export function requiredNativeObjectsFor(slide: SlideSpec): NativeObject[] {
+  const base = requiredNativeObjectsByComposition[slide.composition] ?? [];
+  const usesSourceImage = (slide.layout === "title" && Boolean(slide.content.imagePath)) || (slide.layout === "evidence" && Boolean(slide.content.assetPath));
+  return usesSourceImage && !base.includes("source_image") ? [...base, "source_image"] : base;
+}

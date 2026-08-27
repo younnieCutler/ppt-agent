@@ -4,12 +4,21 @@ import { assertFontsInstalled, listInstalledFonts } from "./fonts";
 import { resolveTheme } from "./brand";
 import { renderDeck } from "./renderer";
 import { deckSchema } from "./schema";
-import { mergeQa, runPowerPointQa, structuralQa } from "./qa";
+import { mergeFindings, mergeQa, ooxmlQa, runPowerPointQa, structuralQa, verifySourceRefs } from "./qa";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
   if (index < 0 || !args[index + 1]) throw new Error(`Missing required option ${name}`);
   return args[index + 1];
+}
+
+function optionalOption(args: string[], name: string): string | undefined {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+function hasFlag(args: string[], name: string): boolean {
+  return args.includes(name);
 }
 
 function readJson(filePath: string): unknown {
@@ -67,6 +76,14 @@ async function main(): Promise<void> {
 
   if (command === "validate") {
     assertFontsInstalled(deck.contract.fonts);
+    const runDir = optionalOption(args, "--run-dir");
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const refFindings = runDir ? verifySourceRefs(deck, projectDir, path.join(path.resolve(runDir), "content-model.json")) : [];
+    if (refFindings.length > 0) {
+      print({ status: "fail", slides: deck.slides.length, fonts: deck.contract.fonts, findings: refFindings });
+      process.exitCode = 2;
+      return;
+    }
     print({ status: "pass", slides: deck.slides.length, fonts: deck.contract.fonts });
     return;
   }
@@ -83,15 +100,21 @@ async function main(): Promise<void> {
   if (command === "first-page") {
     const outPath = option(args, "--out");
     const runDir = option(args, "--run-dir");
+    const usePowerPoint = hasFlag(args, "--powerpoint");
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const result = await renderDeck(deck, outPath, projectDir, { pageLimit: 1 });
     const canonicalDeck = { ...deck, theme: resolveTheme(deck.contract, projectDir) };
     const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
+    const firstSlideId = canonicalDeck.slides[0].id;
     const structural = structuralQa(canonicalDeck, projectDir, contentModelPath);
-    const powerpoint: Record<string, unknown> = process.platform === "win32"
-      ? runPowerPointQa(outPath, canonicalDeck, path.join(path.resolve(runDir), "first-page"), [canonicalDeck.slides[0].id])
-      : { status: "skipped", findings: [], reason: "PowerPoint COM QA requires Windows; run this command there to complete release-grade QA." };
-    const report = mergeQa(structural, powerpoint);
+    const ooxmlFindings = await ooxmlQa(outPath, canonicalDeck, [firstSlideId]);
+    let report = mergeFindings(structural, ooxmlFindings);
+    if (usePowerPoint && process.platform === "win32") {
+      const powerpoint = runPowerPointQa(outPath, canonicalDeck, path.join(path.resolve(runDir), "first-page"), [firstSlideId]);
+      report = mergeQa(report, powerpoint);
+    } else if (usePowerPoint) {
+      report = { ...report, powerpoint: { status: "skipped", findings: [], reason: "PowerPoint COM QA requires Windows; run this command there for Level 3 verification." } };
+    }
     fs.mkdirSync(path.resolve(runDir), { recursive: true });
     fs.writeFileSync(path.join(path.resolve(runDir), "first-page-qa.json"), JSON.stringify(report, null, 2));
     fs.writeFileSync(`${path.resolve(outPath)}.geometry.json`, JSON.stringify(result.slideRects, null, 2));
@@ -103,17 +126,20 @@ async function main(): Promise<void> {
   if (command === "qa") {
     const pptxPath = option(args, "--pptx");
     const runDir = option(args, "--run-dir");
+    const usePowerPoint = hasFlag(args, "--powerpoint");
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const canonicalDeck = { ...deck, theme: resolveTheme(deck.contract, projectDir) };
     const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
     const structural = structuralQa(canonicalDeck, projectDir, contentModelPath);
-    let report = structural;
-    let powerpoint: Record<string, unknown> = { status: "skipped", findings: [] };
-    if (process.platform === "win32" && fs.existsSync(path.resolve(pptxPath))) {
-      powerpoint = runPowerPointQa(pptxPath, canonicalDeck, runDir);
-      report = mergeQa(structural, powerpoint);
-    } else if (process.platform !== "win32") {
-      powerpoint = { status: "skipped", findings: [], reason: "PowerPoint COM QA requires Windows; run this command there to complete release-grade QA." };
+    const ooxmlFindings = fs.existsSync(path.resolve(pptxPath))
+      ? await ooxmlQa(pptxPath, canonicalDeck)
+      : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
+    let report = mergeFindings(structural, ooxmlFindings);
+    if (usePowerPoint && process.platform === "win32") {
+      const powerpoint = runPowerPointQa(pptxPath, canonicalDeck, runDir);
+      report = mergeQa(report, powerpoint);
+    } else if (usePowerPoint) {
+      report = { ...report, powerpoint: { status: "skipped", findings: [], reason: "PowerPoint COM QA requires Windows; run this command there for Level 3 verification." } };
     }
     fs.mkdirSync(path.resolve(runDir), { recursive: true });
     fs.writeFileSync(path.join(path.resolve(runDir), "qa.json"), JSON.stringify(report, null, 2));

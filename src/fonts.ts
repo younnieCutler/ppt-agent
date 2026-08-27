@@ -9,7 +9,7 @@ function normalize(font: string): string {
 function listInstalledFontsMac(): InstalledFont[] {
   let raw: string;
   try { raw = execFileSync("fc-list", [":", "family"], { encoding: "utf8" }); }
-  catch { throw new Error("Font preflight on macOS requires fontconfig's `fc-list` (install with `brew install fontconfig`). PowerPoint QA and release still require Windows."); }
+  catch { throw new Error("Font preflight on macOS requires fontconfig's `fc-list` (install with `brew install fontconfig`)."); }
   const families = new Set<string>();
   for (const line of raw.split("\n")) for (const name of line.split(",")) if (name.trim()) families.add(name.trim());
   return [...families].sort().map((family) => ({ family, source: "fc-list" }));

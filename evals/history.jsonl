@@ -1,1 +1,2 @@
 {"version":"0.1.0","date":"2026-08-26","suite":"generic-core","checks":["build","typecheck","unit-tests"],"outcome":"pass"}
+{"version":"0.2.0","date":"2026-08-28","suite":"generic-core","checks":["build","typecheck","unit-tests"],"outcome":"pass"}

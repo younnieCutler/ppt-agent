@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { contentModelSchema, deckSchema, type ContentModel, type DeckSpec, type SlideSpec } from "./schema";
+import { contentModelSchema, deckSchema, requiredNativeObjectsFor, type ContentModel, type DeckSpec, type SlideSpec, type SourceRef } from "./schema";
+import { readPptxOoxml, type NativeObjectCounts } from "./ooxml";
 
 export type QaFinding = {
   severity: "hard" | "risk" | "warning";
@@ -20,6 +21,16 @@ export type QaReport = {
   powerpoint?: Record<string, unknown>;
 };
 
+function rollUp(findings: QaFinding[]): Pick<QaReport, "status" | "integrity" | "slop"> {
+  const hard = findings.some((finding) => finding.severity === "hard");
+  const risk = findings.some((finding) => finding.severity === "risk");
+  return {
+    status: hard ? "fail" : risk ? "review" : "pass",
+    integrity: hard ? "fail" : "pass",
+    slop: hard ? "fail" : risk ? "warn" : "pass",
+  };
+}
+
 function flattenVisibleText(slide: SlideSpec): string {
   return `${slide.headline} ${JSON.stringify(slide.content)}`;
 }
@@ -35,8 +46,7 @@ function excerptTokenSet(excerpts: string[]): Set<string> {
   return new Set(excerpts.flatMap((excerpt) => numericTokens(excerpt)));
 }
 
-function addClaimFindings(slide: SlideSpec, findings: QaFinding[]): Set<string> {
-  const excerptTokens = excerptTokenSet(slide.sourceRefs.map((ref) => ref.excerpt));
+function addClaimFindings(slide: SlideSpec, excerptTokens: Set<string>, findings: QaFinding[]): Set<string> {
   const allowedCalculatedTokens = new Set<string>();
   slide.claims.forEach((claim) => {
     if (claim.status === "needs_confirmation") {
@@ -165,16 +175,52 @@ function addCompositionFindings(slides: SlideSpec[], findings: QaFinding[]): voi
   });
 }
 
+// Explicit non-"auto" design directions get their own density band, floor and ceiling both.
+// "auto" keeps the original purpose-gated, floor-only behavior byte-for-byte so a run that never
+// touches designDirection sees no change in judgment.
+const densityBandsByDirection: Record<"dense" | "balanced" | "visual" | "minimal", { floor: number; ceiling?: number }> = {
+  dense: { floor: 480 },
+  balanced: { floor: 360, ceiling: 900 },
+  visual: { floor: 220, ceiling: 480 },
+  minimal: { floor: 200, ceiling: 420 },
+};
+
+function averageVisibleChars(slides: SlideSpec[]): number {
+  return slides.reduce((total, slide) => total + flattenVisibleText(slide).length, 0) / slides.length;
+}
+
 function addPurposeDensityFindings(deck: DeckSpec, findings: QaFinding[]): void {
-  if (!["proposal", "executive", "internal"].includes(deck.contract.purpose)) return;
   const bodySlides = deck.slides.filter((slide) => slide.layout !== "title");
-  if (bodySlides.length < 8) return;
-  const averageCharacters = bodySlides.reduce((total, slide) => total + flattenVisibleText(slide).length, 0) / bodySlides.length;
-  if (averageCharacters < 360) {
+  const direction = deck.contract.designDirection;
+
+  if (direction === "auto") {
+    if (!["proposal", "executive", "internal"].includes(deck.contract.purpose)) return;
+    if (bodySlides.length < 8) return;
+    const average = averageVisibleChars(bodySlides);
+    if (average < 360) {
+      findings.push({
+        severity: "risk",
+        code: "LOW_INFORMATION_DENSITY",
+        message: `${deck.contract.purpose} deck averages ${Math.round(average)} visible characters per body slide. Combine diagnosis, evidence, and action where the source supports it instead of spreading sparse content across extra slides.`,
+      });
+    }
+    return;
+  }
+
+  if (direction === "reference" || bodySlides.length < 8) return;
+  const band = densityBandsByDirection[direction];
+  const average = averageVisibleChars(bodySlides);
+  if (average < band.floor) {
     findings.push({
       severity: "risk",
       code: "LOW_INFORMATION_DENSITY",
-      message: `${deck.contract.purpose} deck averages ${Math.round(averageCharacters)} visible characters per body slide. Combine diagnosis, evidence, and action where the source supports it instead of spreading sparse content across extra slides.`,
+      message: `${direction} deck averages ${Math.round(average)} visible characters per body slide, below its ${band.floor}-character floor.`,
+    });
+  } else if (band.ceiling && average > band.ceiling) {
+    findings.push({
+      severity: "risk",
+      code: "EXCESSIVE_INFORMATION_DENSITY",
+      message: `${direction} deck averages ${Math.round(average)} visible characters per body slide, above its ${band.ceiling}-character ceiling.`,
     });
   }
 }
@@ -198,9 +244,11 @@ function addNarrativeFindings(deck: DeckSpec, findings: QaFinding[]): void {
   }
 }
 
-function loadContentModel(contentModelPath: string | undefined): ContentModel | undefined {
-  if (!contentModelPath || !fs.existsSync(contentModelPath)) return undefined;
-  return contentModelSchema.parse(JSON.parse(fs.readFileSync(contentModelPath, "utf8")));
+function loadContentModel(contentModel: string | ContentModel | undefined): ContentModel | undefined {
+  if (!contentModel) return undefined;
+  if (typeof contentModel !== "string") return contentModelSchema.parse(contentModel);
+  if (!fs.existsSync(contentModel)) return undefined;
+  return contentModelSchema.parse(JSON.parse(fs.readFileSync(contentModel, "utf8")));
 }
 
 function sourceTextForRef(deck: DeckSpec, sourceId: string, projectDir: string): string | undefined {
@@ -211,27 +259,48 @@ function sourceTextForRef(deck: DeckSpec, sourceId: string, projectDir: string):
   return fs.readFileSync(path.resolve(projectDir, source.path), "utf8");
 }
 
-function addSourceExcerptFindings(deck: DeckSpec, slide: SlideSpec, findings: QaFinding[], projectDir: string, contentModel: ContentModel | undefined): void {
+function resolveExcerpt(contentModel: ContentModel, ref: SourceRef): { locator: string; text: string } | undefined {
+  const modelSource = contentModel.sources.find((source) => source.sourceId === ref.sourceId);
+  return modelSource?.excerpts.find((excerpt) => excerpt.id === ref.excerptId);
+}
+
+function addSourceExcerptFindings(deck: DeckSpec, slide: SlideSpec, findings: QaFinding[], projectDir: string, contentModel: ContentModel): void {
   slide.sourceRefs.forEach((ref) => {
-    if (contentModel) {
-      const modelSource = contentModel.sources.find((source) => source.sourceId === ref.sourceId);
-      const found = modelSource?.excerpts.some((excerpt) => excerpt.locator === ref.locator && excerpt.text === ref.excerpt);
-      if (!found) findings.push({ severity: "hard", code: "SOURCE_EXCERPT_NOT_IN_CONTENT_MODEL", slideId: slide.id, message: `Source reference ${ref.sourceId}:${ref.locator} is absent from content-model.json.` });
+    const resolved = resolveExcerpt(contentModel, ref);
+    if (!resolved) {
+      findings.push({ severity: "hard", code: "SOURCE_EXCERPT_NOT_IN_CONTENT_MODEL", slideId: slide.id, message: `Source reference ${ref.sourceId}:${ref.excerptId} is absent from content-model.json.` });
       return;
     }
     const sourceText = sourceTextForRef(deck, ref.sourceId, projectDir);
-    if (sourceText === undefined) {
-      findings.push({ severity: "hard", code: "CONTENT_MODEL_REQUIRED", slideId: slide.id, message: `Source ${ref.sourceId} requires content-model.json because its excerpt cannot be verified directly.` });
-    } else if (!sourceText.includes(ref.excerpt)) {
-      findings.push({ severity: "hard", code: "SOURCE_EXCERPT_MISMATCH", slideId: slide.id, message: `Source reference ${ref.sourceId}:${ref.locator} is not present in its original source.` });
+    if (sourceText !== undefined && !sourceText.includes(resolved.text)) {
+      findings.push({ severity: "hard", code: "SOURCE_EXCERPT_MISMATCH", slideId: slide.id, message: `Source reference ${ref.sourceId}:${ref.excerptId} (${resolved.locator}) is not present in its original source.` });
     }
   });
 }
 
-export function structuralQa(input: unknown, projectDir = process.cwd(), contentModelPath?: string): QaReport {
+function resolveExcerptTexts(slide: SlideSpec, contentModel: ContentModel | undefined): string[] {
+  if (!contentModel) return [];
+  return slide.sourceRefs.map((ref) => resolveExcerpt(contentModel, ref)?.text).filter((text): text is string => Boolean(text));
+}
+
+export function verifySourceRefs(input: unknown, projectDir = process.cwd(), contentModel?: string | ContentModel): QaFinding[] {
   const deck = deckSchema.parse(input);
-  const contentModel = loadContentModel(contentModelPath);
+  const model = loadContentModel(contentModel);
+  if (!model) {
+    return [{ severity: "hard", code: "CONTENT_MODEL_REQUIRED", message: "content-model.json is required so every sourceRef.excerptId can be verified." }];
+  }
   const findings: QaFinding[] = [];
+  deck.slides.forEach((slide) => addSourceExcerptFindings(deck, slide, findings, projectDir, model));
+  return findings;
+}
+
+export function structuralQa(input: unknown, projectDir = process.cwd(), contentModel?: string | ContentModel): QaReport {
+  const deck = deckSchema.parse(input);
+  const model = loadContentModel(contentModel);
+  const findings: QaFinding[] = [];
+  if (!model) {
+    findings.push({ severity: "hard", code: "CONTENT_MODEL_REQUIRED", message: "content-model.json is required so every sourceRef.excerptId can be verified." });
+  }
   deck.contract.sources.forEach((source) => {
     if (source.kind === "file" && !fs.existsSync(path.resolve(projectDir, source.path))) {
       findings.push({ severity: "hard", code: "SOURCE_NOT_FOUND", message: `Source file does not exist: ${source.path}` });
@@ -275,9 +344,9 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
     addSemanticFindings(slide, findings);
     addTextBudgetFindings(slide, findings);
     if (slide.sourceRefs.length === 0) findings.push({ severity: "hard", code: "SOURCE_OMISSION", slideId: slide.id, message: "Every slide requires at least one source reference." });
-    addSourceExcerptFindings(deck, slide, findings, projectDir, contentModel);
-    const excerptTokens = excerptTokenSet(slide.sourceRefs.map((ref) => ref.excerpt));
-    const allowedCalculatedTokens = addClaimFindings(slide, findings);
+    if (model) addSourceExcerptFindings(deck, slide, findings, projectDir, model);
+    const excerptTokens = excerptTokenSet(resolveExcerptTexts(slide, model));
+    const allowedCalculatedTokens = addClaimFindings(slide, excerptTokens, findings);
     numericTokens(flattenVisibleText(slide)).forEach((token) => {
       if (!excerptTokens.has(token) && !allowedCalculatedTokens.has(token)) findings.push({ severity: "hard", code: "NUMERIC_GROUNDING", slideId: slide.id, message: `Numeric token ${token} is absent from cited source excerpts or a grounded calculation.` });
     });
@@ -289,16 +358,48 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
     }
   });
 
-  const hard = findings.some((finding) => finding.severity === "hard");
-  const risk = findings.some((finding) => finding.severity === "risk");
-  return {
-    status: hard ? "fail" : risk ? "review" : "pass",
-    integrity: hard ? "fail" : "pass",
-    reference: "not_applicable",
-    slop: hard ? "fail" : risk ? "warn" : "pass",
-    attempts: 0,
-    findings,
-  };
+  return { ...rollUp(findings), reference: "not_applicable", attempts: 0, findings };
+}
+
+export async function ooxmlQa(pptxPath: string, deck: DeckSpec, slideIds = deck.slides.map((slide) => slide.id)): Promise<QaFinding[]> {
+  const facts = await readPptxOoxml(pptxPath);
+  const findings: QaFinding[] = [];
+  if (!facts.parseOk) {
+    findings.push({ severity: "hard", code: "OOXML_INVALID", message: `Rendered PPTX could not be parsed: ${pptxPath}` });
+    return findings;
+  }
+  const renderedSlides = deck.slides.filter((slide) => slideIds.includes(slide.id));
+  if (facts.slideCount !== renderedSlides.length) {
+    findings.push({ severity: "hard", code: "OOXML_INVALID", message: `Rendered slide count ${facts.slideCount} does not match the expected ${renderedSlides.length}.` });
+    return findings;
+  }
+  const allowedFonts = new Set([deck.contract.fonts.heading, deck.contract.fonts.body]);
+  renderedSlides.forEach((slide, index) => {
+    const slideFacts = facts.slides[index];
+    const badFonts = slideFacts.typefaces.filter((typeface) => !allowedFonts.has(typeface));
+    if (badFonts.length > 0) {
+      findings.push({ severity: "hard", code: "FONT_SUBSTITUTION", slideId: slide.id, message: `Slide uses unapproved font(s): ${badFonts.join(", ")}.` });
+    }
+    const missing = requiredNativeObjectsFor(slide).filter((kind) => slideFacts.nativeObjects[kind as keyof NativeObjectCounts] === 0);
+    if (missing.length > 0) {
+      findings.push({ severity: "hard", code: "REQUIRED_NATIVE_OBJECT_MISSING", slideId: slide.id, message: `Composition '${slide.composition}' requires native objects: ${missing.join(", ")}.` });
+    }
+    if (slideFacts.fullSlideImage) {
+      findings.push({ severity: "hard", code: "FULL_SLIDE_RASTERIZATION", slideId: slide.id, message: "Slide is a full-bleed image with no editable text; a PPTX page must not be a rasterized image." });
+    }
+    if (slideFacts.hasEastAsianText && !slideFacts.hasEastAsianTypeface) {
+      findings.push({ severity: "hard", code: "EAST_ASIAN_FONT_MISSING", slideId: slide.id, message: "Slide contains East Asian text but no East Asian typeface is declared on any run." });
+    }
+  });
+  if (deck.contract.fontDelivery === "portable" && !facts.embeddedFonts) {
+    findings.push({ severity: "hard", code: "FONT_EMBEDDING_REQUIRED", message: "Portable delivery requires embedded font parts; none were found in the rendered PPTX." });
+  }
+  return findings;
+}
+
+export function mergeFindings(structural: QaReport, additional: QaFinding[]): QaReport {
+  const findings = [...structural.findings, ...additional];
+  return { ...structural, ...rollUp(findings), findings };
 }
 
 export function runPowerPointQa(pptxPath: string, deck: DeckSpec, runDir: string, slideIds = deck.slides.map((slide) => slide.id)): Record<string, unknown> {
@@ -314,7 +415,7 @@ export function runPowerPointQa(pptxPath: string, deck: DeckSpec, runDir: string
     "-RequiredNativeObject",
     deck.slides
       .filter((slide) => slideIds.includes(slide.id))
-      .flatMap((slide) => slide.executionLock.requiredNativeObjects.map((objectType) => `${slide.id},${objectType}`))
+      .flatMap((slide) => requiredNativeObjectsFor(slide).map((objectType) => `${slide.id},${objectType}`))
       .join(";"),
   ];
   try {
@@ -333,15 +434,5 @@ export function mergeQa(structural: QaReport, powerpoint: Record<string, unknown
   if (powerpoint.status === "fail" && powerFindings.length === 0) {
     findings.push({ severity: "hard", code: "POWERPOINT_QA_FAILED", message: "PowerPoint QA returned fail without a detailed finding." });
   }
-  const hard = findings.some((finding) => finding.severity === "hard");
-  const risk = findings.some((finding) => finding.severity === "risk");
-  return {
-    status: hard ? "fail" : risk ? "review" : "pass",
-    integrity: hard ? "fail" : "pass",
-    reference: structural.reference,
-    slop: hard ? "fail" : risk ? "warn" : "pass",
-    attempts: structural.attempts,
-    findings,
-    powerpoint,
-  };
+  return { ...rollUp(findings), reference: structural.reference, attempts: structural.attempts, findings, powerpoint };
 }

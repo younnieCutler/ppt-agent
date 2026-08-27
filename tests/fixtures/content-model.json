@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "sourceId": "prompt",
+      "excerpts": [
+        { "id": "R001", "locator": "prompt", "text": "A comparison and data flow deck" }
+      ]
+    }
+  ]
+}
