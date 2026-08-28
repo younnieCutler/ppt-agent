@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import Automizer from "pptx-automizer";
 import JSZip from "jszip";
-import { bindingForLayout, type TemplateMap } from "./organization";
+import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
+
+const EMU_PER_INCH = 914400;
+const CANVAS_SIZE_TOLERANCE_IN = 0.05;
 import type { ResolvedPresentationStyle } from "./style";
 import type { SlideSpec } from "./schema";
 
@@ -77,9 +80,15 @@ async function validateTemplateContract(templatePath: string, map: TemplateMap, 
   const sizeTag = presentationXml.match(/<p:sldSz\b[^>]*>/)?.[0];
   const cx = Number(sizeTag?.match(/\bcx="(\d+)"/)?.[1] ?? 0);
   const cy = Number(sizeTag?.match(/\bcy="(\d+)"/)?.[1] ?? 0);
-  const expectedRatio = map.aspectRatio === "4:3" ? 4 / 3 : 16 / 9;
-  if (!cx || !cy || Math.abs(cx / cy - expectedRatio) > 0.02) {
-    throw new Error(`Organization template must be ${map.aspectRatio}; template.pptx has an incompatible slide size.`);
+  const expected = CANVAS_DIMENSIONS[map.aspectRatio];
+  const actualW = cx / EMU_PER_INCH;
+  const actualH = cy / EMU_PER_INCH;
+  // A ratio-only check (e.g. 4/3) would pass an 8x6in template just as readily as the true
+  // 10x7.5in canvas the renderer, geometry QA, and every contentRegion bound assume — an 8x6
+  // template would then have 10x7.5-authored content copied straight onto it, clipping the
+  // right/bottom edge. Physical size is the actual contract, not just the aspect ratio.
+  if (!cx || !cy || Math.abs(actualW - expected.w) > CANVAS_SIZE_TOLERANCE_IN || Math.abs(actualH - expected.h) > CANVAS_SIZE_TOLERANCE_IN) {
+    throw new Error(`ORGANIZATION_TEMPLATE_ASPECT_RATIO_UNSUPPORTED: Organization template must be exactly ${expected.w}in x ${expected.h}in (${map.aspectRatio}); template.pptx is ${actualW.toFixed(3)}in x ${actualH.toFixed(3)}in.`);
   }
 
   const layoutFiles = Object.keys(zip.files)

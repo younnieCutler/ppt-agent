@@ -244,4 +244,44 @@ describe("organization template adapter", () => {
       expect(pageNumber!.x + pageNumber!.w).toBeLessThanOrEqual(10 + epsilon);
     }
   }, 30000);
+
+  it("rejects a template.pptx whose physical size doesn't match its declared aspectRatio, even though the ratio itself is correct", async () => {
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-template-43-badsize-"));
+
+    // 8in x 6in is a genuine 4:3 ratio, but not the 10x7.5in canvas every 4:3 organization pack
+    // is otherwise assumed to use — content authored for 10x7.5 would clip on this canvas.
+    const templatePptx = new (pptxgen as any)();
+    templatePptx.defineLayout({ name: "CUSTOM_4X3", width: 8, height: 6 });
+    templatePptx.layout = "CUSTOM_4X3";
+    templatePptx.addSlide();
+    const templatePath = path.join(runDir, "template-source.pptx");
+    await templatePptx.writeFile({ fileName: templatePath });
+
+    const organizationDir = path.join(runDir, "organization");
+    fs.mkdirSync(organizationDir, { recursive: true });
+    fs.copyFileSync(templatePath, path.join(organizationDir, "template.pptx"));
+    fs.writeFileSync(path.join(organizationDir, "brand.yaml"), [
+      "name: Bad Size Test",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(organizationDir, "template-map.json"), JSON.stringify({
+      version: 1,
+      aspectRatio: "4:3",
+      chromeOwnership: { background: "renderer", logo: "renderer", footer: "renderer", pageNumber: "renderer" },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.5, y: 0.5, w: 6, h: 5 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+
+    const deck = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, aspectRatio: "4:3", organization: { kind: "directory", path: organizationDir } } });
+    const output = path.join(runDir, "filled.pptx");
+    await expect(renderDeck(deck, output, process.cwd())).rejects.toThrow(/ORGANIZATION_TEMPLATE_ASPECT_RATIO_UNSUPPORTED/);
+  }, 30000);
 });
