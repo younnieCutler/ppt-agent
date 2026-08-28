@@ -298,8 +298,8 @@ export function resolvePresentationStyle(
   const organization = organizationSpec.kind === "directory"
     ? loadOrganizationPack(path.resolve(projectDir, organizationSpec.path))
     : undefined;
-  if (organization && contract.aspectRatio !== "16:9") {
-    throw new Error("Organization template packs currently require a 16:9 GenerationContract aspectRatio.");
+  if (organization && organization.map.aspectRatio !== contract.aspectRatio) {
+    throw new Error(`ORGANIZATION_TEMPLATE_ASPECT_RATIO_MISMATCH: contract.aspectRatio is '${contract.aspectRatio}' but organization pack '${organization.id}' declares aspectRatio '${organization.map.aspectRatio}'.`);
   }
   const explicit = contract.presentationStyle ?? "auto";
   const themeId: PresentationArchetype = explicit === "auto" || explicit === "reference-first" ? autoArchetype(contract) : explicit;

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import pptxgen from "pptxgenjs";
 import { defaultContentRegion, renderDeck } from "../../src/renderer";
 import { deckSchema } from "../../src/schema";
 import { readPptxOoxml } from "../../src/ooxml";
@@ -127,5 +128,160 @@ describe("organization template adapter", () => {
     for (const slideId of Object.keys(baseline.slideRects)) {
       expect(result.slideRects[slideId]).toEqual(baseline.slideRects[slideId]);
     }
+  }, 30000);
+
+  it("renders onto a 4:3 organization template, placing content inside its declared region and the true 10x7.5 canvas", async () => {
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-template-43-"));
+
+    // renderDeck can't itself produce a 4:3 scratch deck without an organization pack already
+    // attached (chicken/egg), so build a genuine 4:3 template.pptx directly with pptxgenjs —
+    // the same library the renderer itself uses for the scratch deck.
+    const templatePptx = new (pptxgen as any)();
+    templatePptx.layout = "LAYOUT_4x3";
+    templatePptx.addSlide();
+    const templatePath = path.join(runDir, "template-source.pptx");
+    await templatePptx.writeFile({ fileName: templatePath });
+
+    const organizationDir = path.join(runDir, "organization");
+    fs.mkdirSync(organizationDir, { recursive: true });
+    fs.copyFileSync(templatePath, path.join(organizationDir, "template.pptx"));
+    fs.writeFileSync(path.join(organizationDir, "brand.yaml"), [
+      "name: 4:3 Test",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+    ].join("\n"));
+    const region = { x: 0.5, y: 0.5, w: 9, h: 6.3 };
+    fs.writeFileSync(path.join(organizationDir, "template-map.json"), JSON.stringify({
+      version: 1,
+      aspectRatio: "4:3",
+      chromeOwnership: { background: "renderer", logo: "renderer", footer: "renderer", pageNumber: "renderer" },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: region, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+
+    const deck = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, aspectRatio: "4:3", organization: { kind: "directory", path: organizationDir } } });
+    const output = path.join(runDir, "filled.pptx");
+    const result = await renderDeck(deck, output, process.cwd());
+    const facts = await readPptxOoxml(output);
+    expect(facts.parseOk).toBe(true);
+    expect(facts.slideCount).toBe(deck.slides.length);
+
+    const epsilon = 0.05;
+    for (const rects of Object.values(result.slideRects)) {
+      rects.forEach((rect) => {
+        // Every rect (including renderer-owned chrome) must fit the true 10x7.5 canvas, not the
+        // 13.333-wide 16:9 canvas — this is what catches canvas width not reaching chrome/geometry QA.
+        expect(rect.x + rect.w).toBeLessThanOrEqual(10 + epsilon);
+        expect(rect.y + rect.h).toBeLessThanOrEqual(7.5 + epsilon);
+      });
+      const bodyRects = rects.filter((rect) => !rect.id.startsWith("footer-") && !rect.id.startsWith("page-"));
+      bodyRects.forEach((rect) => {
+        expect(rect.x).toBeGreaterThanOrEqual(region.x - epsilon);
+        expect(rect.y).toBeGreaterThanOrEqual(region.y - epsilon);
+        expect(rect.x + rect.w).toBeLessThanOrEqual(region.x + region.w + epsilon);
+        expect(rect.y + rect.h).toBeLessThanOrEqual(region.y + region.h + epsilon);
+      });
+    }
+  }, 30000);
+
+  it("renders a renderer-owned footer and page number on a 4:3 canvas without collision", async () => {
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-template-43-footer-"));
+
+    const templatePptx = new (pptxgen as any)();
+    templatePptx.layout = "LAYOUT_4x3";
+    templatePptx.addSlide();
+    const templatePath = path.join(runDir, "template-source.pptx");
+    await templatePptx.writeFile({ fileName: templatePath });
+
+    const organizationDir = path.join(runDir, "organization");
+    fs.mkdirSync(organizationDir, { recursive: true });
+    fs.copyFileSync(templatePath, path.join(organizationDir, "template.pptx"));
+    fs.writeFileSync(path.join(organizationDir, "brand.yaml"), [
+      "name: 4:3 Footer Test",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+      "footer:",
+      "  showPageNumber: true",
+      '  text: "CONFIDENTIAL — ACME Corp."',
+    ].join("\n"));
+    const region = { x: 0.5, y: 0.5, w: 9, h: 6.3 };
+    fs.writeFileSync(path.join(organizationDir, "template-map.json"), JSON.stringify({
+      version: 1,
+      aspectRatio: "4:3",
+      chromeOwnership: { background: "renderer", logo: "renderer", footer: "renderer", pageNumber: "renderer" },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: region, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+
+    const deck = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, aspectRatio: "4:3", organization: { kind: "directory", path: organizationDir } } });
+    const output = path.join(runDir, "filled.pptx");
+    // A footer/page-number collision throws inside renderSlide's geometry QA — reaching a
+    // successful render at all is part of what this test proves.
+    const result = await renderDeck(deck, output, process.cwd());
+
+    const epsilon = 0.01;
+    for (const rects of Object.values(result.slideRects)) {
+      const footer = rects.find((rect) => rect.id.startsWith("footer-"));
+      const pageNumber = rects.find((rect) => rect.id.startsWith("page-"));
+      expect(footer).toBeDefined();
+      expect(pageNumber).toBeDefined();
+      expect(footer!.x + footer!.w).toBeLessThanOrEqual(pageNumber!.x + epsilon);
+      expect(footer!.x + footer!.w).toBeLessThanOrEqual(10 + epsilon);
+      expect(pageNumber!.x + pageNumber!.w).toBeLessThanOrEqual(10 + epsilon);
+    }
+  }, 30000);
+
+  it("rejects a template.pptx whose physical size doesn't match its declared aspectRatio, even though the ratio itself is correct", async () => {
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-template-43-badsize-"));
+
+    // 8in x 6in is a genuine 4:3 ratio, but not the 10x7.5in canvas every 4:3 organization pack
+    // is otherwise assumed to use — content authored for 10x7.5 would clip on this canvas.
+    const templatePptx = new (pptxgen as any)();
+    templatePptx.defineLayout({ name: "CUSTOM_4X3", width: 8, height: 6 });
+    templatePptx.layout = "CUSTOM_4X3";
+    templatePptx.addSlide();
+    const templatePath = path.join(runDir, "template-source.pptx");
+    await templatePptx.writeFile({ fileName: templatePath });
+
+    const organizationDir = path.join(runDir, "organization");
+    fs.mkdirSync(organizationDir, { recursive: true });
+    fs.copyFileSync(templatePath, path.join(organizationDir, "template.pptx"));
+    fs.writeFileSync(path.join(organizationDir, "brand.yaml"), [
+      "name: Bad Size Test",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(organizationDir, "template-map.json"), JSON.stringify({
+      version: 1,
+      aspectRatio: "4:3",
+      chromeOwnership: { background: "renderer", logo: "renderer", footer: "renderer", pageNumber: "renderer" },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.5, y: 0.5, w: 6, h: 5 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+
+    const deck = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, aspectRatio: "4:3", organization: { kind: "directory", path: organizationDir } } });
+    const output = path.join(runDir, "filled.pptx");
+    await expect(renderDeck(deck, output, process.cwd())).rejects.toThrow(/ORGANIZATION_TEMPLATE_ASPECT_RATIO_UNSUPPORTED/);
   }, 30000);
 });

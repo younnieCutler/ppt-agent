@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import Automizer from "pptx-automizer";
 import JSZip from "jszip";
-import { bindingForLayout, type TemplateMap } from "./organization";
+import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
+
+const EMU_PER_INCH = 914400;
+const CANVAS_SIZE_TOLERANCE_IN = 0.05;
 import type { ResolvedPresentationStyle } from "./style";
 import type { SlideSpec } from "./schema";
 
@@ -25,7 +28,7 @@ export async function applyOrganizationTemplate(
   if (!fs.existsSync(organization.templatePath)) {
     throw new Error(`Organization template not found: ${organization.templatePath}`);
   }
-  await validateTemplateContract(organization.templatePath, organization.map, slides);
+  const { nameToIndex } = await validateTemplateContract(organization.templatePath, organization.map, slides);
 
   const resolvedOutput = path.resolve(outputPath);
   const outputDir = path.dirname(resolvedOutput);
@@ -45,7 +48,15 @@ export async function applyOrganizationTemplate(
     const presentation = automizer.loadRoot(rootName).load(generatedName, "semantic-render");
     slides.forEach((slideSpec, index) => {
       const binding = bindingForLayout(organization.map, slideSpec.layout);
-      const nativeLayout = /^\d+$/.test(binding.nativeLayout) ? Number(binding.nativeLayout) : binding.nativeLayout;
+      // pptx-automizer's by-name useSlideLayout() only resolves against layouts that were
+      // explicitly imported/tracked as "mapped content" from a secondary template — it does not
+      // look up a layout that's already native to the root document (loadRoot never registers its
+      // own layouts that way), so it silently fails to find any name and fabricates a new layout
+      // instead of binding to the real one. Resolving the name to its 1-based index ourselves and
+      // always calling useSlideLayout() with a number sidesteps that path entirely: a plain number
+      // is used verbatim against the root's own layouts, which is exactly what already works today
+      // for numeric-index bindings.
+      const nativeLayout = /^\d+$/.test(binding.nativeLayout) ? Number(binding.nativeLayout) : nameToIndex.get(binding.nativeLayout)!;
       presentation.addSlide("semantic-render", index + 1, (slide) => {
         slide.useSlideLayout(nativeLayout);
       });
@@ -57,7 +68,7 @@ export async function applyOrganizationTemplate(
   }
 }
 
-async function validateTemplateContract(templatePath: string, map: TemplateMap, slides: SlideSpec[]): Promise<void> {
+async function validateTemplateContract(templatePath: string, map: TemplateMap, slides: SlideSpec[]): Promise<{ nameToIndex: Map<string, number> }> {
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(fs.readFileSync(templatePath));
@@ -69,21 +80,33 @@ async function validateTemplateContract(templatePath: string, map: TemplateMap, 
   const sizeTag = presentationXml.match(/<p:sldSz\b[^>]*>/)?.[0];
   const cx = Number(sizeTag?.match(/\bcx="(\d+)"/)?.[1] ?? 0);
   const cy = Number(sizeTag?.match(/\bcy="(\d+)"/)?.[1] ?? 0);
-  if (!cx || !cy || Math.abs(cx / cy - 16 / 9) > 0.02) {
-    throw new Error("Organization template must be 16:9; template.pptx has an incompatible slide size.");
+  const expected = CANVAS_DIMENSIONS[map.aspectRatio];
+  const actualW = cx / EMU_PER_INCH;
+  const actualH = cy / EMU_PER_INCH;
+  // A ratio-only check (e.g. 4/3) would pass an 8x6in template just as readily as the true
+  // 10x7.5in canvas the renderer, geometry QA, and every contentRegion bound assume — an 8x6
+  // template would then have 10x7.5-authored content copied straight onto it, clipping the
+  // right/bottom edge. Physical size is the actual contract, not just the aspect ratio.
+  if (!cx || !cy || Math.abs(actualW - expected.w) > CANVAS_SIZE_TOLERANCE_IN || Math.abs(actualH - expected.h) > CANVAS_SIZE_TOLERANCE_IN) {
+    throw new Error(`ORGANIZATION_TEMPLATE_ASPECT_RATIO_UNSUPPORTED: Organization template must be exactly ${expected.w}in x ${expected.h}in (${map.aspectRatio}); template.pptx is ${actualW.toFixed(3)}in x ${actualH.toFixed(3)}in.`);
   }
 
   const layoutFiles = Object.keys(zip.files)
     .filter((name) => /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(name))
     .sort((left, right) => Number(left.match(/(\d+)\.xml$/)?.[1] ?? 0) - Number(right.match(/(\d+)\.xml$/)?.[1] ?? 0));
-  const layoutNames = new Map<string, number>();
+  // A real PowerPoint template can legitimately have two layouts sharing a display name (they
+  // come from different masters/themes). Tracking every index per name — not just the last one
+  // seen — lets ambiguous name bindings be rejected explicitly instead of silently resolving to
+  // whichever layout happened to be parsed last.
+  const layoutNamesByOccurrence = new Map<string, number[]>();
   const layoutXmlByIndex = new Map<number, string>();
   for (const [index, fileName] of layoutFiles.entries()) {
     const xml = await zip.file(fileName)?.async("string");
     if (xml) layoutXmlByIndex.set(index + 1, xml);
     const name = xml?.match(/<p:cSld\b[^>]*\bname="([^"]+)"/)?.[1] ?? xml?.match(/<p:sldLayout\b[^>]*\bname="([^"]+)"/)?.[1];
-    if (name) layoutNames.set(name, index + 1);
+    if (name) layoutNamesByOccurrence.set(name, [...(layoutNamesByOccurrence.get(name) ?? []), index + 1]);
   }
+  const nameToIndex = new Map<string, number>();
   const bindings = new Map<string, string>();
   slides.forEach((slide) => {
     const binding = bindingForLayout(map, slide.layout);
@@ -95,9 +118,15 @@ async function validateTemplateContract(templatePath: string, map: TemplateMap, 
       if (index < 1 || index > layoutFiles.length) throw new Error(`Template map layout '${nativeLayout}' for semantic layout '${layout}' does not exist in template.pptx.`);
       return;
     }
-    if (!layoutNames.has(nativeLayout)) throw new Error(`Template map layout '${nativeLayout}' for semantic layout '${layout}' does not exist in template.pptx.`);
+    const indexes = layoutNamesByOccurrence.get(nativeLayout);
+    if (!indexes) throw new Error(`Template map layout '${nativeLayout}' for semantic layout '${layout}' does not exist in template.pptx.`);
+    if (indexes.length > 1) {
+      throw new Error(`Template map layout '${nativeLayout}' for semantic layout '${layout}' is ambiguous: ${indexes.length} layouts in template.pptx share this name (indexes ${indexes.join(", ")}). Use the 1-based layout index instead.`);
+    }
+    nameToIndex.set(nativeLayout, indexes[0]);
   });
 
+  const layoutNames = new Map(nameToIndex);
   const templateXml = (await Promise.all(Object.keys(zip.files)
     .filter((name) => /^ppt\/(?:slides|slideLayouts|slideMasters)\/.*\.xml$/.test(name))
     .map(async (name) => (await zip.file(name)?.async("string")) ?? ""))).join("\n");
@@ -111,4 +140,6 @@ async function validateTemplateContract(templatePath: string, map: TemplateMap, 
       });
     if (!found) throw new Error(`Template map requires element '${required.name}', but it was not found in template.pptx.`);
   });
+
+  return { nameToIndex };
 }

@@ -11,7 +11,7 @@ export function validateGeometry(rects: Rect[], slideW = 13.333, slideH = 7.5): 
   const issues: GeometryIssue[] = [];
   for (const rect of rects) {
     if (rect.x < -EPSILON || rect.y < -EPSILON || rect.w <= 0 || rect.h <= 0 || rect.x + rect.w > slideW + EPSILON || rect.y + rect.h > slideH + EPSILON) {
-      issues.push({ code: "OFF_CANVAS", ids: [rect.id], message: `${rect.id} is outside the 16:9 slide canvas.` });
+      issues.push({ code: "OFF_CANVAS", ids: [rect.id], message: `${rect.id} is outside the ${slideW}x${slideH}in slide canvas.` });
     }
   }
   for (let i = 0; i < rects.length; i += 1) {
