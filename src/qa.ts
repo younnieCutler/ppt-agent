@@ -146,6 +146,56 @@ function addTextBudgetFindings(slide: SlideSpec, findings: QaFinding[]): void {
     case "evidence":
       addTextBudgetFinding(slide, findings, "Evidence caption", slide.content.caption, 90);
       slide.content.bullets.forEach((value, index) => addTextBudgetFinding(slide, findings, `Evidence item ${index + 1}`, value, 72));
+      return;
+    case "chart":
+      addTextBudgetFinding(slide, findings, "Chart caption", slide.content.caption, 90);
+  }
+}
+
+// Deterministic classification of what each composition actually shows, used to check that
+// designDirection is reflected in the compositions the outline actually picked — not just in
+// renderer decoration. DeckSpec's layout+composition are authored upstream (interview/outline);
+// this only reviews that choice at the QA gate, it never rewrites it.
+const compositionProfile: Record<string, { visualArea: "low" | "medium" | "high"; textDensity: "low" | "medium" | "high" }> = {
+  cover: { visualArea: "low", textDensity: "low" },
+  hero_evidence: { visualArea: "medium", textDensity: "medium" },
+  claim_actions: { visualArea: "medium", textDensity: "medium" },
+  two_column: { visualArea: "low", textDensity: "high" },
+  diagnosis_matrix: { visualArea: "low", textDensity: "high" },
+  ownership_split: { visualArea: "high", textDensity: "medium" },
+  sequence: { visualArea: "high", textDensity: "low" },
+  stage_gate: { visualArea: "high", textDensity: "low" },
+  pipeline_lanes: { visualArea: "high", textDensity: "low" },
+  architecture_zones: { visualArea: "high", textDensity: "low" },
+  kpi_row: { visualArea: "medium", textDensity: "low" },
+  ranked_bars: { visualArea: "medium", textDensity: "low" },
+  metric_story: { visualArea: "medium", textDensity: "medium" },
+  gauge_row: { visualArea: "high", textDensity: "low" },
+  sparkline_row: { visualArea: "high", textDensity: "low" },
+  linear_roadmap: { visualArea: "medium", textDensity: "low" },
+  now_next_later: { visualArea: "medium", textDensity: "medium" },
+  evidence_list: { visualArea: "low", textDensity: "high" },
+  evidence_panel: { visualArea: "medium", textDensity: "medium" },
+  native_chart: { visualArea: "high", textDensity: "low" },
+};
+
+function addCompositionDirectionFitFindings(deck: DeckSpec, findings: QaFinding[]): void {
+  const bodySlides = deck.slides.filter((slide) => slide.layout !== "title");
+  if (bodySlides.length < 8) return;
+  const direction = deck.contract.designDirection;
+  if (direction !== "visual" && direction !== "dense") return;
+
+  const profiles = bodySlides.map((slide) => compositionProfile[slide.composition]).filter((profile): profile is { visualArea: "low" | "medium" | "high"; textDensity: "low" | "medium" | "high" } => Boolean(profile));
+  if (direction === "visual") {
+    const share = profiles.filter((profile) => profile.visualArea === "high").length / bodySlides.length;
+    if (share < 0.4) {
+      findings.push({ severity: "risk", code: "LOW_VISUAL_COMPOSITION_SHARE", message: `visual deck uses high-visual-area compositions on ${Math.round(share * 100)}% of body slides; expected at least 40%.` });
+    }
+  } else {
+    const share = profiles.filter((profile) => profile.textDensity === "high").length / bodySlides.length;
+    if (share < 0.3) {
+      findings.push({ severity: "risk", code: "LOW_DENSE_COMPOSITION_SHARE", message: `dense deck uses high-text-density compositions on ${Math.round(share * 100)}% of body slides; expected at least 30%.` });
+    }
   }
 }
 
@@ -251,6 +301,25 @@ function loadContentModel(contentModel: string | ContentModel | undefined): Cont
   return contentModelSchema.parse(JSON.parse(fs.readFileSync(contentModel, "utf8")));
 }
 
+function loadReferenceSelectionIds(referenceSelectionPath: string | undefined): Set<string> | undefined {
+  if (!referenceSelectionPath || !fs.existsSync(referenceSelectionPath)) return undefined;
+  const raw = JSON.parse(fs.readFileSync(referenceSelectionPath, "utf8")) as Array<{ id: string }>;
+  return new Set(raw.map((entry) => entry.id));
+}
+
+function addReferenceSelectionFindings(deck: DeckSpec, findings: QaFinding[], referenceSelectionPath: string | undefined): void {
+  const referenceIds = deck.contract.referenceIds;
+  if (!referenceIds || referenceIds.length === 0) return;
+  const known = loadReferenceSelectionIds(referenceSelectionPath);
+  if (!known) {
+    findings.push({ severity: "hard", code: "REFERENCE_SELECTION_NOT_FOUND", message: "contract.referenceIds is set but reference-selection.json was not found; run `reference --run-dir` before validating." });
+    return;
+  }
+  referenceIds.forEach((id) => {
+    if (!known.has(id)) findings.push({ severity: "hard", code: "REFERENCE_SELECTION_NOT_FOUND", message: `referenceIds entry '${id}' is absent from reference-selection.json.` });
+  });
+}
+
 function sourceTextForRef(deck: DeckSpec, sourceId: string, projectDir: string): string | undefined {
   const source = deck.contract.sources.find((candidate) => candidate.id === sourceId);
   if (!source) return undefined;
@@ -283,6 +352,32 @@ function resolveExcerptTexts(slide: SlideSpec, contentModel: ContentModel | unde
   return slide.sourceRefs.map((ref) => resolveExcerpt(contentModel, ref)?.text).filter((text): text is string => Boolean(text));
 }
 
+function bareNumericValue(token: string): string {
+  return (token.match(/^[-+]?\d+(?:[.,]\d+)?/)?.[0] ?? token).replace(",", ".");
+}
+
+function addChartDataFindings(slide: SlideSpec, findings: QaFinding[], model: ContentModel | undefined): void {
+  if (slide.layout !== "chart") return;
+  const dataset = model?.datasets?.find((candidate) => candidate.id === slide.content.dataRef);
+  if (!dataset) {
+    findings.push({ severity: "hard", code: "CHART_DATA_NOT_IN_CONTENT_MODEL", slideId: slide.id, message: `Chart dataRef '${slide.content.dataRef}' is absent from content-model.json datasets.` });
+    return;
+  }
+  const resolved = model ? resolveExcerpt(model, { sourceId: dataset.sourceId, excerptId: dataset.excerptId }) : undefined;
+  if (!resolved) {
+    findings.push({ severity: "hard", code: "CHART_DATA_NOT_IN_CONTENT_MODEL", slideId: slide.id, message: `Dataset '${dataset.id}' references excerpt ${dataset.sourceId}:${dataset.excerptId}, which is absent from content-model.json.` });
+    return;
+  }
+  const bareValues = new Set(numericTokens(resolved.text).map(bareNumericValue));
+  dataset.series.forEach((series) => {
+    series.values.forEach((value) => {
+      if (!bareValues.has(String(value))) {
+        findings.push({ severity: "hard", code: "CHART_DATA_GROUNDING", slideId: slide.id, message: `Chart dataset '${dataset.id}' series '${series.name}' contains value ${value}, absent from cited excerpt ${dataset.sourceId}:${dataset.excerptId}.` });
+      }
+    });
+  });
+}
+
 export function verifySourceRefs(input: unknown, projectDir = process.cwd(), contentModel?: string | ContentModel): QaFinding[] {
   const deck = deckSchema.parse(input);
   const model = loadContentModel(contentModel);
@@ -294,13 +389,14 @@ export function verifySourceRefs(input: unknown, projectDir = process.cwd(), con
   return findings;
 }
 
-export function structuralQa(input: unknown, projectDir = process.cwd(), contentModel?: string | ContentModel): QaReport {
+export function structuralQa(input: unknown, projectDir = process.cwd(), contentModel?: string | ContentModel, referenceSelectionPath?: string): QaReport {
   const deck = deckSchema.parse(input);
   const model = loadContentModel(contentModel);
   const findings: QaFinding[] = [];
   if (!model) {
     findings.push({ severity: "hard", code: "CONTENT_MODEL_REQUIRED", message: "content-model.json is required so every sourceRef.excerptId can be verified." });
   }
+  addReferenceSelectionFindings(deck, findings, referenceSelectionPath);
   deck.contract.sources.forEach((source) => {
     if (source.kind === "file" && !fs.existsSync(path.resolve(projectDir, source.path))) {
       findings.push({ severity: "hard", code: "SOURCE_NOT_FOUND", message: `Source file does not exist: ${source.path}` });
@@ -337,6 +433,7 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
     });
   }
   addCompositionFindings(deck.slides, findings);
+  addCompositionDirectionFitFindings(deck, findings);
   addPurposeDensityFindings(deck, findings);
   addNarrativeFindings(deck, findings);
 
@@ -356,6 +453,7 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
         if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) findings.push({ severity: "hard", code: "UNKNOWN_PIPELINE_NODE", slideId: slide.id, message: `Pipeline edge references an unknown node: ${edge.from} -> ${edge.to}.` });
       });
     }
+    addChartDataFindings(slide, findings, model);
   });
 
   return { ...rollUp(findings), reference: "not_applicable", attempts: 0, findings };

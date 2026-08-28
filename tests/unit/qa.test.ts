@@ -166,6 +166,48 @@ describe("structural QA", () => {
     expect(report.findings.some((finding) => finding.code === "EXCESSIVE_INFORMATION_DENSITY")).toBe(true);
   });
 
+  it("hard-fails when contract.referenceIds is set but no reference-selection.json is found", () => {
+    const referenced = { ...fixture, contract: { ...fixture.contract, designDirection: "reference", referenceIds: ["layout:presentation_core"] } };
+    const report = structuralQa(referenced, process.cwd(), contentModel, path.resolve(__dirname, "../fixtures/does-not-exist-reference-selection.json"));
+    expect(report.status).toBe("fail");
+    expect(report.findings.some((finding) => finding.code === "REFERENCE_SELECTION_NOT_FOUND")).toBe(true);
+  });
+
+  it("hard-fails when a referenceIds entry is absent from reference-selection.json", () => {
+    const referenced = { ...fixture, contract: { ...fixture.contract, designDirection: "reference", referenceIds: ["style:unknown-style"] } };
+    const report = structuralQa(referenced, process.cwd(), contentModel, path.resolve(__dirname, "../fixtures/reference-selection.json"));
+    expect(report.status).toBe("fail");
+    expect(report.findings.some((finding) => finding.code === "REFERENCE_SELECTION_NOT_FOUND")).toBe(true);
+  });
+
+  it("passes when every referenceIds entry resolves against reference-selection.json", () => {
+    const referenced = { ...fixture, contract: { ...fixture.contract, designDirection: "reference", referenceIds: ["layout:presentation_core"] } };
+    const report = structuralQa(referenced, process.cwd(), contentModel, path.resolve(__dirname, "../fixtures/reference-selection.json"));
+    expect(report.findings.some((finding) => finding.code === "REFERENCE_SELECTION_NOT_FOUND")).toBe(false);
+  });
+
+  it("flags a visual-direction deck that under-uses high-visual-area compositions", () => {
+    const twoColumn = { ...fixture.slides[1], content: { ...fixture.slides[1].content } };
+    const visualDeck = {
+      ...fixture,
+      contract: { ...fixture.contract, purpose: "sales", designDirection: "visual", slideCount: 9 },
+      slides: [fixture.slides[0], ...Array.from({ length: 8 }, (_, index) => ({ ...twoColumn, id: `S${String(index + 2).padStart(2, "0")}` }))],
+    };
+    const report = structuralQa(visualDeck, process.cwd(), contentModel);
+    expect(report.findings.some((finding) => finding.code === "LOW_VISUAL_COMPOSITION_SHARE")).toBe(true);
+  });
+
+  it("flags a dense-direction deck that under-uses high-text-density compositions", () => {
+    const pipeline = { ...fixture.slides[2], content: { ...fixture.slides[2].content } };
+    const denseDeck = {
+      ...fixture,
+      contract: { ...fixture.contract, purpose: "technical", designDirection: "dense", slideCount: 9 },
+      slides: [fixture.slides[0], ...Array.from({ length: 8 }, (_, index) => ({ ...pipeline, id: `S${String(index + 2).padStart(2, "0")}` }))],
+    };
+    const report = structuralQa(denseDeck, process.cwd(), contentModel);
+    expect(report.findings.some((finding) => finding.code === "LOW_DENSE_COMPOSITION_SHARE")).toBe(true);
+  });
+
   it("requires review when a slide breaks the approved storyline order", () => {
     const drifted = {
       ...fixture,

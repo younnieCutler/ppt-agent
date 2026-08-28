@@ -1,0 +1,116 @@
+{
+  "contract": {
+    "sources": [
+      {
+        "kind": "prompt",
+        "id": "prompt",
+        "text": "A quantitative deck shows gauges 72 45 90 and a sparkline trend 10 12 9 14."
+      }
+    ],
+    "purpose": "technical",
+    "audience": "engineering leaders",
+    "language": "en",
+    "slideCount": 3,
+    "brand": {
+      "kind": "default"
+    },
+    "fonts": {
+      "heading": "Arial",
+      "body": "Arial"
+    },
+    "fontDelivery": "managed_device",
+    "aspectRatio": "16:9",
+    "storyline": [
+      "opening",
+      "problem",
+      "design"
+    ]
+  },
+  "title": "Native gauge and sparkline primitives",
+  "theme": {
+    "name": "default-corporate",
+    "palette": {
+      "background": "F7F9FC",
+      "surface": "FFFFFF",
+      "text": "162033",
+      "primary": "162033",
+      "accent": "3A70FF",
+      "muted": "61708A",
+      "border": "DCE3EF"
+    },
+    "fonts": {
+      "heading": "Arial",
+      "body": "Arial",
+      "locked": false
+    },
+    "footer": {
+      "showPageNumber": true,
+      "text": ""
+    }
+  },
+  "slides": [
+    {
+      "id": "S01",
+      "role": "opener",
+      "headline": "Native primitives keep small visuals editable",
+      "composition": "cover",
+      "layout": "title",
+      "content": {
+        "kicker": "Visual primitives",
+        "subtitle": "Gauge and sparkline built from native shapes"
+      },
+      "sourceRefs": [
+        { "sourceId": "prompt", "excerptId": "R001" }
+      ],
+      "storyBeat": "opening",
+      "claims": [
+        { "text": "Native primitives keep small visuals editable", "kind": "interpretation", "status": "verified" }
+      ]
+    },
+    {
+      "id": "S02",
+      "role": "quantitative",
+      "headline": "Gauges show each rate against its ceiling",
+      "composition": "gauge_row",
+      "layout": "quantitative",
+      "content": {
+        "kind": "kpi",
+        "metrics": [
+          { "label": "Automation", "value": 72, "unit": "%", "period": "fixture period" },
+          { "label": "Coverage", "value": 45, "unit": "%", "period": "fixture period" },
+          { "label": "Adoption", "value": 90, "unit": "%", "period": "fixture period" }
+        ]
+      },
+      "sourceRefs": [
+        { "sourceId": "prompt", "excerptId": "R001" }
+      ],
+      "storyBeat": "problem",
+      "claims": [
+        { "text": "Gauges show each rate against its ceiling", "kind": "interpretation", "status": "verified" }
+      ]
+    },
+    {
+      "id": "S03",
+      "role": "quantitative",
+      "headline": "A sparkline traces the trend across periods",
+      "composition": "sparkline_row",
+      "layout": "quantitative",
+      "content": {
+        "kind": "line",
+        "metrics": [
+          { "label": "Q1", "value": 10, "unit": "pt", "period": "fixture period" },
+          { "label": "Q2", "value": 12, "unit": "pt", "period": "fixture period" },
+          { "label": "Q3", "value": 9, "unit": "pt", "period": "fixture period" },
+          { "label": "Q4", "value": 14, "unit": "pt", "period": "fixture period" }
+        ]
+      },
+      "sourceRefs": [
+        { "sourceId": "prompt", "excerptId": "R001" }
+      ],
+      "storyBeat": "design",
+      "claims": [
+        { "text": "A sparkline traces the trend across periods", "kind": "interpretation", "status": "verified" }
+      ]
+    }
+  ]
+}

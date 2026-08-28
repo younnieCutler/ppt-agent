@@ -12,12 +12,31 @@ export const contentModelSchema = z
       sourceId: z.string().min(1),
       excerpts: z.array(z.object({ id: z.string().min(1), locator: z.string().min(1), text: z.string().min(1) })).min(1),
     })).min(1),
+    datasets: z.array(z.object({
+      id: z.string().min(1),
+      sourceId: z.string().min(1),
+      excerptId: z.string().min(1),
+      categories: z.array(z.string().min(1)).min(1).max(12),
+      series: z.array(z.object({ name: z.string().min(1), values: z.array(z.number()) })).min(1).max(4),
+      unit: z.string().optional(),
+    })).optional(),
   })
   .superRefine((model, ctx) => {
     const ids = model.sources.flatMap((source) => source.excerpts.map((excerpt) => excerpt.id));
     if (new Set(ids).size !== ids.length) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["sources"], message: "content-model excerpt ids must be unique across the whole model." });
     }
+    const datasetIds = (model.datasets ?? []).map((dataset) => dataset.id);
+    if (new Set(datasetIds).size !== datasetIds.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["datasets"], message: "content-model dataset ids must be unique." });
+    }
+    (model.datasets ?? []).forEach((dataset, index) => {
+      dataset.series.forEach((series, seriesIndex) => {
+        if (series.values.length !== dataset.categories.length) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["datasets", index, "series", seriesIndex, "values"], message: `Dataset '${dataset.id}' series '${series.name}' must have exactly ${dataset.categories.length} values (one per category).` });
+        }
+      });
+    });
   });
 
 export const claimSchema = z
@@ -70,6 +89,7 @@ export const contractSchema = z.object({
     .max(3)
     .optional(),
   designDirection: z.enum(["auto", "dense", "balanced", "visual", "minimal", "reference"]).default("auto"),
+  referenceIds: z.array(z.string().min(1)).min(1).max(3).optional(),
   storyline: z.array(storyBeatSchema).min(3).max(9),
   language: z.string().regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/, "language must be a BCP-47-like tag"),
   slideCount: z.number().int().min(3).max(30),
@@ -81,6 +101,10 @@ export const contractSchema = z.object({
   fontDelivery: z.enum(["managed_device", "portable"]).default("managed_device"),
   editability: z.literal("native_editable").default("native_editable"),
   aspectRatio: z.enum(["16:9", "4:3"]),
+}).superRefine((contract, ctx) => {
+  if (contract.designDirection === "reference" && (!contract.referenceIds || contract.referenceIds.length === 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["referenceIds"], message: "designDirection 'reference' requires at least one referenceIds entry." });
+  }
 });
 
 export const paletteSchema = z.object({
@@ -253,6 +277,15 @@ const evidenceSlideSchema = baseSlideSchema.extend({
   content: z.object({ assetPath: z.string().optional(), caption: z.string().optional(), bullets: z.array(z.string()).max(5).default([]) }),
 });
 
+const chartSlideSchema = baseSlideSchema.extend({
+  layout: z.literal("chart"),
+  content: z.object({
+    chartType: z.enum(["bar", "horizontal_bar", "stacked_bar", "line", "pie", "donut"]),
+    dataRef: z.string().min(1),
+    caption: z.string().optional(),
+  }),
+});
+
 export const slideSchema = z.discriminatedUnion("layout", [
   titleSlideSchema,
   statementSlideSchema,
@@ -263,6 +296,7 @@ export const slideSchema = z.discriminatedUnion("layout", [
   quantitativeSlideSchema,
   timelineSlideSchema,
   evidenceSlideSchema,
+  chartSlideSchema,
 ]);
 
 export const themeSchema = z.object({
@@ -328,15 +362,30 @@ export const deckSchema = z
         process: ["sequence", "stage_gate"],
         pipeline: ["pipeline_lanes"],
         architecture: ["architecture_zones"],
-        quantitative: ["kpi_row", "ranked_bars", "metric_story"],
+        quantitative: ["kpi_row", "ranked_bars", "metric_story", "gauge_row", "sparkline_row"],
         timeline: ["linear_roadmap", "now_next_later"],
         evidence: ["evidence_list", "evidence_panel"],
+        chart: ["native_chart"],
       };
       if (!allowedCompositions[slide.layout].includes(slide.composition)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["slides", slideIndex, "composition"],
           message: `Composition '${slide.composition}' is not supported by layout '${slide.layout}'.`,
+        });
+      }
+      if (slide.layout === "quantitative" && slide.composition === "gauge_row" && slide.content.metrics.some((metric) => metric.unit !== "%")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "content", "metrics"],
+          message: "gauge_row always renders each metric against a 0-100 scale; every metric.unit must be '%'.",
+        });
+      }
+      if (slide.layout === "quantitative" && slide.composition === "sparkline_row" && slide.content.metrics.length < 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "content", "metrics"],
+          message: "sparkline_row requires at least 2 metrics to draw a connecting line.",
         });
       }
       if (!deck.contract.storyline.includes(slide.storyBeat)) {
@@ -369,6 +418,7 @@ export const layoutNames = [
   "quantitative",
   "timeline",
   "evidence",
+  "chart",
 ] as const;
 
 // Derived editability contract. `executionLock` used to be an LLM-authored field that
@@ -390,6 +440,7 @@ const primaryVisualByLayout: Record<SlideSpec["layout"], PrimaryVisual> = {
   quantitative: "chart",
   timeline: "timeline",
   evidence: "evidence_panel",
+  chart: "chart",
 };
 
 export function primaryVisualFor(layout: SlideSpec["layout"]): PrimaryVisual {
@@ -402,8 +453,10 @@ const requiredNativeObjectsByComposition: Record<string, NativeObject[]> = {
   sequence: ["text", "shapes", "connectors"], stage_gate: ["text", "shapes"],
   pipeline_lanes: ["text", "shapes", "connectors"], architecture_zones: ["text", "shapes", "connectors"],
   kpi_row: ["text", "shapes"], ranked_bars: ["text", "shapes"], metric_story: ["text", "shapes"],
+  gauge_row: ["text", "shapes"], sparkline_row: ["text", "connectors"],
   linear_roadmap: ["text", "shapes", "connectors"], now_next_later: ["text", "shapes"],
   evidence_list: ["text"], evidence_panel: ["text"],
+  native_chart: ["text", "chart"],
 };
 
 export function requiredNativeObjectsFor(slide: SlideSpec): NativeObject[] {

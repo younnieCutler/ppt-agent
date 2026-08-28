@@ -4,7 +4,8 @@ import pptxgen from "pptxgenjs";
 import { resolveTheme } from "./brand";
 import { validateGeometry, type Rect } from "./geometry";
 import { assertFontsInstalled } from "./fonts";
-import { deckSchema, type DeckSpec, type SlideSpec, type ThemeTokens } from "./schema";
+import { deckSchema, type ContentModel, type DeckSpec, type SlideSpec, type ThemeTokens } from "./schema";
+import { drawGauge, drawSparkline } from "./visuals";
 
 const SLIDE_W = 13.333;
 const SLIDE_H = 7.5;
@@ -14,12 +15,37 @@ const CONTENT_H = 5.2;
 
 type Pptx = any;
 type Slide = any;
+type Decoration = "filled" | "flat" | "outline";
+type DirectionStyle = { fontScale: number; decoration: Decoration; visualScale: number };
 
-function hex(value: string): string {
+// designDirection styling. "auto" and "balanced" are identical on purpose: a deck that never
+// touches designDirection sees byte-for-byte the same output as before this table existed.
+// ponytail: "reference" always falls back to "balanced" for now — no ppt-master reference pack
+// ships PRD-shaped density/tone traits yet (see src/reference.ts). Wire a sidecar-driven style
+// once a real `ppt-agent-traits.json` with that shape exists.
+const directionStyleByDirection: Record<DeckSpec["contract"]["designDirection"], DirectionStyle> = {
+  auto: { fontScale: 1, decoration: "filled", visualScale: 1 },
+  balanced: { fontScale: 1, decoration: "filled", visualScale: 1 },
+  dense: { fontScale: 0.92, decoration: "flat", visualScale: 0.85 },
+  visual: { fontScale: 1.08, decoration: "filled", visualScale: 1.15 },
+  minimal: { fontScale: 1, decoration: "outline", visualScale: 1 },
+  reference: { fontScale: 1, decoration: "filled", visualScale: 1 },
+};
+
+let activeStyle: DirectionStyle = directionStyleByDirection.auto;
+
+// Only applied to plain list/card row backgrounds (action rows, matrix rows, comparison panels,
+// evidence panels) — not to shapes whose fill carries meaning (an "active" stage, an ownership
+// side, a pipeline lane band), where losing the fill would delete signal rather than decoration.
+function panelFill(tone: string): Record<string, unknown> | undefined {
+  return activeStyle.decoration === "filled" ? { color: hex(tone) } : undefined;
+}
+
+export function hex(value: string): string {
   return value.replace(/^#/, "").toUpperCase();
 }
 
-function addText(slide: Slide, text: string, opts: Record<string, unknown>, rects: Rect[], id: string, fontFace: string, color: string): void {
+export function addText(slide: Slide, text: string, opts: Record<string, unknown>, rects: Rect[], id: string, fontFace: string, color: string): void {
   const x = Number(opts.x);
   const y = Number(opts.y);
   const w = Number(opts.w);
@@ -32,7 +58,7 @@ function addText(slide: Slide, text: string, opts: Record<string, unknown>, rect
     h,
     fontFace,
     color: hex(String(opts.color ?? color)),
-    fontSize: Number(opts.fontSize ?? 16),
+    fontSize: Number(opts.fontSize ?? 16) * activeStyle.fontScale,
     bold: Boolean(opts.bold),
     italic: Boolean(opts.italic),
     margin: Number(opts.margin ?? 0),
@@ -44,7 +70,7 @@ function addText(slide: Slide, text: string, opts: Record<string, unknown>, rect
   });
 }
 
-function addShape(slide: Slide, pptx: Pptx, shapeType: unknown, opts: Record<string, unknown>, rects: Rect[], id: string): void {
+export function addShape(slide: Slide, pptx: Pptx, shapeType: unknown, opts: Record<string, unknown>, rects: Rect[], id: string): void {
   const x = Number(opts.x);
   const y = Number(opts.y);
   const w = Number(opts.w);
@@ -54,7 +80,7 @@ function addShape(slide: Slide, pptx: Pptx, shapeType: unknown, opts: Record<str
   slide.addShape(shapeType, shapeOpts);
 }
 
-function addLine(slide: Slide, pptx: Pptx, x: number, y: number, w: number, h: number, color: string, rects: Rect[], id: string, arrow = false): void {
+export function addLine(slide: Slide, pptx: Pptx, x: number, y: number, w: number, h: number, color: string, rects: Rect[], id: string, arrow = false): void {
   const endX = x + w;
   const endY = y + h;
   const normalizedX = Math.min(x, endX);
@@ -113,7 +139,7 @@ function renderStatement(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract
     addText(slide, "ACTIONS / EVIDENCE", { x: 5.5, y: CONTENT_Y + 0.28, w: 5.8, h: 0.28, fontSize: 10, bold: true }, rects, `${spec.id}-actions-label`, deck.theme.fonts.body, deck.theme.palette.accent);
     spec.content.proofs.forEach((proof, index) => {
       const y = CONTENT_Y + 0.78 + index * 0.78;
-      addShape(slide, pptx, pptx.ShapeType.rect, { x: 5.5, y, w: 6.1, h: 0.54, fill: { color: hex(index === 0 ? deck.theme.palette.surface : deck.theme.palette.background) }, line: { color: hex(deck.theme.palette.border), width: 0.5 }, allowOverlap: true }, rects, `${spec.id}-action-row-${index}`);
+      addShape(slide, pptx, pptx.ShapeType.rect, { x: 5.5, y, w: 6.1, h: 0.54, fill: panelFill(index === 0 ? deck.theme.palette.surface : deck.theme.palette.background), line: { color: hex(deck.theme.palette.border), width: 0.5 }, allowOverlap: true }, rects, `${spec.id}-action-row-${index}`);
       addShape(slide, pptx, pptx.ShapeType.rect, { x: 5.5, y, w: 0.12, h: 0.54, fill: { color: hex(index === 0 ? deck.theme.palette.accent : deck.theme.palette.border) }, line: { color: hex(index === 0 ? deck.theme.palette.accent : deck.theme.palette.border) }, allowOverlap: true }, rects, `${spec.id}-action-accent-${index}`);
       addText(slide, proof, { x: 5.78, y: y + 0.12, w: 5.5, h: 0.25, fontSize: 14, bold: index === 0, valign: "mid" }, rects, `${spec.id}-proof-${index}`, deck.theme.fonts.body, deck.theme.palette.text);
     });
@@ -138,7 +164,7 @@ function renderComparison(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extrac
     const rows = Math.max(right.items.length, 1);
     right.items.forEach((item, index) => {
       const y = CONTENT_Y + 0.78 + index * (3.1 / rows);
-      addShape(slide, pptx, pptx.ShapeType.rect, { x: 4.75, y, w: 6.65, h: 0.48, fill: { color: hex(index === 0 ? deck.theme.palette.surface : deck.theme.palette.background) }, line: { color: hex(deck.theme.palette.border), width: 0.5 }, allowOverlap: true }, rects, `${spec.id}-matrix-row-${index}`);
+      addShape(slide, pptx, pptx.ShapeType.rect, { x: 4.75, y, w: 6.65, h: 0.48, fill: panelFill(index === 0 ? deck.theme.palette.surface : deck.theme.palette.background), line: { color: hex(deck.theme.palette.border), width: 0.5 }, allowOverlap: true }, rects, `${spec.id}-matrix-row-${index}`);
       addText(slide, item, { x: 5.0, y: y + 0.11, w: 6.05, h: 0.24, fontSize: 13, bold: index === 0 }, rects, `${spec.id}-right-item-${index}`, deck.theme.fonts.body, deck.theme.palette.text);
     });
     if (spec.content.delta) addText(slide, spec.content.delta, { x: 4.75, y: 5.75, w: 6.65, h: 0.38, fontSize: 15, bold: true, align: "right" }, rects, `${spec.id}-delta`, deck.theme.fonts.body, deck.theme.palette.accent);
@@ -162,7 +188,7 @@ function renderComparison(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extrac
   const h = 4.55;
   for (const [index, side] of [spec.content.left, spec.content.right].entries()) {
     const panelX = x + index * (panelW + gap);
-    addShape(slide, pptx, pptx.ShapeType.rect, { x: panelX, y, w: panelW, h, fill: { color: hex(deck.theme.palette.surface) }, line: { color: hex(deck.theme.palette.border), width: 1 }, allowOverlap: true }, rects, `${spec.id}-panel-${index}`);
+    addShape(slide, pptx, pptx.ShapeType.rect, { x: panelX, y, w: panelW, h, fill: panelFill(deck.theme.palette.surface), line: { color: hex(deck.theme.palette.border), width: 1 }, allowOverlap: true }, rects, `${spec.id}-panel-${index}`);
     addText(slide, side.label, { x: panelX + 0.28, y: y + 0.25, w: panelW - 0.56, h: 0.35, fontSize: 17, bold: true }, rects, `${spec.id}-label-${index}`, deck.theme.fonts.heading, deck.theme.palette.primary);
     side.items.forEach((item, itemIndex) => addText(slide, `• ${item}`, { x: panelX + 0.28, y: y + 0.9 + itemIndex * 0.48, w: panelW - 0.56, h: 0.32, fontSize: 14, valign: "top" }, rects, `${spec.id}-item-${index}-${itemIndex}`, deck.theme.fonts.body, deck.theme.palette.text));
   }
@@ -317,7 +343,7 @@ function renderQuantitative(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extr
     const supportHeight = Math.min(0.58, Math.max(0.4, supportPitch - 0.08));
     supporting.forEach((metric, index) => {
       const y = CONTENT_Y + 0.56 + index * supportPitch;
-      addShape(slide, pptx, pptx.ShapeType.rect, { x: 5.2, y, w: 6.15, h: supportHeight, fill: { color: hex(index === 0 ? deck.theme.palette.surface : deck.theme.palette.background) }, line: { color: hex(deck.theme.palette.border), width: 0.5 }, allowOverlap: true }, rects, `${spec.id}-support-row-${index}`);
+      addShape(slide, pptx, pptx.ShapeType.rect, { x: 5.2, y, w: 6.15, h: supportHeight, fill: panelFill(index === 0 ? deck.theme.palette.surface : deck.theme.palette.background), line: { color: hex(deck.theme.palette.border), width: 0.5 }, allowOverlap: true }, rects, `${spec.id}-support-row-${index}`);
       addText(slide, metric.label, { x: 5.45, y: y + (supportHeight - 0.24) / 2, w: 3.95, h: 0.24, fontSize: 13, bold: index === 0 }, rects, `${spec.id}-support-label-${index}`, deck.theme.fonts.body, deck.theme.palette.text);
       addText(slide, `${metric.value}${metric.unit ?? ""}`, { x: 9.6, y: y + (supportHeight - 0.24) / 2, w: 1.4, h: 0.24, fontSize: 13, bold: true, align: "right" }, rects, `${spec.id}-support-value-${index}`, deck.theme.fonts.body, deck.theme.palette.accent);
     });
@@ -332,6 +358,36 @@ function renderQuantitative(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extr
       addText(slide, `${metric.value}${metric.unit ?? ""}`, { x, y: CONTENT_Y + 1.18, w, h: 0.9, fontSize: 29, bold: true }, rects, `${spec.id}-value-${index}`, deck.theme.fonts.heading, deck.theme.palette.primary);
       if (metric.note) addText(slide, metric.note, { x, y: CONTENT_Y + 2.28, w, h: 0.52, fontSize: 11, valign: "top" }, rects, `${spec.id}-note-${index}`, deck.theme.fonts.body, deck.theme.palette.muted);
       if (index < metrics.length - 1) addLine(slide, pptx, x + w + gap / 2, CONTENT_Y + 0.42, 0, 2.3, deck.theme.palette.border, rects, `${spec.id}-separator-${index}`);
+    });
+    return;
+  }
+  if (spec.composition === "gauge_row") {
+    const gap = 0.4;
+    const cellW = (11.85 - gap * (metrics.length - 1)) / metrics.length;
+    const size = Math.min(cellW, 2.6 * activeStyle.visualScale, CONTENT_H - 0.6);
+    metrics.forEach((metric, index) => {
+      const cellX = MARGIN_X + index * (cellW + gap);
+      const gaugeX = cellX + (cellW - size) / 2;
+      drawGauge(
+        slide, pptx, rects, `${spec.id}-gauge-${index}`,
+        gaugeX, CONTENT_Y + 0.2, size, metric.value, 100, metric.label,
+        { track: deck.theme.palette.border, value: deck.theme.palette.accent, text: deck.theme.palette.text, muted: deck.theme.palette.muted },
+        { heading: deck.theme.fonts.heading, body: deck.theme.fonts.body },
+      );
+    });
+    return;
+  }
+  if (spec.composition === "sparkline_row") {
+    const x = MARGIN_X;
+    const y = CONTENT_Y + 1.3;
+    const w = 11.85;
+    const h = Math.min(2.1 * activeStyle.visualScale, CONTENT_H - 1.8);
+    drawSparkline(slide, pptx, rects, `${spec.id}-sparkline`, x, y, w, h, metrics.map((metric) => metric.value), deck.theme.palette.accent);
+    metrics.forEach((metric, index) => {
+      const labelW = 1.6;
+      const center = x + (metrics.length > 1 ? (index / (metrics.length - 1)) * w : w / 2);
+      const px = Math.min(Math.max(center - labelW / 2, MARGIN_X), SLIDE_W - MARGIN_X - labelW);
+      addText(slide, `${metric.label} ${metric.value}${metric.unit ?? ""}`, { x: px, y: y + h + 0.1, w: labelW, h: 0.3, fontSize: 10, align: "center", allowOverlap: true }, rects, `${spec.id}-sparkline-label-${index}`, deck.theme.fonts.body, deck.theme.palette.muted);
     });
     return;
   }
@@ -377,12 +433,12 @@ function renderTimeline(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<
 
 function renderEvidence(slide: Slide, pptx: Pptx, deck: DeckSpec, projectDir: string, spec: Extract<SlideSpec, { layout: "evidence" }>, rects: Rect[]): void {
   if (spec.composition === "evidence_panel" && !spec.content.assetPath) {
-    addShape(slide, pptx, pptx.ShapeType.rect, { x: MARGIN_X, y: CONTENT_Y + 0.3, w: 3.75, h: 3.92, fill: { color: hex(deck.theme.palette.surface) }, line: { color: hex(deck.theme.palette.border), width: 0.7 }, allowOverlap: true }, rects, `${spec.id}-evidence-panel`);
+    addShape(slide, pptx, pptx.ShapeType.rect, { x: MARGIN_X, y: CONTENT_Y + 0.3, w: 3.75, h: 3.92, fill: panelFill(deck.theme.palette.surface), line: { color: hex(deck.theme.palette.border), width: 0.7 }, allowOverlap: true }, rects, `${spec.id}-evidence-panel`);
     if (spec.content.caption) addText(slide, spec.content.caption, { x: MARGIN_X + 0.32, y: CONTENT_Y + 0.7, w: 3.1, h: 1.45, fontSize: 24, bold: true, valign: "top" }, rects, `${spec.id}-caption`, deck.theme.fonts.heading, deck.theme.palette.primary);
     addText(slide, "SOURCE-BACKED", { x: MARGIN_X + 0.32, y: CONTENT_Y + 3.45, w: 2.8, h: 0.22, fontSize: 10, bold: true }, rects, `${spec.id}-source-label`, deck.theme.fonts.body, deck.theme.palette.accent);
     spec.content.bullets.forEach((bullet, index) => {
       const y = CONTENT_Y + 0.52 + index * 0.8;
-      addShape(slide, pptx, pptx.ShapeType.rect, { x: 4.92, y, w: 6.35, h: 0.58, fill: { color: hex(index === 0 ? deck.theme.palette.surface : deck.theme.palette.background) }, line: { color: hex(deck.theme.palette.border), width: 0.5 }, allowOverlap: true }, rects, `${spec.id}-evidence-row-${index}`);
+      addShape(slide, pptx, pptx.ShapeType.rect, { x: 4.92, y, w: 6.35, h: 0.58, fill: panelFill(index === 0 ? deck.theme.palette.surface : deck.theme.palette.background), line: { color: hex(deck.theme.palette.border), width: 0.5 }, allowOverlap: true }, rects, `${spec.id}-evidence-row-${index}`);
       addText(slide, bullet, { x: 5.18, y: y + 0.14, w: 5.8, h: 0.25, fontSize: 14, bold: index === 0 }, rects, `${spec.id}-bullet-${index}`, deck.theme.fonts.body, deck.theme.palette.text);
     });
     return;
@@ -397,7 +453,47 @@ function renderEvidence(slide: Slide, pptx: Pptx, deck: DeckSpec, projectDir: st
   spec.content.bullets.forEach((bullet, index) => addText(slide, `• ${bullet}`, { x: startX, y: CONTENT_Y + 0.5 + index * 0.72, w: 4.1, h: 0.5, fontSize: 16, valign: "top" }, rects, `${spec.id}-bullet-${index}`, deck.theme.fonts.body, deck.theme.palette.text));
 }
 
-function renderSlide(pptx: Pptx, deck: DeckSpec, projectDir: string, spec: SlideSpec, page: number): { rects: Rect[] } {
+const chartTypeMap: Record<string, { type: string; opts: Record<string, unknown> }> = {
+  bar: { type: "bar", opts: {} },
+  horizontal_bar: { type: "bar", opts: { barDir: "bar" } },
+  stacked_bar: { type: "bar", opts: { barGrouping: "stacked" } },
+  line: { type: "line", opts: {} },
+  pie: { type: "pie", opts: {} },
+  donut: { type: "doughnut", opts: {} },
+};
+
+function renderChart(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "chart" }>, rects: Rect[], contentModel: ContentModel | undefined): void {
+  const dataset = contentModel?.datasets?.find((candidate) => candidate.id === spec.content.dataRef);
+  if (!dataset) throw new Error(`Chart dataRef '${spec.content.dataRef}' on slide ${spec.id} is absent from content-model.json datasets. Pass --run-dir with a content-model.json that defines it.`);
+  const chartData = dataset.series.map((series) => ({ name: series.name, labels: dataset.categories, values: series.values }));
+  const x = MARGIN_X;
+  const y = CONTENT_Y + 0.1;
+  const w = 11.85;
+  const maxH = spec.content.caption ? CONTENT_H - 0.55 : CONTENT_H - 0.15;
+  const h = Math.min(maxH * activeStyle.visualScale, maxH);
+  const mapped = chartTypeMap[spec.content.chartType];
+  slide.addChart(pptx.ChartType[mapped.type], chartData, {
+    x, y, w, h,
+    chartColors: [deck.theme.palette.primary, deck.theme.palette.accent, deck.theme.palette.muted, deck.theme.palette.border].map(hex),
+    showLegend: dataset.series.length > 1,
+    legendPos: "b",
+    legendFontFace: deck.theme.fonts.body,
+    catAxisLabelColor: hex(deck.theme.palette.muted),
+    catAxisLabelFontFace: deck.theme.fonts.body,
+    valAxisLabelColor: hex(deck.theme.palette.muted),
+    valAxisLabelFontFace: deck.theme.fonts.body,
+    dataLabelColor: hex(deck.theme.palette.text),
+    dataLabelFontFace: deck.theme.fonts.body,
+    showValue: true,
+    ...mapped.opts,
+  });
+  rects.push({ id: `${spec.id}-chart`, x, y, w, h });
+  if (spec.content.caption) {
+    addText(slide, spec.content.caption, { x, y: y + h + 0.08, w, h: 0.3, fontSize: 11, valign: "top" }, rects, `${spec.id}-caption`, deck.theme.fonts.body, deck.theme.palette.muted);
+  }
+}
+
+function renderSlide(pptx: Pptx, deck: DeckSpec, projectDir: string, spec: SlideSpec, page: number, contentModel: ContentModel | undefined): { rects: Rect[] } {
   const slide = pptx.addSlide();
   slide.background = { color: hex(deck.theme.palette.background) };
   const rects: Rect[] = [];
@@ -413,6 +509,7 @@ function renderSlide(pptx: Pptx, deck: DeckSpec, projectDir: string, spec: Slide
     if (spec.layout === "quantitative") renderQuantitative(slide, pptx, deck, spec, rects);
     if (spec.layout === "timeline") renderTimeline(slide, pptx, deck, spec, rects);
     if (spec.layout === "evidence") renderEvidence(slide, pptx, deck, projectDir, spec, rects);
+    if (spec.layout === "chart") renderChart(slide, pptx, deck, spec, rects, contentModel);
   }
   addChrome(slide, pptx, deck, page, rects);
   const geometryIssues = validateGeometry(rects);
@@ -424,7 +521,7 @@ function renderSlide(pptx: Pptx, deck: DeckSpec, projectDir: string, spec: Slide
 
 export type RenderResult = { outputPath: string; slideRects: Record<string, Rect[]> };
 
-export async function renderDeck(input: unknown, outputPath: string, projectDir = process.cwd(), options: { pageLimit?: number } = {}): Promise<RenderResult> {
+export async function renderDeck(input: unknown, outputPath: string, projectDir = process.cwd(), options: { pageLimit?: number; contentModel?: ContentModel } = {}): Promise<RenderResult> {
   const parsedDeck = deckSchema.parse(input);
   if (parsedDeck.contract.aspectRatio !== "16:9") {
     throw new Error("The deterministic renderer only supports 16:9. A 4:3 Company Template Pack must use the native-template-fill workflow.");
@@ -432,6 +529,7 @@ export async function renderDeck(input: unknown, outputPath: string, projectDir 
   const deck: DeckSpec = { ...parsedDeck, theme: resolveTheme(parsedDeck.contract, projectDir) };
   if (!options.pageLimit && deck.contract.slideCount !== deck.slides.length) throw new Error(`Contract slideCount ${deck.contract.slideCount} does not match ${deck.slides.length} slides.`);
   assertFontsInstalled(deck.contract.fonts);
+  activeStyle = directionStyleByDirection[deck.contract.designDirection];
 
   const pptx: Pptx = new (pptxgen as any)();
   pptx.layout = "LAYOUT_WIDE";
@@ -444,7 +542,7 @@ export async function renderDeck(input: unknown, outputPath: string, projectDir 
 
   const slideRects: Record<string, Rect[]> = {};
   deck.slides.slice(0, options.pageLimit).forEach((spec, index) => {
-    slideRects[spec.id] = renderSlide(pptx, deck, projectDir, spec, index + 1).rects;
+    slideRects[spec.id] = renderSlide(pptx, deck, projectDir, spec, index + 1, options.contentModel).rects;
   });
   fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });
   await pptx.writeFile({ fileName: path.resolve(outputPath) });

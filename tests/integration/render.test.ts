@@ -4,10 +4,11 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { renderDeck } from "../../src/renderer";
 import { mergeQa, runPowerPointQa, structuralQa } from "../../src/qa";
-import { deckSchema } from "../../src/schema";
+import { contentModelSchema, deckSchema } from "../../src/schema";
 
 const fixturePath = path.resolve(__dirname, "../fixtures/all-layouts.json");
 const fixture = deckSchema.parse(JSON.parse(fs.readFileSync(fixturePath, "utf8")));
+const contentModel = contentModelSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/content-model-all-layouts.json"), "utf8")));
 const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-integration-"));
 
 afterAll(() => {
@@ -19,7 +20,7 @@ describe("editable PPTX integration", () => {
 
   it.skipIf(windowsOnly)("renders every MVP semantic layout and passes PowerPoint QA", async () => {
     const pptxPath = path.join(runDir, "all-layouts.pptx");
-    await renderDeck(fixture, pptxPath, process.cwd());
+    await renderDeck(fixture, pptxPath, process.cwd(), { contentModel });
     expect(fs.statSync(pptxPath).size).toBeGreaterThan(10000);
     const structural = structuralQa(fixture, process.cwd());
     expect(structural.status).toBe("pass");
@@ -32,7 +33,7 @@ describe("editable PPTX integration", () => {
   it.skipIf(windowsOnly)("fails portable delivery when no font embedding exists", async () => {
     const pptxPath = path.join(runDir, "portable-fonts.pptx");
     const portable = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, fontDelivery: "portable" } });
-    await renderDeck(portable, pptxPath, process.cwd());
+    await renderDeck(portable, pptxPath, process.cwd(), { contentModel });
     const powerpoint = runPowerPointQa(pptxPath, portable, runDir);
     expect(powerpoint.status).toBe("fail");
     expect((powerpoint.findings as Array<{ code: string }>).some((finding) => finding.code === "FONT_EMBEDDING_REQUIRED")).toBe(true);

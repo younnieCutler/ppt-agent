@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "sourceId": "prompt",
+      "excerpts": [
+        { "id": "R001", "locator": "prompt", "text": "A quantitative deck shows gauges 72 45 90 and a sparkline trend 10 12 9 14." }
+      ]
+    }
+  ]
+}

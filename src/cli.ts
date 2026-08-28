@@ -3,8 +3,9 @@ import path from "node:path";
 import { assertFontsInstalled, listInstalledFonts } from "./fonts";
 import { resolveTheme } from "./brand";
 import { renderDeck } from "./renderer";
-import { deckSchema } from "./schema";
+import { contentModelSchema, contractSchema, deckSchema, type ContentModel } from "./schema";
 import { mergeFindings, mergeQa, ooxmlQa, runPowerPointQa, structuralQa, verifySourceRefs } from "./qa";
+import { loadReferenceIndex, previewPathsFor, queryFromContract, retrieveReferences } from "./reference";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -25,13 +26,18 @@ function readJson(filePath: string): unknown {
   return JSON.parse(fs.readFileSync(path.resolve(filePath), "utf8"));
 }
 
+function loadContentModelIfExists(filePath: string): ContentModel | undefined {
+  if (!fs.existsSync(filePath)) return undefined;
+  return contentModelSchema.parse(readJson(filePath));
+}
+
 function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
-  if (!command) throw new Error("Usage: cli.js <fonts|theme|validate|first-page|render|qa|release> ...");
+  if (!command) throw new Error("Usage: cli.js <fonts|theme|reference|validate|first-page|render|qa|release> ...");
 
   if (command === "fonts") {
     print(listInstalledFonts());
@@ -44,6 +50,23 @@ async function main(): Promise<void> {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     assertFontsInstalled(contract.fonts);
     print(resolveTheme(contract, projectDir));
+    return;
+  }
+
+  if (command === "reference") {
+    const contractPath = option(args, "--contract");
+    const referenceRoot = path.resolve(option(args, "--reference-root"));
+    const topKRaw = optionalOption(args, "--top-k");
+    const runDir = optionalOption(args, "--run-dir");
+    const contract = contractSchema.parse(readJson(contractPath));
+    const index = loadReferenceIndex(referenceRoot);
+    const selected = retrieveReferences(index, queryFromContract(contract), topKRaw ? Number(topKRaw) : 3)
+      .map((entry) => ({ ...entry, previewPaths: previewPathsFor(referenceRoot, entry) }));
+    if (runDir) {
+      fs.mkdirSync(path.resolve(runDir), { recursive: true });
+      fs.writeFileSync(path.join(path.resolve(runDir), "reference-selection.json"), JSON.stringify(selected, null, 2));
+    }
+    print(selected);
     return;
   }
 
@@ -90,8 +113,10 @@ async function main(): Promise<void> {
 
   if (command === "render") {
     const outPath = option(args, "--out");
+    const runDir = optionalOption(args, "--run-dir");
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const result = await renderDeck(deck, outPath, projectDir);
+    const contentModel = runDir ? loadContentModelIfExists(path.join(path.resolve(runDir), "content-model.json")) : undefined;
+    const result = await renderDeck(deck, outPath, projectDir, { contentModel });
     fs.writeFileSync(`${path.resolve(outPath)}.geometry.json`, JSON.stringify(result.slideRects, null, 2));
     print({ status: "pass", outputPath: result.outputPath });
     return;
@@ -102,11 +127,12 @@ async function main(): Promise<void> {
     const runDir = option(args, "--run-dir");
     const usePowerPoint = hasFlag(args, "--powerpoint");
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const result = await renderDeck(deck, outPath, projectDir, { pageLimit: 1 });
-    const canonicalDeck = { ...deck, theme: resolveTheme(deck.contract, projectDir) };
     const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
+    const referenceSelectionPath = path.join(path.resolve(runDir), "reference-selection.json");
+    const result = await renderDeck(deck, outPath, projectDir, { pageLimit: 1, contentModel: loadContentModelIfExists(contentModelPath) });
+    const canonicalDeck = { ...deck, theme: resolveTheme(deck.contract, projectDir) };
     const firstSlideId = canonicalDeck.slides[0].id;
-    const structural = structuralQa(canonicalDeck, projectDir, contentModelPath);
+    const structural = structuralQa(canonicalDeck, projectDir, contentModelPath, referenceSelectionPath);
     const ooxmlFindings = await ooxmlQa(outPath, canonicalDeck, [firstSlideId]);
     let report = mergeFindings(structural, ooxmlFindings);
     if (usePowerPoint && process.platform === "win32") {
@@ -130,7 +156,8 @@ async function main(): Promise<void> {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const canonicalDeck = { ...deck, theme: resolveTheme(deck.contract, projectDir) };
     const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
-    const structural = structuralQa(canonicalDeck, projectDir, contentModelPath);
+    const referenceSelectionPath = path.join(path.resolve(runDir), "reference-selection.json");
+    const structural = structuralQa(canonicalDeck, projectDir, contentModelPath, referenceSelectionPath);
     const ooxmlFindings = fs.existsSync(path.resolve(pptxPath))
       ? await ooxmlQa(pptxPath, canonicalDeck)
       : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
