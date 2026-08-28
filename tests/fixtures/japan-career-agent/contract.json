@@ -1,0 +1,49 @@
+{
+  "sources": [
+    {
+      "kind": "prompt",
+      "id": "repo",
+      "text": "Evidence-based career decision support for the Japanese job market.\n\nYour career record stays on your machine, and nothing becomes a fact without your approval.\n\nRecord what happened: past work becomes contexts, experiences and checkable evidence, and what you cannot verify stays Unknown.\n\nApprove it: nothing enters your canonical career record until you confirm it, and a number without a source is refused.\n\nUse it: JD matching, a Japanese resume, interview practice and next actions, all quoting only confirmed evidence.\n\nEvidence, not invented scores or career history.\n\nIf a fact is not confirmed, it stays Unknown.\n\nA confirmed hard, legal, must-have, or dealbreaker conflict is not averaged away by another strength.\n\nThe system does not predict whether you will be hired.\n\nYou make the final decision and keep approval control; it does not submit applications or send messages for you.\n\nIt runs as a Claude Code and Codex plugin, as a standalone command, and as an optional local GUI, over one Python runtime and one Career Vault.\n\nA plugin never holds its own copy of your career facts; the plugin changes how you reach the core, never what it says.\n\nThe model is context, then experience, then evidence, discovered in that order; the order is the design, not a presentation choice.\n\nThe career inventory recovers what happened; it does not interpret it, and it never turns a strength or a number into a confirmed fact on your behalf.\n\nThe JD changes the lens, never the fact.\n\nNo axis is summed, averaged, multiplied, or ranked into a total, and requirement states are Matched, Missing, or Unknown.\n\nA plugin never writes canonical state outside the core contract, so a host cannot approve on your behalf, skip the evidence requirement, or add a fact the CLI would have refused.\n\nThe layers run Entry, then Command line, then Application, then Domain, then Local data; dependencies point down and nothing at any layer imports an entry point.\n\nApplication owners include onboarding, approvals, sessions, guided_flow, documents and experiences; the domain holds models, validation, vault, routing, proposals, lifecycle, projection, document, render and execution_plans.\n\nThe canonical runtime is Python, and every entry point runs that same program against the same Career Vault.\n\nFor a multi-Skill host turn the runtime builds a bounded plan; each step uses the skill-open, SOP, skill-report lifecycle and Python never calls an LLM host or another Skill.\n\nThe evidence vocabulary keeps Confirmed, Unknown, Contradictory, Stale and Low Confidence apart, and interest_level records preference without changing objective evidence or decision status."
+    },
+    {
+      "kind": "prompt",
+      "id": "brief",
+      "text": "Japan Career Agent is a Career Operating System: it does not decide a career for the user, it accumulates and verifies evidence so the user can make a better decision.\n\nA resume, a Japanese CV, interview answers, JD notes, company research and self-analysis usually live in different chats, documents and memories.\n\nThe suite ships 18 specialized skills, split across capture, analysis, decision, document and verification work.\n\nCapture covers the career inventory and ongoing maintenance; analysis covers self-analysis and company research; decision covers JD matching and company battlecards; creation covers document building and Japanese phrasing; verification covers intent, factcheck, challenge and verify.\n\nIllustrative: a generic assistant weights Java 90, English 80 and cloud 95, discounts a work visa at 20, and still reports a blended 82 out of 100 as a good match.\n\nRead on independent axes, the same case keeps the work visa as a missing hard requirement and sets the decision to Review rather than a score.\n\nThe document pipeline turns a confirmed evidence pool into a target-specific document model, passes it through a deterministic fidelity gate, and only then renders it.\n\nGoverned execution means intent, a bounded plan, skill invocation, execution, verification and factcheck all sit between the user and the canonical record.\n\nYour career should compound, and so should your career memory: local-first, approval-gated, and agent-native.\n\nThe knowledge graph links a target role to its contexts, the experiences inside them, and the evidence that makes each experience checkable."
+    }
+  ],
+  "purpose": "narrative",
+  "audience": "Recruiting and career-industry professionals in the Japanese market",
+  "objective": "Show why career AI must be built on accumulated, verified, user-approved evidence",
+  "visualIntent": [
+    "architecture",
+    "process",
+    "evidence"
+  ],
+  "designDirection": "auto",
+  "presentationStyle": "stage",
+  "storyline": [
+    "opening",
+    "problem",
+    "design",
+    "evidence",
+    "insight",
+    "implementation",
+    "architecture",
+    "closing"
+  ],
+  "language": "en",
+  "slideCount": 14,
+  "brand": {
+    "kind": "default"
+  },
+  "organization": {
+    "kind": "none"
+  },
+  "fonts": {
+    "heading": "Helvetica Neue",
+    "body": "Helvetica Neue"
+  },
+  "fontDelivery": "managed_device",
+  "editability": "native_editable",
+  "aspectRatio": "16:9"
+}

@@ -38,6 +38,10 @@ export const visualFindingCodes = [
   "LAYOUT_REPETITION",
   "INCONSISTENT_SECTION_RHYTHM",
   "REFERENCE_VISUAL_DRIFT",
+  // provenance layer — computed from render-provenance.json/backend.json, never guessed visually
+  "VISUAL_QA_STALE_RENDER",
+  "VISUAL_RENDER_PROVENANCE_UNKNOWN",
+  "RENDER_FONT_SUBSTITUTION",
 ] as const;
 
 // Severity is derived from code, never accepted as judgment-layer input — otherwise an LLM could
@@ -74,6 +78,9 @@ export const findingSeverityByCode: Record<(typeof visualFindingCodes)[number], 
   LAYOUT_REPETITION: "risk",
   INCONSISTENT_SECTION_RHYTHM: "risk",
   REFERENCE_VISUAL_DRIFT: "risk",
+  VISUAL_QA_STALE_RENDER: "hard",
+  VISUAL_RENDER_PROVENANCE_UNKNOWN: "risk",
+  RENDER_FONT_SUBSTITUTION: "risk",
 };
 
 export const visualFindingInputSchema = z
@@ -103,7 +110,7 @@ function mapLevel3Findings(level3: Record<string, unknown>): QaFinding[] {
     });
 }
 
-const visualCompositions = new Set(["sequence", "stage_gate", "pipeline_lanes", "architecture_zones", "native_chart", "gauge_row", "sparkline_row"]);
+const visualCompositions = new Set(["sequence", "stage_gate", "pipeline_lanes", "architecture_zones", "native_chart", "gauge_row", "sparkline_row", "central_hub", "layered_stack", "verdict_contrast"]);
 
 function addArchetypeFitFindings(deck: DeckSpec, style: ResolvedPresentationStyle | undefined, collected: QaFinding[]): void {
   if (!style) return;
@@ -130,7 +137,9 @@ function addArchetypeFitFindings(deck: DeckSpec, style: ResolvedPresentationStyl
   }
 }
 
-export function visualQa(deck: DeckSpec, findings: unknown, level3?: Record<string, unknown>, style?: ResolvedPresentationStyle): QaReport {
+export type ProvenanceFinding = { slideId?: string; code: (typeof visualFindingCodes)[number]; message: string };
+
+export function visualQa(deck: DeckSpec, findings: unknown, level3?: Record<string, unknown>, style?: ResolvedPresentationStyle, provenance?: ProvenanceFinding[]): QaReport {
   const slideIds = new Set(deck.slides.map((slide) => slide.id));
   const parsed = z.array(visualFindingInputSchema).safeParse(findings);
   const collected: QaFinding[] = [];
@@ -146,6 +155,10 @@ export function visualQa(deck: DeckSpec, findings: unknown, level3?: Record<stri
     });
   }
   if (level3) collected.push(...mapLevel3Findings(level3));
+  // Render-provenance and font-substitution findings are computed deterministically from
+  // render-provenance.json/backend.json, not authored by the judgment layer, but severity still
+  // routes through the same closed-code lookup so it cannot silently diverge from the codes above.
+  (provenance ?? []).forEach((finding) => collected.push({ severity: findingSeverityByCode[finding.code], code: finding.code, slideId: finding.slideId, message: finding.message }));
   addArchetypeFitFindings(deck, style, collected);
   return { ...rollUp(collected), reference: "not_applicable", attempts: 0, findings: collected, ...(style ? { presentationStyle: style.themeId } : {}) };
 }

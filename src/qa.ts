@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { contentModelSchema, deckSchema, requiredNativeObjectsFor, type ContentModel, type DeckSpec, type SlideSpec, type SourceRef } from "./schema";
+import { architectureHubZone, compositionFamily, contentModelSchema, deckSchema, requiredNativeObjectsFor, type CompositionFamily, type ContentModel, type DeckSpec, type SlideSpec, type SourceRef, type VisualProofCollection } from "./schema";
 import { readPptxOoxml, type NativeObjectCounts } from "./ooxml";
 import { displayWidth, headlineWrapProblem, kinsokuProblems } from "./typography";
 import type { ResolvedPresentationStyle } from "./style";
@@ -182,6 +182,7 @@ function addTextBudgetFindings(slide: SlideSpec, findings: QaFinding[], language
       slide.content.steps.forEach((step, index) => {
         addTextBudgetFinding(slide, findings, `Process label ${index + 1}`, step.label, 38);
         addTextBudgetFinding(slide, findings, `Process detail ${index + 1}`, step.detail, 58);
+        step.members?.forEach((member, memberIndex) => addTextBudgetFinding(slide, findings, `Process member ${index + 1}.${memberIndex + 1}`, member, 22));
       });
       return;
     case "pipeline":
@@ -243,6 +244,9 @@ const compositionProfile: Record<string, { visualArea: "low" | "medium" | "high"
   evidence_list: { visualArea: "low", textDensity: "high" },
   evidence_panel: { visualArea: "medium", textDensity: "medium" },
   native_chart: { visualArea: "high", textDensity: "low" },
+  central_hub: { visualArea: "high", textDensity: "low" },
+  layered_stack: { visualArea: "high", textDensity: "low" },
+  verdict_contrast: { visualArea: "medium", textDensity: "medium" },
 };
 
 function addCompositionDirectionFitFindings(deck: DeckSpec, findings: QaFinding[]): void {
@@ -289,6 +293,222 @@ function addCompositionFindings(slides: SlideSpec[], findings: QaFinding[]): voi
       findings.push({ severity: "risk", code: "DOMINANT_COMPOSITION", message: `${composition} occupies more than 35% of body slides.` });
     }
   });
+}
+
+// Counting composition *names* is not enough: `architecture_zones`, `pipeline_lanes`, and
+// `sequence` are three different composition names that all draw the same primitive (equal-width
+// columns/rows in an even grid). A deck can clear every check above — enough distinct names, no
+// one name dominant — while still reading as three slides repeated, because the names differ but
+// the shape never does. This checks variety and dominance at the family level instead.
+function addCompositionFamilyFindings(slides: SlideSpec[], findings: QaFinding[]): void {
+  const bodySlides = slides.filter((slide) => slide.layout !== "title");
+  const families = bodySlides.map((slide) => compositionFamily[slide.composition]).filter((family): family is CompositionFamily => Boolean(family));
+  let run: CompositionFamily | undefined;
+  let runLength = 0;
+  families.forEach((family) => {
+    runLength = family === run ? runLength + 1 : 1;
+    run = family;
+    if (runLength >= 3) {
+      findings.push({ severity: "risk", code: "REPEATED_COMPOSITION_FAMILY_RUN", message: `Composition family '${family}' is repeated three or more times consecutively, even where the individual composition names differ.` });
+    }
+  });
+  if (bodySlides.length < 5) return;
+  const counts = new Map<CompositionFamily, number>();
+  families.forEach((family) => counts.set(family, (counts.get(family) ?? 0) + 1));
+  const minimumVariety = bodySlides.length >= 12 ? 4 : bodySlides.length >= 8 ? 3 : 2;
+  if (counts.size < minimumVariety) {
+    findings.push({ severity: "risk", code: "LOW_COMPOSITION_FAMILY_VARIETY", message: `Deck uses ${counts.size} composition families; at least ${minimumVariety} are expected for ${bodySlides.length} body slides.` });
+  }
+  counts.forEach((count, family) => {
+    if (count / bodySlides.length > 0.4) {
+      findings.push({ severity: "risk", code: "DOMINANT_COMPOSITION_FAMILY", message: `Composition family '${family}' occupies more than 40% of body slides.` });
+    }
+  });
+}
+
+type Skeleton = { axis: "x" | "y" | "radial" | "none"; equalCells: boolean };
+
+// What a composition actually lays on the canvas, independent of its family label. A row of
+// equal-width architecture zones and a row of equal-width numbered process steps are different
+// families (`column_zones` vs `horizontal_sequence`) but the identical primitive to a viewer's
+// eye: equal cells, same axis. Family-variety counting alone cannot catch that — this can.
+const skeletonByComposition: Record<string, Skeleton> = {
+  cover: { axis: "none", equalCells: false },
+  hero_evidence: { axis: "none", equalCells: false },
+  claim_actions: { axis: "none", equalCells: false },
+  two_column: { axis: "x", equalCells: true },
+  diagnosis_matrix: { axis: "x", equalCells: false },
+  ownership_split: { axis: "x", equalCells: true },
+  verdict_contrast: { axis: "x", equalCells: false },
+  sequence: { axis: "x", equalCells: true },
+  stage_gate: { axis: "x", equalCells: true },
+  pipeline_lanes: { axis: "y", equalCells: true },
+  architecture_zones: { axis: "x", equalCells: true }, // overridden below when edges converge on one hub zone
+  central_hub: { axis: "radial", equalCells: false },
+  layered_stack: { axis: "y", equalCells: false },
+  kpi_row: { axis: "x", equalCells: true },
+  ranked_bars: { axis: "none", equalCells: false },
+  metric_story: { axis: "none", equalCells: false },
+  gauge_row: { axis: "x", equalCells: true },
+  sparkline_row: { axis: "none", equalCells: false },
+  linear_roadmap: { axis: "x", equalCells: true },
+  now_next_later: { axis: "x", equalCells: true },
+  evidence_list: { axis: "none", equalCells: false },
+  evidence_panel: { axis: "none", equalCells: false },
+  native_chart: { axis: "none", equalCells: false },
+};
+
+function structuralSkeleton(slide: SlideSpec): Skeleton {
+  const base = skeletonByComposition[slide.composition] ?? { axis: "none", equalCells: false };
+  // Mirrors the renderer's own asymmetry rule (schema.ts `architectureHubZone`): a hub slide's
+  // zones are no longer equal width, so it should not count toward this check either. Widening a
+  // zone to prove a headline's focal object also, as a side effect, breaks up rhythm repetition.
+  if (slide.layout === "architecture" && slide.composition === "architecture_zones" && architectureHubZone(slide.content.edges)) {
+    return { axis: "x", equalCells: false };
+  }
+  return base;
+}
+
+function addUniformCellRhythmFindings(slides: SlideSpec[], findings: QaFinding[]): void {
+  const bodySlides = slides.filter((slide) => slide.layout !== "title");
+  if (bodySlides.length < 5) return;
+  const equalAxisCounts = new Map<string, number>();
+  bodySlides.forEach((slide) => {
+    const skeleton = structuralSkeleton(slide);
+    if (skeleton.equalCells && skeleton.axis !== "none") {
+      equalAxisCounts.set(skeleton.axis, (equalAxisCounts.get(skeleton.axis) ?? 0) + 1);
+    }
+  });
+  const dominant = [...equalAxisCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (!dominant) return;
+  const [axis, count] = dominant;
+  const share = count / bodySlides.length;
+  if (share >= 0.6) {
+    findings.push({
+      severity: "risk",
+      code: "UNIFORM_CELL_RHYTHM",
+      message: `${Math.round(share * 100)}% of body slides lay equal-width cells on the same ${axis === "x" ? "horizontal" : "vertical"} axis. Composition names differ (architecture zones, numbered sequences, equal comparison panels) but the shape a viewer sees does not. Vary the cell geometry itself — an asymmetric hub, a weighted stack, or a radial layout — not just the composition name.`,
+    });
+  }
+}
+
+// Every layout's countable collection, used by the *heuristic* headline check below to compare a
+// headline's numeric claim against what the composition naturally shows. `architecture` reports
+// the larger of zone count and total node count so either a claim about layers or a claim about
+// components can be satisfied. Layouts with no natural countable collection (title, comparison's
+// own delta, chart) are omitted deliberately — there is nothing here for a headline number to be
+// checked against.
+function countableElements(slide: SlideSpec): number | undefined {
+  switch (slide.layout) {
+    case "process": {
+      const totalMembers = slide.content.steps.reduce((sum, step) => sum + (step.members?.length ?? 0), 0);
+      return totalMembers > 0 ? totalMembers : slide.content.steps.length;
+    }
+    case "architecture": {
+      const totalNodes = slide.content.zones.reduce((sum, zone) => sum + zone.nodes.length, 0);
+      return Math.max(slide.content.zones.length, totalNodes);
+    }
+    case "pipeline":
+      return slide.content.nodes.length;
+    case "comparison":
+      return slide.content.left.items.length + slide.content.right.items.length;
+    case "quantitative":
+      return slide.content.metrics.length;
+    case "timeline":
+      return slide.content.milestones.length;
+    case "statement":
+      return slide.content.proofs.length;
+    case "evidence":
+      return slide.content.bullets.length;
+    default:
+      return undefined;
+  }
+}
+
+// Resolvers for the named collections a `visualProof` contract can point at. Each is scoped to
+// the one layout it names — `process.members` on a `comparison` slide resolves to `undefined`,
+// which addHeadlineProofFindings treats as a malformed contract, not a silently-ignored one.
+const visualProofResolvers: Record<VisualProofCollection, (slide: SlideSpec) => number | undefined> = {
+  "process.members": (slide) => (slide.layout === "process" ? slide.content.steps.reduce((sum, step) => sum + (step.members?.length ?? 0), 0) : undefined),
+  "process.steps": (slide) => (slide.layout === "process" ? slide.content.steps.length : undefined),
+  "architecture.nodes": (slide) => (slide.layout === "architecture" ? slide.content.zones.reduce((sum, zone) => sum + zone.nodes.length, 0) : undefined),
+  "architecture.zones": (slide) => (slide.layout === "architecture" ? slide.content.zones.length : undefined),
+  "pipeline.nodes": (slide) => (slide.layout === "pipeline" ? slide.content.nodes.length : undefined),
+  "comparison.items": (slide) => (slide.layout === "comparison" ? slide.content.left.items.length + slide.content.right.items.length : undefined),
+  "quantitative.metrics": (slide) => (slide.layout === "quantitative" ? slide.content.metrics.length : undefined),
+  "timeline.milestones": (slide) => (slide.layout === "timeline" ? slide.content.milestones.length : undefined),
+  "statement.proofs": (slide) => (slide.layout === "statement" ? slide.content.proofs.length : undefined),
+  "evidence.bullets": (slide) => (slide.layout === "evidence" ? slide.content.bullets.length : undefined),
+};
+
+// S07's actual regression: "18 skills, one job each" over a visual that shows 5 stage cards. The
+// headline asserted a quantity the visual never represented. Two ways to catch it:
+//
+// 1. An explicit `visualProof` contract (`{ kind: "count", value: 18, collection:
+//    "process.members" }`) names exactly which collection is supposed to prove exactly which
+//    number. A violation here is unambiguous — the author declared the proof and it's wrong — so
+//    it is `hard`.
+// 2. Without a contract, a generic heuristic scans the headline for a "<number> <plural noun>"
+//    pattern and compares it against the layout's natural countable collection. This is weaker
+//    evidence — it can misfire on headline phrasing that was never meant as a countable claim —
+//    so a mismatch here is `risk`, a prompt to add an explicit contract or rephrase, not a
+//    release blocker on its own.
+type HeadlineCountClaim = { text: string; value: number };
+
+/** Every "<number> <plural noun>" the headline names, e.g. "18 skills" in "18 skills, one job each". */
+function headlineCountClaims(headline: string): HeadlineCountClaim[] {
+  return [...headline.matchAll(/\b(\d+)\s+[A-Za-z]+s\b/g)].map((match) => ({ text: match[0], value: Number(match[1]) }));
+}
+
+function addHeadlineProofFindings(slide: SlideSpec, findings: QaFinding[]): void {
+  const proof = slide.visualProof;
+  if (proof) {
+    const actual = visualProofResolvers[proof.collection](slide);
+    if (actual === undefined) {
+      findings.push({ severity: "hard", code: "VISUAL_DOES_NOT_PROVE_HEADLINE", slideId: slide.id, message: `visualProof.collection '${proof.collection}' does not apply to layout '${slide.layout}'.` });
+      return;
+    }
+    // An explicit contract is a claim that three numbers agree: what the headline says, what the
+    // author declared, and what the visual actually shows. Any one of them disagreeing is a hard
+    // failure — once the count is made explicit, "the visual shows enough" is no longer good
+    // enough; it must show exactly what was declared, and the headline must say what was declared.
+    const mismatchedClaim = headlineCountClaims(slide.headline).find((claim) => claim.value !== proof.value);
+    if (mismatchedClaim) {
+      findings.push({
+        severity: "hard",
+        code: "VISUAL_DOES_NOT_PROVE_HEADLINE",
+        slideId: slide.id,
+        message: `Headline claims "${mismatchedClaim.text}" but visualProof declares ${proof.value} via '${proof.collection}'. The headline's number and the declared proof value must match exactly.`,
+      });
+    }
+    if (proof.value !== actual) {
+      findings.push({
+        severity: "hard",
+        code: "VISUAL_DOES_NOT_PROVE_HEADLINE",
+        slideId: slide.id,
+        message: `visualProof declares ${proof.value} via '${proof.collection}', but the slide's visual (${slide.layout}/${slide.composition}) shows ${actual}. The declared value must equal what the visual actually shows exactly.`,
+      });
+    }
+    // The contract settles the question for this slide either way — the heuristic below would
+    // only repeat or second-guess a judgment the author already made explicit.
+    return;
+  }
+
+  const count = countableElements(slide);
+  if (count === undefined) return;
+  for (const claim of headlineCountClaims(slide.headline)) {
+    if (claim.value <= count) continue;
+    // The number may still be grounded in plain sight — e.g. a metric or a node label that
+    // spells out the same figure the headline claims. Only flag when it appears nowhere else.
+    const contentText = JSON.stringify((slide as { content: unknown }).content);
+    if (new RegExp(`(?<![\\d.])${claim.value}(?![\\d.])`).test(contentText)) continue;
+    findings.push({
+      severity: "risk",
+      code: "VISUAL_DOES_NOT_PROVE_HEADLINE",
+      slideId: slide.id,
+      message: `Headline claims "${claim.text}" but the slide's visual (${slide.layout}/${slide.composition}) shows only ${count} countable element(s) by heuristic count. Add an explicit visualProof contract to make this a hard failure, represent ${claim.value} visually, or rephrase the headline.`,
+    });
+  }
 }
 
 // Explicit non-"auto" design directions get their own density band, floor and ceiling both.
@@ -500,6 +720,8 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
     });
   }
   addCompositionFindings(deck.slides, findings);
+  addCompositionFamilyFindings(deck.slides, findings);
+  addUniformCellRhythmFindings(deck.slides, findings);
   addCompositionDirectionFitFindings(deck, findings);
   addPurposeDensityFindings(deck, findings);
   addNarrativeFindings(deck, findings);
@@ -508,6 +730,7 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
     addSemanticFindings(slide, findings);
     addTextBudgetFindings(slide, findings, deck.contract.language);
     addQuantitativeEncodingFindings(slide, findings);
+    addHeadlineProofFindings(slide, findings);
     if (slide.sourceRefs.length === 0) findings.push({ severity: "hard", code: "SOURCE_OMISSION", slideId: slide.id, message: "Every slide requires at least one source reference." });
     if (model) addSourceExcerptFindings(deck, slide, findings, projectDir, model);
     const excerptTokens = excerptTokenSet(resolveExcerptTexts(slide, model));

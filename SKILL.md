@@ -59,7 +59,7 @@ Core QA (above) never looks at a rendered image — it only checks structure and
 node dist/cli.js visual --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--slides S04,S07]
 ```
 
-Renders `<run-dir>/visual/slide-NNN.png`, `montage.png` (slide-ID labeled), `backend.json`, `index.json`, and `deck-context.json`. Requires a visual render backend: PowerPoint COM on Windows, otherwise `soffice` + Poppler `pdftoppm`. When neither probes clean, the error names each missing capability.
+Renders `<run-dir>/visual/slide-NNN.png`, `montage.png` (slide-ID labeled), `backend.json`, `index.json`, `deck-context.json`, and `render-provenance.json` (a digest of the exact PPTX and DeckSpec that produced this render). Requires a visual render backend: PowerPoint COM on Windows, otherwise `soffice` + Poppler `pdftoppm`. When neither probes clean, the error names each missing capability. On the `soffice` path, the intermediate PDF is kept as `<run-dir>/visual/deck.pdf` — the one artifact any downstream conversion of this deck should be compared against — and `backend.json.substitutedFonts` lists any font embedded in that PDF outside the contracted heading/body pair (`"unknown"` when `pdffonts` is unavailable; never treat that as "no substitution").
 
 **Read `montage.png` and `deck-context.json`, then judge the deck against this rubric:**
 
@@ -73,12 +73,17 @@ Renders `<run-dir>/visual/slide-NNN.png`, `montage.png` (slide-ID labeled), `bac
 - **Anti-slop** — flag: excessive rounded cards, decorative shapes with no semantic role, repeated 3-column layouts across many slides, unnecessary gradients, identical structure slide after slide, arbitrary icons, generic dashboard styling unrelated to content, fake infographics that encode no information.
 - **Not slop by themselves**: plain white backgrounds, tables, sparse layouts, minimal decoration, dense report-style slides, a rough utilitarian style. Quality is purpose-fit, not visual complexity.
 
+Two defects are checked deterministically in Core QA, before any judgment call, because a count is not a matter of opinion:
+
+- `VISUAL_DOES_NOT_PROVE_HEADLINE` — the headline names a quantity (`"18 skills"`) larger than the composition's countable elements actually show (5 stage cards). A generic heuristic (headline number vs. the layout's natural countable collection) catches this as `risk` — weak evidence, since it can misfire on phrasing that was never meant as a countable claim. To make it `hard`, author an explicit contract: `slide.visualProof: { kind: "count", value: 18, collection: "process.members" }`. Three numbers must then agree exactly: the headline's own claimed number (if it names one), the declared `value`, and what `collection` actually resolves to (e.g. the sum of `process.content.steps[].members` across stages, rendered as chips on `stage_gate`) — any pairwise mismatch is hard, not just an undercount. `collection` must also be one of the closed set in `src/schema.ts` (`visualProofCollections`) and apply to the slide's own layout, or the contract itself is a hard failure.
+- `UNIFORM_CELL_RHYTHM` (risk, deck-level) — composition-name variety can pass (enough distinct names, none dominant) while the deck still reads as the same primitive repeated: `architecture_zones`, `pipeline_lanes`, and `sequence` are three different names that all draw equal-width cells on one axis. This fires when ≥60% of body slides do that, regardless of which names they use. `addCompositionFamilyFindings` (family-level `REPEATED_COMPOSITION_FAMILY_RUN` / `DOMINANT_COMPOSITION_FAMILY` / `LOW_COMPOSITION_FAMILY_VARIETY`, all risk) runs alongside it but is not sufficient on its own — see `src/qa.ts` `structuralSkeleton` for exactly which compositions count as equal-cell.
+
 Write findings as `<run-dir>/visual-findings.json`, an array of `{ slideId?, code, message }`. `code` must come from the closed set in `src/visual-qa.ts` (`visualFindingCodes`) — an invented code is rejected, not silently accepted. Do not include a `severity` field: severity is derived deterministically from `code` (`findingSeverityByCode` in `src/visual-qa.ts`), so the judgment layer cannot downgrade a hard finding past the release gate by picking a softer severity.
 
 ```sh
-node dist/cli.js visual-qa --spec <deck.json> --run-dir <run-dir> --findings <run-dir>/visual-findings.json
+node dist/cli.js visual-qa --spec <deck.json> --run-dir <run-dir> --findings <run-dir>/visual-findings.json --pptx <draft.pptx>
 ```
-Validates and rolls the findings into `<run-dir>/visual-qa.json`; a hard finding fails the run.
+Validates and rolls the findings into `<run-dir>/visual-qa.json`; a hard finding fails the run. `--pptx` is required — judgment of a deck without the file that produced the render it judged is judgment of nothing in particular. It compares the file being judged against `visual/render-provenance.json`: a digest mismatch (the PPTX or DeckSpec changed since `visual` last ran) is hard `VISUAL_QA_STALE_RENDER`; no provenance file at all (a run made before this existed) is risk `VISUAL_RENDER_PROVENANCE_UNKNOWN`. A non-empty `backend.json.substitutedFonts` is folded in automatically as risk `RENDER_FONT_SUBSTITUTION`.
 
 **Repairing a failed slide** (never regenerate the whole deck for one bad slide):
 
@@ -98,6 +103,16 @@ node dist/cli.js repair-apply --spec <deck.json> --run-dir <run-dir> --slide S04
 After a repair: re-run `qa` (Core QA, full deck — it's free), then `visual`/`visual-qa` scoped to `regressionScope`.
 
 A repair replaces exactly one `SlideSpec`. It cannot change `organization`, `brand`, `presentationStyle`, `designDirection`, or the reference grammar — those live in the contract and are resolved once. If a finding can only be fixed by changing the style, stop and re-run the interview instead of repairing.
+
+## Composition families: choose by what the slide argues, not by "architecture" vs "process"
+
+`layout`/`composition` name a rendering routine; `compositionFamily` (`src/schema.ts`) names the perceptual shape it draws (`column_zones`, `horizontal_sequence`, `stacked_rows`, `radial`, `split_panels`, `single_focal`, `plot`). Two different composition names can still be the same family — `architecture_zones` and `sequence` are both equal-width cells on one axis — which is why `UNIFORM_CELL_RHYTHM` above exists alongside name-level variety checks. Three `architecture`/`comparison` compositions exist specifically to break that rhythm when the message calls for it, not as decoration:
+
+- `central_hub` (`architecture`) — `zones[0]` is the hub, drawn large with an accent border; the rest are satellites in two flanking columns, each wired back by an explicit edge. Use for "one thing everything else depends on" (a shared vault, a single core).
+- `layered_stack` (`architecture`) — full-width bands stacked top to bottom, weighted by node count, with a single dependency rail down the left. Use for an ordered layer model (context → experience → evidence; a runtime's dependency layers), never a row of equal columns.
+- `verdict_contrast` (`comparison`) — the contested figure (`delta`) renders at KPI scale above two intentionally asymmetric panels, the rejected reading visibly muted against the adopted one. Use when the slide's point is the contrast itself, not a feature-by-feature list (`two_column`/`diagnosis_matrix` are for the latter).
+
+`architecture_zones` itself also breaks symmetry automatically: when every edge in the slide converges on one zone, that zone renders 1.35× wider with the accent border — the renderer and `UNIFORM_CELL_RHYTHM`'s `structuralSkeleton` both derive this from `content.edges` (`architectureHubZone` in `src/schema.ts`), so a slide's own asymmetry and the repetition check that reads it can never drift apart.
 
 ## Structural findings you cannot argue with
 
@@ -121,7 +136,7 @@ Writes `<run-dir>/p3-metrics.json` with a numerator/denominator per metric (bran
 ## Quality and cost — always reported together
 
 ```sh
-node dist/cli.js tokens --spec <deck.json> --run-dir <run-dir> [--transcript <path>] [--since <iso>]
+node dist/cli.js tokens --spec <deck.json> --run-dir <run-dir> [--transcript <path> | --session-id <uuid>] [--since <iso>] [--until <iso>] [--allow-unmeasured]
 node dist/cli.js score  --spec <deck.json> --run-dir <run-dir> --scores <scores.json>
 node dist/cli.js record --spec <deck.json> --run-dir <run-dir> --benchmark <id> --version <label>
 ```
@@ -130,9 +145,11 @@ node dist/cli.js record --spec <deck.json> --run-dir <run-dir> --benchmark <id> 
 
 **The measurement window is `[run-dir creation, last phase boundary]`.** It has to close, or work you do later in the same session gets billed to this deck. `style`, `reference`, `render`, `visual-qa`, and `repair-context` each append a marker to `<run-dir>/run.jsonl` as they complete, so boundaries are *recorded* rather than guessed; artifact mtimes remain a fallback for runs made before markers existed. `tokens.json` says which was used (`phase-marker` / `mixed` / `artifact-mtime-window`) and how the window closed. Override with `--since` / `--until` when you need a different window.
 
+Without `--transcript`, the project-slug directory can hold more than one session — a `/ppt` run followed by an unrelated later session touches the same directory. Picking "the newest `.jsonl`" there once produced a report with every number at `0`, silently read as "this deck cost nothing." The CLI instead scores every transcript in the directory by how many of its turns actually fall inside the measurement window and picks the best-covering one; pass `--session-id <uuid>` to point at a session explicitly by id (a shorthand for `--transcript` into the same directory), or `--transcript <path>` for a transcript outside it entirely. If the selected transcript still contributes zero turns, `tokens.json` reports `measurement: "unavailable"` with `unavailableReason`, and `tokensPerSlide` / `effectiveTokensPerSlide` / `tokensPerAcceptedSlide` / `repairOverhead` are `null`, never `0` — a real deck's cost is never legitimately zero. The `tokens` command exits non-zero on `unavailable` unless `--allow-unmeasured` is passed.
+
 `score` takes `{ "scores": { <dimension>: 0-100 } }` covering every dimension in `src/score.ts` (`contentFidelity`, `narrativeQuality`, `visualHierarchy`, `semanticVisualization`, `referenceGrammarFit`, `layoutVariety`, `typographyReadability`, `purposeFit`, `antiSlop`). Weights live in code, not in your input, and `referenceGrammarFit` must be **omitted** when the contract declares no `referenceIds` — its weight is redistributed so a no-reference deck is not capped at 90. **A hard finding in `qa.json` or `visual-qa.json` fails the run whatever the dimensions say.**
 
-`record` appends one line to `evals/real-world/<benchmark>/history.jsonl` merging quality and tokens. It refuses to run without `tokens.json`: quality is never recorded without its cost context. Each record carries `tokensPerSlide`, `effectiveTokensPerSlide`, and `qualityPer10kEffectiveTokens` together, so a version whose score rose while its cost rose faster cannot read as an improvement.
+`record` appends one line to `evals/real-world/<benchmark>/history.jsonl` merging quality and tokens. It refuses to run without `tokens.json`, and refuses a `tokens.json` whose `measurement` is `"unavailable"` — quality is never recorded without its cost context, and a failed measurement is not a free one. Each record carries `tokensPerSlide`, `effectiveTokensPerSlide`, and `qualityPer10kEffectiveTokens` together, so a version whose score rose while its cost rose faster cannot read as an improvement.
 
 A repair extends the measurement window: `repair-context` opens the repair phase and `repair-apply` closes it, so the turns spent authoring the replacement slide are counted. Run `tokens` **after** `repair-apply`, not between the two.
 
@@ -140,4 +157,4 @@ A repair extends the measurement window: `repair-context` opens the repair phase
 
 Every command that writes a run-dir artifact prints a one-line summary, not the whole blob — the artifact is on disk, and printing it puts a second copy into the conversation for nothing. **Read the file when you need the contents.** Failing QA runs still print their full findings, because that is what you have to act on. `--print` restores full output on any command.
 
-`release` additionally accepts `--visual-qa <path>` and `--accept-risk`: a hard visual finding always blocks; an unresolved risk finding blocks unless `--accept-risk` is passed, in which case the release status is `pass_with_warning` instead of `pass`.
+`release` additionally accepts `--visual-qa <path>` and `--accept-risk`: a hard visual finding always blocks; an unresolved risk finding blocks unless `--accept-risk` is passed, in which case the release status is `pass_with_warning` instead of `pass`. Passing `--visual-qa` makes `--run-dir <run-dir>` mandatory alongside it: release reads `visual/render-provenance.json` from that run directory and blocks — missing file, or a digest mismatch against the PPTX being released — rather than silently shipping a file re-rendered after Visual QA last judged it.

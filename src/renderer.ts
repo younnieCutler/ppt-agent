@@ -3,7 +3,7 @@ import path from "node:path";
 import pptxgen from "pptxgenjs";
 import { validateGeometry, type Rect } from "./geometry";
 import { assertFontsInstalled } from "./fonts";
-import { deckSchema, type ContentModel, type DeckSpec, type SlideSpec } from "./schema";
+import { architectureHubZone, deckSchema, type ContentModel, type DeckSpec, type SlideSpec } from "./schema";
 import { drawGauge, drawSparkline } from "./visuals";
 import { resolvePresentationStyle, type ReferenceSelectionEntry, type ResolvedPresentationStyle } from "./style";
 import { applyOrganizationTemplate } from "./template";
@@ -104,6 +104,16 @@ const identityContext = (style: StyleScale): RenderContext => ({ style, transfor
 // side, a pipeline lane band), where losing the fill would delete signal rather than decoration.
 function panelFill(ctx: RenderContext, tone: string): Record<string, unknown> | undefined {
   return ctx.style.decoration === "filled" ? { color: hex(tone) } : undefined;
+}
+
+// A diagram that always claims the full CONTENT_H, regardless of how much it actually draws,
+// leaves a dead lower half on every slide whose content is shorter than the tallest case the
+// layout was ever authored for (a 3-node architecture zone in a box sized for 6). `band` fits the
+// vertical space to what the content actually needs and centers it in the content area instead,
+// so a sparse diagram reads as a deliberate composition rather than an accident of unused space.
+function band(contentHeight: number): { y: number; h: number } {
+  const clamped = Math.min(Math.max(contentHeight, 0.2), CONTENT_H);
+  return { y: CONTENT_Y + (CONTENT_H - clamped) / 2, h: clamped };
 }
 
 export function hex(value: string): string {
@@ -224,6 +234,34 @@ function renderStatement(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extra
 }
 
 function renderComparison(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "comparison" }>, rects: Rect[], ctx: RenderContext): void {
+  if (spec.composition === "verdict_contrast") {
+    // The contested figure is the subject of this slide, not the two panels arguing about it —
+    // so it renders at KPI scale above both, and the panels themselves are asymmetric widths
+    // (never equal, unlike two_column) with the rejected reading visibly muted against the
+    // adopted one.
+    const left = spec.content.left;
+    const right = spec.content.right;
+    const verdict = spec.content.delta ?? right.label;
+    const verdictY = CONTENT_Y + 0.05;
+    const verdictH = 0.95;
+    addText(slide, verdict, { x: MARGIN_X, y: verdictY, w: 11.85, h: verdictH, fontSize: 38 * ctx.style.kpiScale / ctx.style.fontScale, bold: true, align: "center" }, rects, `${spec.id}-verdict`, deck.theme.fonts.heading, deck.theme.palette.accent, ctx);
+    const panelGap = 0.35;
+    const leftW = 4.6;
+    const rightW = 6.9;
+    const startX = MARGIN_X + (11.85 - (leftW + rightW + panelGap)) / 2;
+    // The panels fill whatever the verdict headline leaves below it — `band()` centers within
+    // the *whole* content box and would push the panel top back up under the verdict text.
+    const panelY = verdictY + verdictH + 0.25;
+    const panelH = CONTENT_Y + CONTENT_H - panelY - 0.15;
+    addShape(slide, pptx, pptx.ShapeType.rect, { x: startX, y: panelY, w: leftW, h: panelH, fill: { color: hex(deck.theme.palette.mutedFill) }, line: { color: hex(deck.theme.palette.border), width: 0.8 }, allowOverlap: true }, rects, `${spec.id}-left-panel`, ctx);
+    addText(slide, left.label, { x: startX + 0.22, y: panelY + 0.18, w: leftW - 0.44, h: 0.32, fontSize: 13, bold: true }, rects, `${spec.id}-left-label`, deck.theme.fonts.heading, deck.theme.palette.muted, ctx);
+    left.items.forEach((item, index) => addText(slide, `• ${item}`, { x: startX + 0.22, y: panelY + 0.64 + index * 0.44, w: leftW - 0.44, h: 0.38, fontSize: 12, valign: "top" }, rects, `${spec.id}-left-item-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx));
+    const rightX = startX + leftW + panelGap;
+    addShape(slide, pptx, pptx.ShapeType.rect, { x: rightX, y: panelY, w: rightW, h: panelH, fill: { color: hex(deck.theme.palette.surface) }, line: { color: hex(deck.theme.palette.accent), width: 1.6 }, allowOverlap: true }, rects, `${spec.id}-right-panel`, ctx);
+    addText(slide, right.label, { x: rightX + 0.26, y: panelY + 0.2, w: rightW - 0.52, h: 0.36, fontSize: 16, bold: true }, rects, `${spec.id}-right-label`, deck.theme.fonts.heading, deck.theme.palette.accent, ctx);
+    right.items.forEach((item, index) => addText(slide, `• ${item}`, { x: rightX + 0.26, y: panelY + 0.72 + index * 0.48, w: rightW - 0.52, h: 0.42, fontSize: 14, bold: index === 0, valign: "top" }, rects, `${spec.id}-right-item-${index}`, deck.theme.fonts.body, deck.theme.palette.text, ctx));
+    return;
+  }
   if (spec.composition === "diagnosis_matrix") {
     const left = spec.content.left;
     const right = spec.content.right;
@@ -276,20 +314,33 @@ function renderProcess(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract
       addText(slide, `Stage ${index + 1}`, { x: x + 0.16, y: CONTENT_Y + 1.26, w: stageW - 0.32, h: 0.2, fontSize: 10, bold: true, align: "center", color: active ? "FFFFFF" : deck.theme.palette.muted }, rects, `${spec.id}-stage-number-${index}`, deck.theme.fonts.body, active ? "FFFFFF" : deck.theme.palette.muted, ctx);
       addText(slide, step.label, { x: x + 0.16, y: CONTENT_Y + 1.48, w: stageW - 0.32, h: 0.58, fontSize: 13, bold: true, align: "center", color: active ? "FFFFFF" : deck.theme.palette.text }, rects, `${spec.id}-stage-label-${index}`, deck.theme.fonts.heading, active ? "FFFFFF" : deck.theme.palette.text, ctx);
       if (step.detail) addText(slide, step.detail, { x: x + 0.08, y: CONTENT_Y + 2.55, w: stageW - 0.16, h: 0.78, fontSize: 11, align: "center", valign: "top" }, rects, `${spec.id}-stage-detail-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
+      // `members` is what turns "18 skills, one job each" from an assertion into something the
+      // slide actually shows: the stage is a cluster label, its members are the countable items
+      // a headline claim gets checked against (addHeadlineProofFindings in qa.ts).
+      if (step.members && step.members.length > 0) {
+        const membersY = CONTENT_Y + 2.55 + (step.detail ? 0.86 : 0);
+        addText(slide, step.members.map((member) => `• ${member}`).join("\n"), { x: x + 0.12, y: membersY, w: stageW - 0.24, h: 1.35, fontSize: 9.5, align: "left", valign: "top" }, rects, `${spec.id}-stage-members-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
+      }
     });
     return;
   }
   const startX = MARGIN_X + 0.1;
   const gap = 0.28;
   const stepW = (11.75 - gap * (steps.length - 1)) / steps.length;
-  const y = CONTENT_Y + 1.1;
+  const circleH = 0.55;
+  const labelGap = 0.27;
+  const labelH = 0.48;
+  const detailGap = 0.12;
+  const detailH = 0.95;
+  const hasDetail = steps.some((step) => step.detail);
+  const { y } = band(circleH + labelGap + labelH + (hasDetail ? detailGap + detailH : 0));
   steps.forEach((step, index) => {
     const x = startX + index * (stepW + gap);
     if (index < steps.length - 1) addLine(slide, pptx, x + stepW - 0.02, y + 0.27, gap + 0.04, 0, deck.theme.palette.accent, rects, `${spec.id}-link-${index}`, ctx, true);
-    addShape(slide, pptx, pptx.ShapeType.ellipse, { x, y, w: 0.55, h: 0.55, fill: { color: hex(deck.theme.palette.accent) }, line: { color: hex(deck.theme.palette.accent) }, allowOverlap: true }, rects, `${spec.id}-number-${index}`, ctx);
-    addText(slide, String(index + 1), { x, y: y + 0.04, w: 0.55, h: 0.42, fontSize: 13, bold: true, align: "center", color: "FFFFFF" }, rects, `${spec.id}-number-text-${index}`, deck.theme.fonts.body, "FFFFFF", ctx);
-    addText(slide, step.label, { x, y: y + 0.82, w: stepW, h: 0.48, fontSize: 16, bold: true, valign: "top" }, rects, `${spec.id}-step-${index}`, deck.theme.fonts.heading, deck.theme.palette.text, ctx);
-    if (step.detail) addText(slide, step.detail, { x, y: y + 1.42, w: stepW, h: 0.95, fontSize: 12, valign: "top" }, rects, `${spec.id}-detail-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
+    addShape(slide, pptx, pptx.ShapeType.ellipse, { x, y, w: circleH, h: circleH, fill: { color: hex(deck.theme.palette.accent) }, line: { color: hex(deck.theme.palette.accent) }, allowOverlap: true }, rects, `${spec.id}-number-${index}`, ctx);
+    addText(slide, String(index + 1), { x, y: y + 0.04, w: circleH, h: 0.42, fontSize: 13, bold: true, align: "center", color: "FFFFFF" }, rects, `${spec.id}-number-text-${index}`, deck.theme.fonts.body, "FFFFFF", ctx);
+    addText(slide, step.label, { x, y: y + circleH + labelGap, w: stepW, h: labelH, fontSize: 19 * ctx.style.visualScale / ctx.style.fontScale, bold: true, valign: "top" }, rects, `${spec.id}-step-${index}`, deck.theme.fonts.heading, deck.theme.palette.text, ctx);
+    if (step.detail) addText(slide, step.detail, { x, y: y + circleH + labelGap + labelH + detailGap, w: stepW, h: detailH, fontSize: 12, valign: "top" }, rects, `${spec.id}-detail-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
   });
 }
 
@@ -361,20 +412,31 @@ function renderPipeline(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extrac
   });
 }
 
-function renderArchitecture(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "architecture" }>, rects: Rect[], ctx: RenderContext): void {
+function renderArchitectureZones(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "architecture" }>, rects: Rect[], ctx: RenderContext): void {
   const zones = spec.content.zones;
   const gap = 0.2;
-  const zoneW = (11.85 - gap * (zones.length - 1)) / zones.length;
+  // When every edge converges on the same zone, that zone is the slide's subject, not just one
+  // more equal box in the row — S04's "Career Vault" and S11's "one core" are both this shape.
+  // Shared with QA (schema.ts) so "which zone is the hub" cannot drift between draw and judge.
+  const hubZoneId = architectureHubZone(spec.content.edges);
+  const weights = zones.map((zone) => (zone.id === hubZoneId ? 1.35 : 1));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const unitW = (11.85 - gap * (zones.length - 1)) / totalWeight;
+  const maxNodes = Math.max(...zones.map((zone) => zone.nodes.length));
+  const headerH = zones.some((zone) => zone.description) ? 1.22 : 0.9;
+  const { y, h } = band(headerH + Math.max(0, maxNodes - 1) * 0.62 + 0.42 + 0.2);
   const positions = new Map<string, { x: number; y: number; w: number; h: number }>();
+  let cursorX = MARGIN_X;
   zones.forEach((zone, zoneIndex) => {
-    const x = MARGIN_X + zoneIndex * (zoneW + gap);
-    const y = CONTENT_Y + 0.1;
-    const h = 4.95;
-    addShape(slide, pptx, pptx.ShapeType.rect, { x, y, w: zoneW, h, fill: { color: zoneIndex % 2 === 0 ? deck.theme.palette.surface : deck.theme.palette.background }, line: { color: hex(deck.theme.palette.border), width: 1 }, allowOverlap: true }, rects, `${spec.id}-zone-${zone.id}`, ctx);
-    addText(slide, zone.label, { x: x + 0.18, y: y + 0.18, w: zoneW - 0.36, h: 0.32, fontSize: 15, bold: true }, rects, `${spec.id}-zone-label-${zone.id}`, deck.theme.fonts.heading, deck.theme.palette.primary, ctx);
+    const zoneW = weights[zoneIndex] * unitW;
+    const x = cursorX;
+    cursorX += zoneW + gap;
+    const isHub = zone.id === hubZoneId;
+    addShape(slide, pptx, pptx.ShapeType.rect, { x, y, w: zoneW, h, fill: { color: zoneIndex % 2 === 0 ? deck.theme.palette.surface : deck.theme.palette.background }, line: { color: hex(isHub ? deck.theme.palette.accent : deck.theme.palette.border), width: isHub ? 1.6 : 1 }, allowOverlap: true }, rects, `${spec.id}-zone-${zone.id}`, ctx);
+    addText(slide, zone.label, { x: x + 0.18, y: y + 0.18, w: zoneW - 0.36, h: 0.36, fontSize: 18 * ctx.style.visualScale / ctx.style.fontScale, bold: true }, rects, `${spec.id}-zone-label-${zone.id}`, deck.theme.fonts.heading, isHub ? deck.theme.palette.accent : deck.theme.palette.primary, ctx);
     if (zone.description) addText(slide, zone.description, { x: x + 0.18, y: y + 0.58, w: zoneW - 0.36, h: 0.42, fontSize: 10, valign: "top" }, rects, `${spec.id}-zone-desc-${zone.id}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
     zone.nodes.forEach((node, nodeIndex) => {
-      const nodeY = y + 1.22 + nodeIndex * 0.62;
+      const nodeY = y + headerH + nodeIndex * 0.62;
       const nodeH = 0.42;
       addShape(slide, pptx, pptx.ShapeType.roundRect, { x: x + 0.2, y: nodeY, w: zoneW - 0.4, h: nodeH, fill: { color: hex(deck.theme.palette.background) }, line: { color: hex(deck.theme.palette.border), width: 0.7 }, allowOverlap: true }, rects, `${spec.id}-node-${zone.id}-${nodeIndex}`, ctx);
       addText(slide, node, { x: x + 0.3, y: nodeY + 0.05, w: zoneW - 0.6, h: 0.28, fontSize: 11, align: "center" }, rects, `${spec.id}-node-text-${zone.id}-${nodeIndex}`, deck.theme.fonts.body, deck.theme.palette.text, ctx);
@@ -398,6 +460,138 @@ function renderArchitecture(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Ex
       addText(slide, edge.label, { x: midX, y: midY, w: labelW, h: 0.28, fontSize: 9, align: "center", allowOverlap: true }, rects, `${spec.id}-edge-label-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
     }
   });
+}
+
+// A count of lines a zone's node list needs, at ~0.26in per line.
+function nodeLinesHeight(count: number): number {
+  return 0.32 + count * 0.26;
+}
+
+// The convention is zones[0] is the hub: a single large focal object with satellites arranged
+// in two flanking columns, each connected back to the hub by an explicit edge. This is what
+// "Career Vault, reused by every task" (S04) or "one core, one vault" (S11) actually looks like
+// as a system map, instead of one more equal-width column zone.
+function renderCentralHub(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "architecture" }>, rects: Rect[], ctx: RenderContext): void {
+  const [hub, ...satellites] = spec.content.zones;
+  const { y: bandY, h: bandH } = band(Math.min(CONTENT_H, 0.62 + nodeLinesHeight(Math.max(...spec.content.zones.map((zone) => zone.nodes.length)))));
+  const top = bandY;
+  const bottom = bandY + bandH;
+  const centerY = (top + bottom) / 2;
+  const hubW = 3.6;
+  const hubH = Math.min(bandH, 0.62 + nodeLinesHeight(hub.nodes.length));
+  const hubX = MARGIN_X + (11.85 - hubW) / 2;
+  const hubY = centerY - hubH / 2;
+  const positions = new Map<string, { x: number; y: number; w: number; h: number }>();
+  addShape(slide, pptx, pptx.ShapeType.roundRect, { x: hubX, y: hubY, w: hubW, h: hubH, rectRadius: 0.05, fill: { color: hex(deck.theme.palette.surface) }, line: { color: hex(deck.theme.palette.accent), width: 1.8 }, allowOverlap: true }, rects, `${spec.id}-hub`, ctx);
+  addText(slide, hub.label, { x: hubX + 0.24, y: hubY + 0.16, w: hubW - 0.48, h: 0.36, fontSize: 20 * ctx.style.visualScale / ctx.style.fontScale, bold: true, align: "center" }, rects, `${spec.id}-hub-label`, deck.theme.fonts.heading, deck.theme.palette.accent, ctx);
+  hub.nodes.forEach((node, index) => {
+    addText(slide, node, { x: hubX + 0.28, y: hubY + 0.56 + index * 0.26, w: hubW - 0.56, h: 0.24, fontSize: 11, align: "center" }, rects, `${spec.id}-hub-node-${index}`, deck.theme.fonts.body, deck.theme.palette.text, ctx);
+    positions.set(`${hub.id}:${node}`, { x: hubX, y: hubY, w: hubW, h: hubH });
+  });
+
+  const sideGap = 0.4;
+  const sideW = (11.85 - hubW - sideGap * 2) / 2;
+  const leftCount = Math.ceil(satellites.length / 2);
+  const columns: Array<{ x: number; zones: typeof satellites }> = [
+    { x: MARGIN_X, zones: satellites.slice(0, leftCount) },
+    { x: hubX + hubW + sideGap, zones: satellites.slice(leftCount) },
+  ];
+  columns.forEach(({ x, zones: columnZones }) => {
+    const gap = 0.26;
+    const heights = columnZones.map((zone) => 0.5 + nodeLinesHeight(zone.nodes.length));
+    const totalH = heights.reduce((sum, height) => sum + height, 0) + gap * Math.max(0, columnZones.length - 1);
+    let cursorY = centerY - totalH / 2;
+    columnZones.forEach((zone, zoneIndex) => {
+      const h = heights[zoneIndex];
+      addShape(slide, pptx, pptx.ShapeType.rect, { x, y: cursorY, w: sideW, h, fill: { color: hex(deck.theme.palette.background) }, line: { color: hex(deck.theme.palette.border), width: 1 }, allowOverlap: true }, rects, `${spec.id}-zone-${zone.id}`, ctx);
+      addText(slide, zone.label, { x: x + 0.18, y: cursorY + 0.1, w: sideW - 0.36, h: 0.28, fontSize: 13, bold: true }, rects, `${spec.id}-zone-label-${zone.id}`, deck.theme.fonts.heading, deck.theme.palette.primary, ctx);
+      zone.nodes.forEach((node, nodeIndex) => {
+        addText(slide, node, { x: x + 0.18, y: cursorY + 0.42 + nodeIndex * 0.26, w: sideW - 0.36, h: 0.24, fontSize: 10.5, valign: "top" }, rects, `${spec.id}-node-${zone.id}-${nodeIndex}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
+        positions.set(`${zone.id}:${node}`, { x, y: cursorY, w: sideW, h });
+      });
+      cursorY += h + gap;
+    });
+  });
+
+  spec.content.edges.forEach((edge, index) => {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (!from || !to) throw new Error(`Architecture edge references unknown endpoint: ${edge.from} -> ${edge.to}`);
+    const fromCenterX = from.x + from.w / 2;
+    const fromCenterY = from.y + from.h / 2;
+    const toCenterX = to.x + to.w / 2;
+    const toCenterY = to.y + to.h / 2;
+    addLine(slide, pptx, fromCenterX, fromCenterY, toCenterX - fromCenterX, toCenterY - fromCenterY, deck.theme.palette.accent, rects, `${spec.id}-edge-${index}`, ctx, true);
+    if (edge.label) {
+      const midX = (fromCenterX + toCenterX) / 2;
+      const midY = (fromCenterY + toCenterY) / 2;
+      addText(slide, edge.label, { x: midX - 0.75, y: midY - 0.14, w: 1.5, h: 0.28, fontSize: 9, align: "center", allowOverlap: true }, rects, `${spec.id}-edge-label-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
+    }
+  });
+}
+
+// Zones as full-width bands stacked top to bottom, weighted by how much each one holds — the
+// runtime layer with 5 responsibilities gets more vertical room than the one with 2 — with a
+// single dependency rail down the left standing in for "dependencies point down." This is
+// S06's Context→Experience→Evidence ontology and S12's layered runtime, neither of which is a
+// row of equal columns.
+function renderLayeredStack(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "architecture" }>, rects: Rect[], ctx: RenderContext): void {
+  const zones = spec.content.zones;
+  const gap = 0.14;
+  const railW = 0.14;
+  const railX = MARGIN_X;
+  const bandX = railX + railW + 0.24;
+  const bandW = 11.85 - railW - 0.24;
+  const weights = zones.map((zone) => Math.max(1, zone.nodes.length));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const { y: top, h: totalH } = band(CONTENT_H - 0.1);
+  const availableH = totalH - gap * (zones.length - 1);
+  const positions = new Map<string, { x: number; y: number; w: number; h: number }>();
+  const bandRects: Array<{ y: number; h: number }> = [];
+  let cursorY = top;
+  zones.forEach((zone, zoneIndex) => {
+    const h = availableH * (weights[zoneIndex] / totalWeight);
+    const y = cursorY;
+    bandRects.push({ y, h });
+    addShape(slide, pptx, pptx.ShapeType.rect, { x: bandX, y, w: bandW, h, fill: { color: zoneIndex % 2 === 0 ? deck.theme.palette.surface : deck.theme.palette.background }, line: { color: hex(deck.theme.palette.border), width: 1 }, allowOverlap: true }, rects, `${spec.id}-zone-${zone.id}`, ctx);
+    addText(slide, zone.label, { x: bandX + 0.2, y, w: 2.6, h, fontSize: 16 * ctx.style.visualScale / ctx.style.fontScale, bold: true, valign: "mid" }, rects, `${spec.id}-zone-label-${zone.id}`, deck.theme.fonts.heading, deck.theme.palette.primary, ctx);
+    const chipStartX = bandX + 2.9;
+    const chipGap = 0.14;
+    const chipW = Math.max(0.6, Math.min(2.2, (bandW - 2.9 - 0.2) / Math.max(1, zone.nodes.length) - chipGap));
+    zone.nodes.forEach((node, nodeIndex) => {
+      const chipX = chipStartX + nodeIndex * (chipW + chipGap);
+      const chipH = Math.min(h - 0.28, 0.5);
+      const chipY = y + (h - chipH) / 2;
+      addShape(slide, pptx, pptx.ShapeType.roundRect, { x: chipX, y: chipY, w: chipW, h: chipH, rectRadius: 0.04, fill: { color: hex(deck.theme.palette.background) }, line: { color: hex(deck.theme.palette.border), width: 0.7 }, allowOverlap: true }, rects, `${spec.id}-node-${zone.id}-${nodeIndex}`, ctx);
+      addText(slide, node, { x: chipX + 0.06, y: chipY + 0.04, w: chipW - 0.12, h: chipH - 0.08, fontSize: 10.5, align: "center", valign: "mid" }, rects, `${spec.id}-node-text-${zone.id}-${nodeIndex}`, deck.theme.fonts.body, deck.theme.palette.text, ctx);
+      positions.set(`${zone.id}:${node}`, { x: chipX, y: chipY, w: chipW, h: chipH });
+    });
+    cursorY += h + gap;
+  });
+  const railCenterX = railX + railW / 2;
+  addLine(slide, pptx, railCenterX, bandRects[0].y, 0, bandRects.at(-1)!.y + bandRects.at(-1)!.h - bandRects[0].y, deck.theme.palette.accent, rects, `${spec.id}-rail`, ctx, true);
+  spec.content.edges.forEach((edge, index) => {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (!from || !to) throw new Error(`Architecture edge references unknown endpoint: ${edge.from} -> ${edge.to}`);
+    const fromY = from.y + from.h / 2;
+    const toY = to.y + to.h / 2;
+    // A straight vertical drop at from.x only reached the target when both nodes happened to
+    // share a chip column. Routing through the dependency rail — out from the source, down (or
+    // up) the rail, back in to the target — always terminates on the actual target node,
+    // regardless of which column either one sits in, and reads as "dependencies point down"
+    // through the one shared spine instead of a tangle of point-to-point lines.
+    addLine(slide, pptx, from.x, fromY, railCenterX - from.x, 0, deck.theme.palette.muted, rects, `${spec.id}-edge-${index}-a`, ctx);
+    addLine(slide, pptx, railCenterX, fromY, 0, toY - fromY, deck.theme.palette.muted, rects, `${spec.id}-edge-${index}-b`, ctx);
+    addLine(slide, pptx, railCenterX, toY, to.x - railCenterX, 0, deck.theme.palette.muted, rects, `${spec.id}-edge-${index}-c`, ctx, true);
+    if (edge.label) addText(slide, edge.label, { x: Math.min(from.x, to.x), y: Math.min(fromY, toY) - 0.12, w: 1.6, h: 0.2, fontSize: 8, align: "center", allowOverlap: true }, rects, `${spec.id}-edge-label-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
+  });
+}
+
+function renderArchitecture(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "architecture" }>, rects: Rect[], ctx: RenderContext): void {
+  if (spec.composition === "central_hub") return renderCentralHub(slide, pptx, deck, spec, rects, ctx);
+  if (spec.composition === "layered_stack") return renderLayeredStack(slide, pptx, deck, spec, rects, ctx);
+  renderArchitectureZones(slide, pptx, deck, spec, rects, ctx);
 }
 
 function renderQuantitative(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "quantitative" }>, rects: Rect[], ctx: RenderContext): void {
