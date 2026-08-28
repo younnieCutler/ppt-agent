@@ -1,0 +1,23 @@
+schemaVersion: 2
+id: product
+palette:
+  background: "FAFCFF"
+  surface: "FFFFFF"
+  surfaceAlt: "F1F5F9"
+  text: "171C24"
+  textSecondary: "414B5A"
+  muted: "68758A"
+  inverseText: "FFFFFF"
+  primary: "2F66D8"
+  accent: "C54B40"
+  accentSecondary: "087F7B"
+  border: "CDD8E5"
+  divider: "DCE4ED"
+  gridline: "E9EEF4"
+  mutedFill: "F2F6FA"
+  highlightedRegion: "E8F0FF"
+  positive: "25805B"
+  warning: "9F620B"
+  negative: "B74848"
+  neutral: "66758B"
+data: ["2F66D8", "C54B40", "087F7B", "9A6B16", "7355B8", "4D7595"]

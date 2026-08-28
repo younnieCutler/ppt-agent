@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import pptxgen from "pptxgenjs";
-import { resolveTheme } from "./brand";
 import { validateGeometry, type Rect } from "./geometry";
 import { assertFontsInstalled } from "./fonts";
-import { deckSchema, type ContentModel, type DeckSpec, type SlideSpec, type ThemeTokens } from "./schema";
+import { deckSchema, type ContentModel, type DeckSpec, type SlideSpec } from "./schema";
 import { drawGauge, drawSparkline } from "./visuals";
+import { resolvePresentationStyle, type ReferenceSelectionEntry, type ResolvedPresentationStyle } from "./style";
+import { applyOrganizationTemplate } from "./template";
 
 const SLIDE_W = 13.333;
 const SLIDE_H = 7.5;
@@ -16,23 +17,30 @@ const CONTENT_H = 5.2;
 type Pptx = any;
 type Slide = any;
 type Decoration = "filled" | "flat" | "outline";
-type DirectionStyle = { fontScale: number; decoration: Decoration; visualScale: number };
-
-// designDirection styling. "auto" and "balanced" are identical on purpose: a deck that never
-// touches designDirection sees byte-for-byte the same output as before this table existed.
-// ponytail: "reference" always falls back to "balanced" for now — no ppt-master reference pack
-// ships PRD-shaped density/tone traits yet (see src/reference.ts). Wire a sidecar-driven style
-// once a real `ppt-agent-traits.json` with that shape exists.
-const directionStyleByDirection: Record<DeckSpec["contract"]["designDirection"], DirectionStyle> = {
-  auto: { fontScale: 1, decoration: "filled", visualScale: 1 },
-  balanced: { fontScale: 1, decoration: "filled", visualScale: 1 },
-  dense: { fontScale: 0.92, decoration: "flat", visualScale: 0.85 },
-  visual: { fontScale: 1.08, decoration: "filled", visualScale: 1.15 },
-  minimal: { fontScale: 1, decoration: "outline", visualScale: 1 },
-  reference: { fontScale: 1, decoration: "filled", visualScale: 1 },
+type DirectionStyle = {
+  fontScale: number;
+  headlineScale: number;
+  kpiScale: number;
+  spacingScale: number;
+  decoration: Decoration;
+  visualScale: number;
+  copyBudget: number;
 };
+type RenderDeck = Omit<DeckSpec, "theme"> & { theme: ResolvedPresentationStyle };
 
-let activeStyle: DirectionStyle = directionStyleByDirection.auto;
+let activeStyle: DirectionStyle = { fontScale: 1, headlineScale: 1, kpiScale: 1, spacingScale: 1, decoration: "filled", visualScale: 1, copyBudget: 1 };
+
+function activateStyle(style: ResolvedPresentationStyle): void {
+  activeStyle = {
+    fontScale: style.grammar.bodyScale,
+    headlineScale: style.grammar.headlineScale,
+    kpiScale: style.grammar.kpiScale,
+    spacingScale: style.grammar.spacingScale,
+    visualScale: style.grammar.focalVisualScale,
+    copyBudget: style.grammar.copyBudget,
+    decoration: style.grammar.surfaceUsage === "none" ? "outline" : style.grammar.surfaceUsage === "bands" ? "flat" : "filled",
+  };
+}
 
 // Only applied to plain list/card row backgrounds (action rows, matrix rows, comparison panels,
 // evidence panels) — not to shapes whose fill carries meaning (an "active" stage, an ownership
@@ -104,27 +112,28 @@ export function addLine(slide: Slide, pptx: Pptx, x: number, y: number, w: numbe
   rects.push({ id, x: normalizedX, y: normalizedY, w: normalizedW, h: normalizedH, allowOverlap: true });
 }
 
-function addChrome(slide: Slide, pptx: Pptx, deck: DeckSpec, page: number, rects: Rect[]): void {
+function addChrome(slide: Slide, pptx: Pptx, deck: RenderDeck, page: number, rects: Rect[]): void {
   const theme = deck.theme;
-  if (theme.logoPath) {
+  const ownership = theme.organization?.map.chromeOwnership;
+  if (theme.logoPath && (!ownership || ownership.logo === "renderer")) {
     slide.addImage({ path: theme.logoPath, x: 12.05, y: 0.22, w: 0.58, h: 0.34, altText: "ppt-agent-logo" });
   }
-  if (theme.footer.text) {
+  if (theme.footer.text && (!ownership || ownership.footer === "renderer")) {
     addText(slide, theme.footer.text, { x: MARGIN_X, y: 7.12, w: 8.8, h: 0.18, fontSize: 8, valign: "mid" }, rects, `footer-${page}`, theme.fonts.body, theme.palette.muted);
   }
-  if (theme.footer.showPageNumber) {
+  if (theme.footer.showPageNumber && (!ownership || ownership.pageNumber === "renderer")) {
     addText(slide, String(page), { x: 12.1, y: 7.08, w: 0.48, h: 0.22, fontSize: 9, align: "right", name: "ppt-agent-page-number" }, rects, `page-${page}`, theme.fonts.body, theme.palette.muted);
   }
 }
 
-function addHeadline(slide: Slide, deck: DeckSpec, slideSpec: SlideSpec, rects: Rect[]): void {
-  addText(slide, slideSpec.headline, { x: MARGIN_X, y: 0.48, w: 10.9, h: 0.62, fontSize: 26, bold: true, valign: "mid", align: slideSpec.headlineAlignment }, rects, `headline-${slideSpec.id}`, deck.theme.fonts.heading, deck.theme.palette.text);
+function addHeadline(slide: Slide, deck: RenderDeck, slideSpec: SlideSpec, rects: Rect[]): void {
+  addText(slide, slideSpec.headline, { x: MARGIN_X, y: 0.48, w: 10.9, h: 0.62, fontSize: 26 * deck.theme.grammar.headlineScale / deck.theme.grammar.bodyScale, bold: true, valign: "mid", align: slideSpec.headlineAlignment }, rects, `headline-${slideSpec.id}`, deck.theme.fonts.heading, deck.theme.palette.text);
 }
 
-function renderTitle(slide: Slide, pptx: Pptx, deck: DeckSpec, projectDir: string, spec: Extract<SlideSpec, { layout: "title" }>, rects: Rect[]): void {
+function renderTitle(slide: Slide, pptx: Pptx, deck: RenderDeck, projectDir: string, spec: Extract<SlideSpec, { layout: "title" }>, rects: Rect[]): void {
   const content = spec.content;
   if (content.kicker) addText(slide, content.kicker.toUpperCase(), { x: MARGIN_X, y: 1.62, w: 5, h: 0.28, fontSize: 11, bold: true }, rects, `${spec.id}-kicker`, deck.theme.fonts.body, deck.theme.palette.accent);
-  addText(slide, spec.headline, { x: MARGIN_X, y: 2.05, w: 10.5, h: 1.4, fontSize: 34, bold: true, valign: "mid", align: spec.headlineAlignment }, rects, `${spec.id}-title`, deck.theme.fonts.heading, deck.theme.palette.text);
+  addText(slide, spec.headline, { x: MARGIN_X, y: 2.05, w: 10.5, h: 1.4, fontSize: 34 * activeStyle.headlineScale / activeStyle.fontScale, bold: true, valign: "mid", align: spec.headlineAlignment }, rects, `${spec.id}-title`, deck.theme.fonts.heading, deck.theme.palette.text);
   if (content.subtitle) addText(slide, content.subtitle, { x: MARGIN_X, y: 3.72, w: 8.7, h: 0.62, fontSize: 17 }, rects, `${spec.id}-subtitle`, deck.theme.fonts.body, deck.theme.palette.muted);
   if (content.imagePath) {
     const imagePath = path.resolve(projectDir, content.imagePath);
@@ -133,9 +142,9 @@ function renderTitle(slide: Slide, pptx: Pptx, deck: DeckSpec, projectDir: strin
   }
 }
 
-function renderStatement(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "statement" }>, rects: Rect[]): void {
+function renderStatement(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "statement" }>, rects: Rect[]): void {
   if (spec.composition === "claim_actions") {
-    addText(slide, spec.content.body, { x: MARGIN_X, y: CONTENT_Y + 0.28, w: 4.3, h: 3.95, fontSize: 24, bold: true, valign: "top" }, rects, `${spec.id}-body`, deck.theme.fonts.heading, deck.theme.palette.primary);
+    addText(slide, spec.content.body, { x: MARGIN_X, y: CONTENT_Y + 0.28, w: 4.3, h: 3.95, fontSize: 24 * activeStyle.headlineScale / activeStyle.fontScale, bold: true, valign: "top" }, rects, `${spec.id}-body`, deck.theme.fonts.heading, deck.theme.palette.primary);
     addText(slide, "ACTIONS / EVIDENCE", { x: 5.5, y: CONTENT_Y + 0.28, w: 5.8, h: 0.28, fontSize: 10, bold: true }, rects, `${spec.id}-actions-label`, deck.theme.fonts.body, deck.theme.palette.accent);
     spec.content.proofs.forEach((proof, index) => {
       const y = CONTENT_Y + 0.78 + index * 0.78;
@@ -146,7 +155,7 @@ function renderStatement(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract
     return;
   }
   addShape(slide, pptx, pptx.ShapeType.rect, { x: MARGIN_X, y: CONTENT_Y + 0.32, w: 0.1, h: 2.02, fill: { color: hex(deck.theme.palette.accent) }, line: { color: hex(deck.theme.palette.accent) } }, rects, `${spec.id}-statement-accent`);
-  addText(slide, spec.content.body, { x: MARGIN_X + 0.24, y: CONTENT_Y + 0.35, w: 6.96, h: 2.0, fontSize: 25, bold: true, valign: "top" }, rects, `${spec.id}-body`, deck.theme.fonts.heading, deck.theme.palette.primary);
+  addText(slide, spec.content.body, { x: MARGIN_X + 0.24, y: CONTENT_Y + 0.35, w: 6.96, h: 2.0, fontSize: 25 * activeStyle.headlineScale / activeStyle.fontScale, bold: true, valign: "top" }, rects, `${spec.id}-body`, deck.theme.fonts.heading, deck.theme.palette.primary);
   const proofs = spec.content.proofs;
   if (proofs.length > 0) {
     addText(slide, "EVIDENCE", { x: 8.45, y: CONTENT_Y + 0.35, w: 3.5, h: 0.25, fontSize: 10, bold: true }, rects, `${spec.id}-evidence-label`, deck.theme.fonts.body, deck.theme.palette.accent);
@@ -154,7 +163,7 @@ function renderStatement(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract
   }
 }
 
-function renderComparison(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "comparison" }>, rects: Rect[]): void {
+function renderComparison(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "comparison" }>, rects: Rect[]): void {
   if (spec.composition === "diagnosis_matrix") {
     const left = spec.content.left;
     const right = spec.content.right;
@@ -195,7 +204,7 @@ function renderComparison(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extrac
   if (spec.content.delta) addText(slide, spec.content.delta, { x: 4.2, y: 6.12, w: 4.9, h: 0.42, fontSize: 15, bold: true, align: "center" }, rects, `${spec.id}-delta`, deck.theme.fonts.body, deck.theme.palette.accent);
 }
 
-function renderProcess(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "process" }>, rects: Rect[]): void {
+function renderProcess(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "process" }>, rects: Rect[]): void {
   const steps = spec.content.steps;
   if (spec.composition === "stage_gate") {
     const gap = 0.18;
@@ -225,7 +234,7 @@ function renderProcess(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<S
   });
 }
 
-function renderPipeline(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "pipeline" }>, rects: Rect[]): void {
+function renderPipeline(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "pipeline" }>, rects: Rect[]): void {
   const { lanes, nodes, edges } = spec.content;
   const effectiveLanes = lanes.length > 0 ? lanes : [{ id: "__default__", label: "" }];
   const laneCount = effectiveLanes.length;
@@ -293,7 +302,7 @@ function renderPipeline(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<
   });
 }
 
-function renderArchitecture(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "architecture" }>, rects: Rect[]): void {
+function renderArchitecture(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "architecture" }>, rects: Rect[]): void {
   const zones = spec.content.zones;
   const gap = 0.2;
   const zoneW = (11.85 - gap * (zones.length - 1)) / zones.length;
@@ -332,12 +341,12 @@ function renderArchitecture(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extr
   });
 }
 
-function renderQuantitative(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "quantitative" }>, rects: Rect[]): void {
+function renderQuantitative(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "quantitative" }>, rects: Rect[]): void {
   const metrics = spec.content.metrics;
   if (spec.composition === "metric_story") {
     const [primary, ...supporting] = metrics;
     addText(slide, primary.label, { x: MARGIN_X, y: CONTENT_Y + 0.48, w: 4.2, h: 0.4, fontSize: 17, bold: true }, rects, `${spec.id}-primary-label`, deck.theme.fonts.body, deck.theme.palette.muted);
-    addText(slide, `${primary.value}${primary.unit ?? ""}`, { x: MARGIN_X, y: CONTENT_Y + 1.02, w: 4.2, h: 1.15, fontSize: 47, bold: true }, rects, `${spec.id}-primary-value`, deck.theme.fonts.heading, deck.theme.palette.primary);
+    addText(slide, `${primary.value}${primary.unit ?? ""}`, { x: MARGIN_X, y: CONTENT_Y + 1.02, w: 4.2, h: 1.15, fontSize: 47 * activeStyle.kpiScale / activeStyle.fontScale, bold: true }, rects, `${spec.id}-primary-value`, deck.theme.fonts.heading, deck.theme.palette.primary);
     if (primary.note) addText(slide, primary.note, { x: MARGIN_X, y: CONTENT_Y + 2.38, w: 4.2, h: 0.68, fontSize: 12, valign: "top" }, rects, `${spec.id}-primary-note`, deck.theme.fonts.body, deck.theme.palette.muted);
     const supportPitch = 3.95 / Math.max(supporting.length, 1);
     const supportHeight = Math.min(0.58, Math.max(0.4, supportPitch - 0.08));
@@ -350,19 +359,19 @@ function renderQuantitative(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extr
     return;
   }
   if (spec.composition === "kpi_row") {
-    const gap = 0.25;
+    const gap = 0.25 * activeStyle.spacingScale;
     const w = (11.85 - gap * (metrics.length - 1)) / metrics.length;
     metrics.forEach((metric, index) => {
       const x = MARGIN_X + index * (w + gap);
       addText(slide, metric.label, { x, y: CONTENT_Y + 0.5, w, h: 0.42, fontSize: 13, bold: true }, rects, `${spec.id}-label-${index}`, deck.theme.fonts.body, deck.theme.palette.muted);
-      addText(slide, `${metric.value}${metric.unit ?? ""}`, { x, y: CONTENT_Y + 1.18, w, h: 0.9, fontSize: 29, bold: true }, rects, `${spec.id}-value-${index}`, deck.theme.fonts.heading, deck.theme.palette.primary);
+      addText(slide, `${metric.value}${metric.unit ?? ""}`, { x, y: CONTENT_Y + 1.18, w, h: 0.9, fontSize: 29 * activeStyle.kpiScale / activeStyle.fontScale, bold: true }, rects, `${spec.id}-value-${index}`, deck.theme.fonts.heading, deck.theme.palette.primary);
       if (metric.note) addText(slide, metric.note, { x, y: CONTENT_Y + 2.28, w, h: 0.52, fontSize: 11, valign: "top" }, rects, `${spec.id}-note-${index}`, deck.theme.fonts.body, deck.theme.palette.muted);
       if (index < metrics.length - 1) addLine(slide, pptx, x + w + gap / 2, CONTENT_Y + 0.42, 0, 2.3, deck.theme.palette.border, rects, `${spec.id}-separator-${index}`);
     });
     return;
   }
   if (spec.composition === "gauge_row") {
-    const gap = 0.4;
+    const gap = 0.4 * activeStyle.spacingScale;
     const cellW = (11.85 - gap * (metrics.length - 1)) / metrics.length;
     const size = Math.min(cellW, 2.6 * activeStyle.visualScale, CONTENT_H - 0.6);
     metrics.forEach((metric, index) => {
@@ -401,7 +410,7 @@ function renderQuantitative(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extr
   });
 }
 
-function renderTimeline(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "timeline" }>, rects: Rect[]): void {
+function renderTimeline(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "timeline" }>, rects: Rect[]): void {
   const milestones = spec.content.milestones;
   if (spec.composition === "now_next_later") {
     const groupCount = Math.min(3, milestones.length);
@@ -431,7 +440,7 @@ function renderTimeline(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<
   });
 }
 
-function renderEvidence(slide: Slide, pptx: Pptx, deck: DeckSpec, projectDir: string, spec: Extract<SlideSpec, { layout: "evidence" }>, rects: Rect[]): void {
+function renderEvidence(slide: Slide, pptx: Pptx, deck: RenderDeck, projectDir: string, spec: Extract<SlideSpec, { layout: "evidence" }>, rects: Rect[]): void {
   if (spec.composition === "evidence_panel" && !spec.content.assetPath) {
     addShape(slide, pptx, pptx.ShapeType.rect, { x: MARGIN_X, y: CONTENT_Y + 0.3, w: 3.75, h: 3.92, fill: panelFill(deck.theme.palette.surface), line: { color: hex(deck.theme.palette.border), width: 0.7 }, allowOverlap: true }, rects, `${spec.id}-evidence-panel`);
     if (spec.content.caption) addText(slide, spec.content.caption, { x: MARGIN_X + 0.32, y: CONTENT_Y + 0.7, w: 3.1, h: 1.45, fontSize: 24, bold: true, valign: "top" }, rects, `${spec.id}-caption`, deck.theme.fonts.heading, deck.theme.palette.primary);
@@ -462,29 +471,39 @@ const chartTypeMap: Record<string, { type: string; opts: Record<string, unknown>
   donut: { type: "doughnut", opts: {} },
 };
 
-function renderChart(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<SlideSpec, { layout: "chart" }>, rects: Rect[], contentModel: ContentModel | undefined): void {
+function renderChart(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<SlideSpec, { layout: "chart" }>, rects: Rect[], contentModel: ContentModel | undefined): void {
   const dataset = contentModel?.datasets?.find((candidate) => candidate.id === spec.content.dataRef);
   if (!dataset) throw new Error(`Chart dataRef '${spec.content.dataRef}' on slide ${spec.id} is absent from content-model.json datasets. Pass --run-dir with a content-model.json that defines it.`);
   const chartData = dataset.series.map((series) => ({ name: series.name, labels: dataset.categories, values: series.values }));
   const x = MARGIN_X;
-  const y = CONTENT_Y + 0.1;
+  const y = CONTENT_Y + 0.1 * activeStyle.spacingScale;
   const w = 11.85;
   const maxH = spec.content.caption ? CONTENT_H - 0.55 : CONTENT_H - 0.15;
   const h = Math.min(maxH * activeStyle.visualScale, maxH);
   const mapped = chartTypeMap[spec.content.chartType];
+  const crowdedLine = spec.content.chartType === "line" && dataset.series.length >= 4;
+  const labelledPie = (spec.content.chartType === "pie" || spec.content.chartType === "donut") && dataset.categories.length >= 5;
   slide.addChart(pptx.ChartType[mapped.type], chartData, {
     x, y, w, h,
-    chartColors: [deck.theme.palette.primary, deck.theme.palette.accent, deck.theme.palette.muted, deck.theme.palette.border].map(hex),
-    showLegend: dataset.series.length > 1,
+    chartColors: deck.theme.data.map(hex),
+    chartArea: { fill: { color: hex(deck.theme.palette.background) }, border: { color: hex(deck.theme.palette.divider), pt: 0.5 }, roundedCorners: false },
+    plotArea: { fill: { color: hex(deck.theme.palette.surface) }, border: { color: hex(deck.theme.palette.divider), pt: 0.5 } },
+    showLegend: dataset.series.length > 1 && !labelledPie,
     legendPos: "b",
     legendFontFace: deck.theme.fonts.body,
     catAxisLabelColor: hex(deck.theme.palette.muted),
     catAxisLabelFontFace: deck.theme.fonts.body,
     valAxisLabelColor: hex(deck.theme.palette.muted),
     valAxisLabelFontFace: deck.theme.fonts.body,
+    catGridLine: { color: hex(deck.theme.palette.gridline), style: "solid", size: 0.5 },
+    valGridLine: { color: hex(deck.theme.palette.gridline), style: "solid", size: 0.5 },
     dataLabelColor: hex(deck.theme.palette.text),
     dataLabelFontFace: deck.theme.fonts.body,
-    showValue: true,
+    showValue: deck.theme.grammar.chartTreatment === "data-first" || deck.theme.grammar.chartTreatment === "decision" || deck.theme.grammar.chartTreatment === "product" || labelledPie,
+    showLabel: labelledPie,
+    showLeaderLines: labelledPie,
+    lineDataSymbol: crowdedLine ? "circle" : "none",
+    lineDash: crowdedLine ? "dash" : "solid",
     ...mapped.opts,
   });
   rects.push({ id: `${spec.id}-chart`, x, y, w, h });
@@ -493,9 +512,11 @@ function renderChart(slide: Slide, pptx: Pptx, deck: DeckSpec, spec: Extract<Sli
   }
 }
 
-function renderSlide(pptx: Pptx, deck: DeckSpec, projectDir: string, spec: SlideSpec, page: number, contentModel: ContentModel | undefined): { rects: Rect[] } {
+function renderSlide(pptx: Pptx, deck: RenderDeck, projectDir: string, spec: SlideSpec, page: number, contentModel: ContentModel | undefined): { rects: Rect[] } {
   const slide = pptx.addSlide();
-  slide.background = { color: hex(deck.theme.palette.background) };
+  if (!deck.theme.organization || deck.theme.organization.map.chromeOwnership.background === "renderer") {
+    slide.background = { color: hex(deck.theme.palette.background) };
+  }
   const rects: Rect[] = [];
   if (spec.layout === "title") {
     renderTitle(slide, pptx, deck, projectDir, spec, rects);
@@ -521,15 +542,15 @@ function renderSlide(pptx: Pptx, deck: DeckSpec, projectDir: string, spec: Slide
 
 export type RenderResult = { outputPath: string; slideRects: Record<string, Rect[]> };
 
-export async function renderDeck(input: unknown, outputPath: string, projectDir = process.cwd(), options: { pageLimit?: number; contentModel?: ContentModel } = {}): Promise<RenderResult> {
+export async function renderDeck(input: unknown, outputPath: string, projectDir = process.cwd(), options: { pageLimit?: number; contentModel?: ContentModel; referenceSelection?: ReferenceSelectionEntry[] } = {}): Promise<RenderResult> {
   const parsedDeck = deckSchema.parse(input);
   if (parsedDeck.contract.aspectRatio !== "16:9") {
     throw new Error("The deterministic renderer only supports 16:9. A 4:3 Company Template Pack must use the native-template-fill workflow.");
   }
-  const deck: DeckSpec = { ...parsedDeck, theme: resolveTheme(parsedDeck.contract, projectDir) };
+  const deck: RenderDeck = { ...parsedDeck, theme: resolvePresentationStyle(parsedDeck.contract, { projectDir, referenceSelection: options.referenceSelection, legacyTheme: parsedDeck.theme }) };
   if (!options.pageLimit && deck.contract.slideCount !== deck.slides.length) throw new Error(`Contract slideCount ${deck.contract.slideCount} does not match ${deck.slides.length} slides.`);
-  assertFontsInstalled(deck.contract.fonts);
-  activeStyle = directionStyleByDirection[deck.contract.designDirection];
+  assertFontsInstalled(deck.theme.fonts);
+  activateStyle(deck.theme);
 
   const pptx: Pptx = new (pptxgen as any)();
   pptx.layout = "LAYOUT_WIDE";
@@ -538,13 +559,24 @@ export async function renderDeck(input: unknown, outputPath: string, projectDir 
   pptx.title = deck.title;
   pptx.company = "";
   pptx.lang = deck.contract.language;
-  pptx.theme = { headFontFace: deck.contract.fonts.heading, bodyFontFace: deck.contract.fonts.body, lang: deck.contract.language };
+  pptx.theme = { headFontFace: deck.theme.fonts.heading, bodyFontFace: deck.theme.fonts.body, lang: deck.contract.language };
 
   const slideRects: Record<string, Rect[]> = {};
   deck.slides.slice(0, options.pageLimit).forEach((spec, index) => {
     slideRects[spec.id] = renderSlide(pptx, deck, projectDir, spec, index + 1, options.contentModel).rects;
   });
-  fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });
-  await pptx.writeFile({ fileName: path.resolve(outputPath) });
-  return { outputPath: path.resolve(outputPath), slideRects };
+  const resolvedOutput = path.resolve(outputPath);
+  fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
+  const scratchPath = deck.theme.organization
+    ? path.join(path.dirname(resolvedOutput), `.ppt-agent-semantic-${process.pid}-${Date.now()}.pptx`)
+    : resolvedOutput;
+  await pptx.writeFile({ fileName: scratchPath });
+  if (deck.theme.organization) {
+    try {
+      await applyOrganizationTemplate(scratchPath, resolvedOutput, deck.theme, deck.slides.slice(0, options.pageLimit));
+    } finally {
+      if (fs.existsSync(scratchPath)) fs.rmSync(scratchPath, { force: true });
+    }
+  }
+  return { outputPath: resolvedOutput, slideRects };
 }

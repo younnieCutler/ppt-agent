@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { contentModelSchema, deckSchema, requiredNativeObjectsFor, type ContentModel, type DeckSpec, type SlideSpec, type SourceRef } from "./schema";
 import { readPptxOoxml, type NativeObjectCounts } from "./ooxml";
+import type { ResolvedPresentationStyle } from "./style";
 
 export type QaFinding = {
   severity: "hard" | "risk" | "warning";
@@ -18,6 +19,7 @@ export type QaReport = {
   slop: "pass" | "warn" | "fail";
   attempts: number;
   findings: QaFinding[];
+  presentationStyle?: string;
   powerpoint?: Record<string, unknown>;
 };
 
@@ -405,11 +407,12 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
   if (deck.contract.slideCount !== deck.slides.length) {
     findings.push({ severity: "hard", code: "SLIDE_COUNT_MISMATCH", message: "Contract slide count does not match DeckSpec." });
   }
-  if (deck.theme.fonts.heading !== deck.contract.fonts.heading || deck.theme.fonts.body !== deck.contract.fonts.body) {
+  const legacyTheme = deck.theme && "fonts" in deck.theme ? deck.theme : undefined;
+  if (legacyTheme && (legacyTheme.fonts.heading !== deck.contract.fonts.heading || legacyTheme.fonts.body !== deck.contract.fonts.body)) {
     findings.push({ severity: "hard", code: "FONT_CONTRACT_DRIFT", message: "Resolved theme fonts do not match the confirmed GenerationContract." });
   }
-  if (deck.theme.logoPath && !fs.existsSync(deck.theme.logoPath)) {
-    findings.push({ severity: "hard", code: "LOGO_NOT_FOUND", message: `Required brand logo does not exist: ${deck.theme.logoPath}` });
+  if (legacyTheme?.logoPath && !fs.existsSync(legacyTheme.logoPath)) {
+    findings.push({ severity: "hard", code: "LOGO_NOT_FOUND", message: `Required brand logo does not exist: ${legacyTheme.logoPath}` });
   }
 
   const bodyLayouts = deck.slides.filter((slide) => slide.layout !== "title").map((slide) => slide.layout);
@@ -459,7 +462,14 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
   return { ...rollUp(findings), reference: "not_applicable", attempts: 0, findings };
 }
 
-export async function ooxmlQa(pptxPath: string, deck: DeckSpec, slideIds = deck.slides.map((slide) => slide.id)): Promise<QaFinding[]> {
+export async function ooxmlQa(
+  pptxPath: string,
+  deck: DeckSpec,
+  slideIdsOrStyle: string[] | ResolvedPresentationStyle = deck.slides.map((slide) => slide.id),
+  style?: ResolvedPresentationStyle,
+): Promise<QaFinding[]> {
+  const slideIds = Array.isArray(slideIdsOrStyle) ? slideIdsOrStyle : deck.slides.map((slide) => slide.id);
+  const resolvedStyle = Array.isArray(slideIdsOrStyle) ? style : slideIdsOrStyle;
   const facts = await readPptxOoxml(pptxPath);
   const findings: QaFinding[] = [];
   if (!facts.parseOk) {
@@ -467,13 +477,18 @@ export async function ooxmlQa(pptxPath: string, deck: DeckSpec, slideIds = deck.
     return findings;
   }
   const renderedSlides = deck.slides.filter((slide) => slideIds.includes(slide.id));
-  if (facts.slideCount !== renderedSlides.length) {
-    findings.push({ severity: "hard", code: "OOXML_INVALID", message: `Rendered slide count ${facts.slideCount} does not match the expected ${renderedSlides.length}.` });
+  if (facts.slideCount !== renderedSlides.length && facts.slideCount !== deck.slides.length) {
+    findings.push({ severity: "hard", code: "OOXML_INVALID", message: `Rendered slide count ${facts.slideCount} does not match the expected scoped count ${renderedSlides.length} or full deck count ${deck.slides.length}.` });
     return findings;
   }
   const allowedFonts = new Set([deck.contract.fonts.heading, deck.contract.fonts.body]);
-  renderedSlides.forEach((slide, index) => {
-    const slideFacts = facts.slides[index];
+  renderedSlides.forEach((slide) => {
+    const deckIndex = deck.slides.findIndex((candidate) => candidate.id === slide.id);
+    const slideFacts = facts.slides[deckIndex];
+    if (!slideFacts) {
+      findings.push({ severity: "hard", code: "OOXML_INVALID", slideId: slide.id, message: `Rendered PPTX does not contain the expected slide '${slide.id}'.` });
+      return;
+    }
     const badFonts = slideFacts.typefaces.filter((typeface) => !allowedFonts.has(typeface));
     if (badFonts.length > 0) {
       findings.push({ severity: "hard", code: "FONT_SUBSTITUTION", slideId: slide.id, message: `Slide uses unapproved font(s): ${badFonts.join(", ")}.` });
@@ -487,6 +502,16 @@ export async function ooxmlQa(pptxPath: string, deck: DeckSpec, slideIds = deck.
     }
     if (slideFacts.hasEastAsianText && !slideFacts.hasEastAsianTypeface) {
       findings.push({ severity: "hard", code: "EAST_ASIAN_FONT_MISSING", slideId: slide.id, message: "Slide contains East Asian text but no East Asian typeface is declared on any run." });
+    }
+    if (slideFacts.gradientFills > 0) {
+      findings.push({ severity: "hard", code: "GRADIENT_FILL_FORBIDDEN", slideId: slide.id, message: `Slide carries ${slideFacts.gradientFills} gradient fill(s) on renderer-authored shapes or a native chart. Presentation archetypes use flat semantic fills; template master chrome and source images are exempt.` });
+    }
+    if (resolvedStyle && slideFacts.chartColors.length > 0) {
+      const allowedDataColors = new Set(resolvedStyle.data.map((color) => color.toUpperCase()));
+      const invalid = [...new Set(slideFacts.chartColors.flat().filter((color) => !allowedDataColors.has(color.toUpperCase())))];
+      if (invalid.length > 0) {
+        findings.push({ severity: "hard", code: "THEME_DATA_COLOR_VIOLATION", slideId: slide.id, message: `Chart uses categorical color(s) outside resolved theme.data: ${invalid.join(", ")}. Structural tokens must not be used as data colors.` });
+      }
     }
   });
   if (deck.contract.fontDelivery === "portable" && !facts.embeddedFonts) {
@@ -507,8 +532,8 @@ export function runPowerPointQa(pptxPath: string, deck: DeckSpec, runDir: string
   fs.mkdirSync(outputDir, { recursive: true });
   let raw = "";
   const extraArgs = [
-    ...(deck.theme.footer.showPageNumber ? ["-RequirePageNumber"] : []),
-    ...(deck.theme.logoPath ? ["-RequireLogo"] : []),
+    ...(deck.theme && "footer" in deck.theme && deck.theme.footer.showPageNumber ? ["-RequirePageNumber"] : []),
+    ...(deck.theme && "logoPath" in deck.theme && deck.theme.logoPath ? ["-RequireLogo"] : []),
     "-FontDelivery", deck.contract.fontDelivery,
     "-RequiredNativeObject",
     deck.slides

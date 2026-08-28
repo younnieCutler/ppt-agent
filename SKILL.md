@@ -8,6 +8,31 @@ disable-model-invocation: true
 
 Confirm audience, slide count, fonts, and delivery environment before rendering. Do not invent source-backed claims or substitute unavailable fonts. Commands below are cross-platform (Windows and macOS); adjust path separators for your shell.
 
+## Interview: presentation style
+
+Ask for the presentation style once, alongside audience and slide count, and offer exactly these choices — default **Auto**:
+
+| Choice | When |
+| --- | --- |
+| **Auto** (default) | Let the contract purpose pick the archetype. |
+| Corporate | Standard business reporting; the production default. |
+| Executive | Decision-first, sparse, large KPIs. |
+| Analytical | Data-led, dense, charts and evidence carry the hierarchy. |
+| Editorial | Statement-led, generous whitespace, no surfaces. |
+| Product | Product/startup/SaaS narrative with semantic surfaces. |
+| Stage | Keynote scale: very large type, minimal copy. |
+| Reference-first | Take the grammar from the primary reference; requires `referenceIds[0]` to carry P3 grammar metadata, otherwise it hard-fails. |
+
+Write the answer to `contract.presentationStyle`, then resolve the style **before authoring any composition** so slide density and composition choices are made against the archetype the deck will actually render in:
+
+```sh
+node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
+# → <run-dir>/resolved-style.json (full) and <run-dir>/style-context.json (compact, <1k tokens).
+#   Author compositions against style-context.json; never author palette HEX into the DeckSpec.
+```
+
+An organisation template pack is selected with `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`, 16:9 only). It cannot be combined with a standalone `brand.kind: "file"`, and a locked identity conflict hard-fails rather than falling back.
+
 ```sh
 npm run build
 node dist/cli.js reference --contract <contract.json> --reference-root <ppt-master-path> --run-dir <run-dir> [--top-k 3]
@@ -28,7 +53,7 @@ Core QA (above) never looks at a rendered image — it only checks structure and
 node dist/cli.js visual --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--slides S04,S07]
 ```
 
-Renders `<run-dir>/visual/slide-NNN.png`, `montage.png` (slide-ID labeled), `backend.json`, `index.json`, and `deck-context.json`. Requires a visual render backend (Windows + Microsoft PowerPoint today; LibreOffice is detected but not yet implemented).
+Renders `<run-dir>/visual/slide-NNN.png`, `montage.png` (slide-ID labeled), `backend.json`, `index.json`, and `deck-context.json`. Requires a visual render backend: PowerPoint COM on Windows, otherwise `soffice` + Poppler `pdftoppm`. When neither probes clean, the error names each missing capability.
 
 **Read `montage.png` and `deck-context.json`, then judge the deck against this rubric:**
 
@@ -37,6 +62,7 @@ Renders `<run-dir>/visual/slide-NNN.png`, `montage.png` (slide-ID labeled), `bac
 - **Spacing / Balance** — no accidental crowding; visual weight matches intent.
 - **Density**, read against `deck-context.json`'s `designDirection`: `dense` → high density is fine; `visual` → large text blocks are suspicious; `minimal` → empty space is fine; `balanced` → avoid both extremes.
 - **Semantic fit** — is the visual representation structurally valid but semantically weak (a process shown as unrelated cards, a comparison with no visible contrast, a quantitative story rendered as decoration instead of data)?
+- **Archetype fit**, read against `deck-context.json`'s `resolvedStyle`: does the slide match its archetype's `surfaceUsage`, `chartTreatment`, and spacing/headline scale? An analytical deck that reads as decorative, or a stage deck rendered at report density, is `ARCHETYPE_*_MISMATCH`. Brand/theme colors and fonts are resolved deterministically — a color or typeface outside `resolvedStyle` is `BRAND_COLOR_VIOLATION` / `BRAND_FONT_VIOLATION` / `THEME_DATA_COLOR_VIOLATION`, all hard.
 - **Anti-slop** — flag: excessive rounded cards, decorative shapes with no semantic role, repeated 3-column layouts across many slides, unnecessary gradients, identical structure slide after slide, arbitrary icons, generic dashboard styling unrelated to content, fake infographics that encode no information.
 - **Not slop by themselves**: plain white backgrounds, tables, sparse layouts, minimal decoration, dense report-style slides, a rough utilitarian style. Quality is purpose-fit, not visual complexity.
 
@@ -62,5 +88,15 @@ node dist/cli.js repair-apply --spec <deck.json> --run-dir <run-dir> --slide S04
 `repair-apply` rejects a replacement that changes the slide's `id` or `storyBeat`, weakens grounding (a new `sourceRefs` entry must already resolve in `content-model.json`), or drops a required native chart. It caps automatic attempts at 2 per slide (tracked in `<run-dir>/repair-state.json`) and reports `regressionScope: "slide" | "deck"` — `"deck"` means the composition or layout changed, so re-render and re-judge the whole montage, not just the one slide, before re-running `visual-qa`.
 
 After a repair: re-run `qa` (Core QA, full deck — it's free), then `visual`/`visual-qa` scoped to `regressionScope`.
+
+A repair replaces exactly one `SlideSpec`. It cannot change `organization`, `brand`, `presentationStyle`, `designDirection`, or the reference grammar — those live in the contract and are resolved once. If a finding can only be fixed by changing the style, stop and re-run the interview instead of repairing.
+
+## Run metrics
+
+```sh
+node dist/cli.js metrics --spec <deck.json> --run-dir <run-dir>
+```
+
+Writes `<run-dir>/p3-metrics.json` with a numerator/denominator per metric (brand violations, archetype fit, chart palette violations, layout repetition, Visual QA failures, repair success, style-resolution failure, style-context tokens). It reads only artifacts already in the run directory and sends nothing anywhere.
 
 `release` additionally accepts `--visual-qa <path>` and `--accept-risk`: a hard visual finding always blocks; an unresolved risk finding blocks unless `--accept-risk` is passed, in which case the release status is `pass_with_warning` instead of `pass`.

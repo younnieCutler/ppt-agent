@@ -12,8 +12,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.12",
     "jszip": "^3.10.1",
+    "pptx-automizer": "^0.9.3",
     "pptxgenjs": "^4.0.1",
+    "sharp": "^0.34.5",
     "yaml": "^2.7.0",
     "zod": "^3.24.0"
   },

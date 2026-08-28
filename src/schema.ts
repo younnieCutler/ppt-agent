@@ -17,7 +17,7 @@ export const contentModelSchema = z
       sourceId: z.string().min(1),
       excerptId: z.string().min(1),
       categories: z.array(z.string().min(1)).min(1).max(12),
-      series: z.array(z.object({ name: z.string().min(1), values: z.array(z.number()) })).min(1).max(4),
+      series: z.array(z.object({ name: z.string().min(1), values: z.array(z.number()) })).min(1).max(6),
       unit: z.string().optional(),
     })).optional(),
   })
@@ -79,7 +79,7 @@ export const sourceSchema = z.discriminatedUnion("kind", [
 
 export const contractSchema = z.object({
   sources: z.array(sourceSchema).min(1),
-  purpose: z.enum(["technical", "proposal", "internal", "executive", "sales", "training", "other"]),
+  purpose: z.enum(["technical", "proposal", "internal", "executive", "sales", "training", "other", "research", "strategy", "evidence", "vision", "narrative", "product", "startup", "saas", "keynote", "conference"]),
   audience: z.string().min(1),
   objective: z.string().min(1).optional(),
   audienceDecision: z.string().min(1).optional(),
@@ -89,6 +89,7 @@ export const contractSchema = z.object({
     .max(3)
     .optional(),
   designDirection: z.enum(["auto", "dense", "balanced", "visual", "minimal", "reference"]).default("auto"),
+  presentationStyle: z.enum(["auto", "corporate", "executive", "analytical", "editorial", "product", "stage", "reference-first"]).default("auto"),
   referenceIds: z.array(z.string().min(1)).min(1).max(3).optional(),
   storyline: z.array(storyBeatSchema).min(3).max(9),
   language: z.string().regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/, "language must be a BCP-47-like tag"),
@@ -97,24 +98,74 @@ export const contractSchema = z.object({
     z.object({ kind: z.literal("default") }),
     z.object({ kind: z.literal("file"), path: z.string().min(1) }),
   ]),
+  organization: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("none") }),
+    z.object({ kind: z.literal("directory"), path: z.string().min(1) }),
+  ]).default({ kind: "none" }),
   fonts: z.object({ heading: z.string().min(1), body: z.string().min(1) }),
   fontDelivery: z.enum(["managed_device", "portable"]).default("managed_device"),
   editability: z.literal("native_editable").default("native_editable"),
   aspectRatio: z.enum(["16:9", "4:3"]),
 }).superRefine((contract, ctx) => {
-  if (contract.designDirection === "reference" && (!contract.referenceIds || contract.referenceIds.length === 0)) {
+  if ((contract.designDirection === "reference" || contract.presentationStyle === "reference-first") && (!contract.referenceIds || contract.referenceIds.length === 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["referenceIds"], message: "designDirection 'reference' requires at least one referenceIds entry." });
+  }
+  if (contract.organization.kind === "directory" && contract.brand.kind === "file") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["organization"], message: "Organization packs own brand.yaml; do not combine organization.directory with brand.file." });
   }
 });
 
-export const paletteSchema = z.object({
-  background: z.string().regex(/^[0-9A-Fa-f]{6}$/),
-  surface: z.string().regex(/^[0-9A-Fa-f]{6}$/),
-  text: z.string().regex(/^[0-9A-Fa-f]{6}$/),
-  primary: z.string().regex(/^[0-9A-Fa-f]{6}$/),
-  accent: z.string().regex(/^[0-9A-Fa-f]{6}$/),
-  muted: z.string().regex(/^[0-9A-Fa-f]{6}$/),
-  border: z.string().regex(/^[0-9A-Fa-f]{6}$/),
+// YAML treats an all-numeric six-digit token such as `123456` as a number
+// unless it is quoted.  Coerce that representation back to its lexical form
+// while still rejecting malformed/short colors and preserving the public
+// string type.
+export const hexColorSchema = z.preprocess((value) => typeof value === "number" ? String(value) : value, z.string().regex(/^[0-9A-Fa-f]{6}$/));
+
+// V1 is retained solely for file/deck migration. New theme files use the
+// expanded semantic palette below. `paletteSchema` accepts both during the
+// migration window so existing imports continue to parse.
+export const legacyPaletteSchema = z.object({
+  background: hexColorSchema,
+  surface: hexColorSchema,
+  text: hexColorSchema,
+  primary: hexColorSchema,
+  accent: hexColorSchema,
+  muted: hexColorSchema,
+  border: hexColorSchema,
+});
+
+export const presentationArchetypes = ["corporate", "executive", "analytical", "editorial", "product", "stage"] as const;
+export const presentationArchetypeSchema = z.enum(presentationArchetypes);
+
+export const themePaletteSchema = z.object({
+  background: hexColorSchema,
+  surface: hexColorSchema,
+  surfaceAlt: hexColorSchema,
+  text: hexColorSchema,
+  textSecondary: hexColorSchema,
+  muted: hexColorSchema,
+  inverseText: hexColorSchema,
+  primary: hexColorSchema,
+  accent: hexColorSchema,
+  accentSecondary: hexColorSchema,
+  border: hexColorSchema,
+  divider: hexColorSchema,
+  gridline: hexColorSchema,
+  mutedFill: hexColorSchema,
+  highlightedRegion: hexColorSchema,
+  positive: hexColorSchema,
+  warning: hexColorSchema,
+  negative: hexColorSchema,
+  neutral: hexColorSchema,
+});
+
+export const paletteSchema = z.union([themePaletteSchema, legacyPaletteSchema]);
+
+export const themeV2Schema = z.object({
+  schemaVersion: z.literal(2),
+  id: presentationArchetypeSchema,
+  palette: themePaletteSchema,
+  data: z.tuple([hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema]),
 });
 
 export const brandFileSchema = z.object({
@@ -129,6 +180,12 @@ export const brandFileSchema = z.object({
   footer: z
     .object({ showPageNumber: z.boolean().default(true), text: z.string().default("") })
     .default({ showPageNumber: true, text: "" }),
+  // Optional lock metadata is ignored by legacy callers but lets an
+  // organisation pack declare which identity tokens may not be replaced by
+  // an archetype or reference grammar.
+  paletteLocked: z.boolean().default(false),
+  lockedPalette: z.array(z.string()).default([]),
+  locks: z.object({ palette: z.array(z.string()).default([]), fonts: z.boolean().optional() }).optional(),
 });
 
 const baseSlideSchema = z.object({
@@ -299,18 +356,23 @@ export const slideSchema = z.discriminatedUnion("layout", [
   chartSlideSchema,
 ]);
 
-export const themeSchema = z.object({
+export const legacyThemeSchema = z.object({
   name: z.string().min(1),
-  palette: paletteSchema,
+  palette: legacyPaletteSchema,
   fonts: z.object({ heading: z.string().min(1), body: z.string().min(1), locked: z.boolean() }),
   logoPath: z.string().optional(),
   footer: z.object({ showPageNumber: z.boolean(), text: z.string() }),
 });
 
+// DeckSpec accepts both the historical V1 theme object and a V2 token object
+// during migration.  New rendering always resolves a V2 style in code, so the
+// optional field is retained only for old decks and import compatibility.
+export const themeSchema = z.union([legacyThemeSchema, themeV2Schema]);
+
 const deckShapeSchema = z.object({
   contract: contractSchema,
   title: z.string().min(1),
-  theme: themeSchema,
+  theme: themeSchema.optional(),
   slides: z.array(slideSchema).min(3).max(30),
 });
 
@@ -405,6 +467,10 @@ export type Source = z.infer<typeof sourceSchema>;
 export type GenerationContract = z.infer<typeof contractSchema>;
 export type BrandFile = z.infer<typeof brandFileSchema>;
 export type ThemeTokens = z.infer<typeof themeSchema>;
+export type LegacyThemeTokens = z.infer<typeof legacyThemeSchema>;
+export type ThemePalette = z.infer<typeof themePaletteSchema>;
+export type ThemeTokensV2 = z.infer<typeof themeV2Schema>;
+export type PresentationArchetype = z.infer<typeof presentationArchetypeSchema>;
 export type SlideSpec = z.infer<typeof slideSchema>;
 export type DeckSpec = z.infer<typeof deckSchema>;
 

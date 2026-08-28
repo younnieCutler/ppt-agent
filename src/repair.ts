@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveExcerpt } from "./qa";
 import { deckSchema, requiredNativeObjectsFor, slideSchema, type ContentModel, type DeckSpec, type SlideSpec } from "./schema";
+import type { ResolvedPresentationStyle } from "./style";
 
 type RepairFinding = { severity: string; code: string; slideId?: string; message: string };
 type Dataset = NonNullable<ContentModel["datasets"]>[number];
@@ -13,6 +14,8 @@ export type RepairContext = {
   reference: Array<Record<string, unknown>>;
   findings: RepairFinding[];
   designDirection: DeckSpec["contract"]["designDirection"];
+  presentationStyle: DeckSpec["contract"]["presentationStyle"];
+  resolvedStyle?: Pick<ResolvedPresentationStyle, "themeId" | "designDirection" | "grammar" | "reference" | "locks" | "provenance">;
   theme: DeckSpec["theme"];
   imagePath: string;
 };
@@ -24,6 +27,7 @@ export function buildRepairContext(
   visualQaReport: { findings: RepairFinding[] } | undefined,
   referenceSelection: Array<Record<string, unknown>> | undefined,
   visualImagePath: string,
+  resolvedStyle?: ResolvedPresentationStyle,
 ): RepairContext {
   const slide = deck.slides.find((candidate) => candidate.id === slideId);
   if (!slide) throw new Error(`Slide '${slideId}' does not exist in this DeckSpec.`);
@@ -50,6 +54,15 @@ export function buildRepairContext(
     reference,
     findings,
     designDirection: deck.contract.designDirection,
+    presentationStyle: deck.contract.presentationStyle,
+    resolvedStyle: resolvedStyle ? {
+      themeId: resolvedStyle.themeId,
+      designDirection: resolvedStyle.designDirection,
+      grammar: resolvedStyle.grammar,
+      reference: resolvedStyle.reference,
+      locks: resolvedStyle.locks,
+      provenance: resolvedStyle.provenance,
+    } : undefined,
     theme: deck.theme,
     imagePath: visualImagePath,
   };

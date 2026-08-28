@@ -1,0 +1,23 @@
+schemaVersion: 2
+id: executive
+palette:
+  background: "FBFAF7"
+  surface: "FFFFFF"
+  surfaceAlt: "F1EFEA"
+  text: "151719"
+  textSecondary: "3E4145"
+  muted: "6D7075"
+  inverseText: "F7F7F5"
+  primary: "1D2B3A"
+  accent: "9B5C35"
+  accentSecondary: "6E3F56"
+  border: "CFCAC1"
+  divider: "DDD9D2"
+  gridline: "E8E4DE"
+  mutedFill: "F2F0EC"
+  highlightedRegion: "F3E9E1"
+  positive: "2F7456"
+  warning: "9A650C"
+  negative: "A94545"
+  neutral: "6B7077"
+data: ["1D2B3A", "9B5C35", "3E6F73", "6E3F56", "8C7A37", "586B8A"]

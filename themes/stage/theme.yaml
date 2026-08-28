@@ -1,0 +1,23 @@
+schemaVersion: 2
+id: stage
+palette:
+  background: "080A0D"
+  surface: "11151A"
+  surfaceAlt: "1B2027"
+  text: "F7F9FC"
+  textSecondary: "C7CDD5"
+  muted: "9AA4AF"
+  inverseText: "0B0D10"
+  primary: "91C84A"
+  accent: "4FA3E3"
+  accentSecondary: "E5A03D"
+  border: "39414B"
+  divider: "2C333C"
+  gridline: "242A31"
+  mutedFill: "181D23"
+  highlightedRegion: "1F2919"
+  positive: "61B97A"
+  warning: "E5A03D"
+  negative: "E06A6A"
+  neutral: "A0A8B2"
+data: ["91C84A", "4FA3E3", "E5A03D", "D66C9D", "8E7AD8", "45B5A7"]

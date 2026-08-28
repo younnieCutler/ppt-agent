@@ -22,7 +22,7 @@ describe("editable PPTX integration", () => {
     const pptxPath = path.join(runDir, "all-layouts.pptx");
     await renderDeck(fixture, pptxPath, process.cwd(), { contentModel });
     expect(fs.statSync(pptxPath).size).toBeGreaterThan(10000);
-    const structural = structuralQa(fixture, process.cwd());
+    const structural = structuralQa(fixture, process.cwd(), contentModel);
     expect(structural.status).toBe("pass");
     const powerpoint = runPowerPointQa(pptxPath, fixture, runDir);
     const report = mergeQa(structural, powerpoint);
