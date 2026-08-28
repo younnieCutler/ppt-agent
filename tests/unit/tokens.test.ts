@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { buildTokenReport, projectSlug, readTurns } from "../../src/tokens";
+import { buildTokenReport, markPhase, projectSlug, readTurns } from "../../src/tokens";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-tokens-"));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -63,7 +63,7 @@ describe("transcript parsing", () => {
 
   it("separates total from effective by exactly the cache-read sum", () => {
     const transcript = makeTranscript("cache", [turn(1, 500), turn(2, 300)]);
-    const report = buildTokenReport({ runDir: makeRun("cache", {}), transcriptPath: transcript, slides: 8, since: base });
+    const report = buildTokenReport({ runDir: makeRun("cache", {}), transcriptPath: transcript, slides: 8, since: base, until: base + 60 * 60_000 });
     expect(report.tokenUsage.total.total - report.tokenUsage.total.effective).toBe(2000);
     expect(report.tokenUsage.total.turns).toBe(2);
   });
@@ -84,7 +84,9 @@ describe("phase attribution", () => {
     expect(outputOf("sourceUnderstanding")).toBe(100);
     expect(outputOf("styleResolution")).toBe(200);
     expect(outputOf("visualJudgment")).toBe(400);
-    expect(outputOf("repair")).toBe(800 + 1600);
+    // turn(55) falls outside the window: generation ended at the last boundary, minute 50.
+    expect(outputOf("repair")).toBe(800);
+    expect(report.tokenUsage.total.turns).toBe(4);
     expect(report.attribution).toBe("artifact-mtime-window");
   });
 
@@ -104,7 +106,7 @@ describe("phase attribution", () => {
   it("does not report repair overhead on a run that never repaired anything", () => {
     const runDir = makeRun("no-repair", { "content-model.json": 10, "style-context.json": 20 });
     const transcript = makeTranscript("no-repair", [turn(5, 100), turn(30, 400)]);
-    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base });
+    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base, until: base + 60 * 60_000 });
     // Past the last boundary (styleResolution) the run is authoring compositions, not repairing.
     expect(report.tokenUsage.phases.compositionAuthoring.output).toBe(400);
     expect(report.tokenUsage.phases.repair.output).toBe(0);
@@ -112,9 +114,68 @@ describe("phase attribution", () => {
   });
 
   it("computes repair overhead as a share of total", () => {
-    const transcript = makeTranscript("overhead", [turn(5, 100), turn(55, 100)]);
+    const transcript = makeTranscript("overhead", [turn(5, 100), turn(45, 100)]);
     const report = buildTokenReport({ runDir: makeRun("overhead", artifacts), transcriptPath: transcript, slides: 8, since: base });
     expect(report.repairOverhead).toBeCloseTo(0.5, 2);
+  });
+
+  // `repair` is the last phase in the pipeline, so a naive successor rule sweeps everything after
+  // Visual QA into it and reports 100% repair overhead on a run that repaired nothing.
+  it("keeps repair overhead at zero when Visual QA ran but no repair followed", () => {
+    const runDir = makeRun("visual-no-repair", {
+      "content-model.json": 10,
+      "style-context.json": 20,
+      "visual-qa.json": 40,
+      // deliberately no repair/<slide>/context.json
+    });
+    const transcript = makeTranscript("visual-no-repair", [turn(30, 400), turn(45, 900), turn(50, 300)]);
+    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base, until: base + 60 * 60_000 });
+    expect(report.tokenUsage.phases.repair.output).toBe(0);
+    expect(report.repairOverhead).toBe(0);
+    expect(report.tokenUsage.phases.visualJudgment.output).toBe(400 + 900 + 300);
+  });
+});
+
+describe("measurement window", () => {
+  it("closes at the last phase boundary, so later unrelated work is not billed to this deck", () => {
+    const runDir = makeRun("window", { "content-model.json": 10, "visual-qa.json": 40 });
+    // The last two turns are the user doing something else in the same session afterwards.
+    const transcript = makeTranscript("window", [turn(20, 100), turn(35, 200), turn(90, 50_000), turn(120, 50_000)]);
+    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base });
+    expect(report.tokenUsage.total.output).toBe(300);
+    expect(report.window.closedBy).toBe("last-phase-boundary");
+    expect(Date.parse(report.window.to)).toBe(base + 40 * 60_000);
+  });
+
+  it("accepts an explicit end", () => {
+    const runDir = makeRun("explicit-window", { "content-model.json": 10, "visual-qa.json": 40 });
+    const transcript = makeTranscript("explicit-window", [turn(20, 100), turn(90, 900)]);
+    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base, until: base + 100 * 60_000 });
+    expect(report.tokenUsage.total.output).toBe(1000);
+    expect(report.window.closedBy).toBe("explicit");
+  });
+});
+
+describe("recorded phase markers", () => {
+  it("prefers recorded boundaries over artifact mtimes and says so", () => {
+    const runDir = makeRun("markers", { "content-model.json": 10 });
+    markPhase(runDir, "styleResolution", base + 20 * 60_000);
+    markPhase(runDir, "visualJudgment", base + 40 * 60_000);
+    const transcript = makeTranscript("markers", [turn(15, 100), turn(30, 200)]);
+    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base });
+    expect(report.attribution).toBe("mixed"); // content-model.json has no marker; it is inferred
+    expect(report.tokenUsage.phases.styleResolution.output).toBe(100);
+    expect(report.tokenUsage.phases.visualJudgment.output).toBe(200);
+  });
+
+  it("treats the last mark of a repeated phase as when it finished", () => {
+    const runDir = makeRun("remark", {});
+    markPhase(runDir, "compositionAuthoring", base + 10 * 60_000);
+    markPhase(runDir, "compositionAuthoring", base + 50 * 60_000);
+    const transcript = makeTranscript("remark", [turn(30, 700)]);
+    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base });
+    expect(report.attribution).toBe("phase-marker");
+    expect(report.tokenUsage.phases.compositionAuthoring.output).toBe(700);
   });
 });
 

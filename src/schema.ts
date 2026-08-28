@@ -448,6 +448,20 @@ export const deckSchema = z
           message: "gauge_row always renders each metric against a 0-100 scale; every metric.unit must be '%'.",
         });
       }
+      // The unit check above is not sufficient on its own. gauge_row draws `value / 100`, so a
+      // metric outside 0-100 renders as an empty or overflowing arc that misstates the figure —
+      // 250% fills the same gauge as 100%. A gauge is a bounded encoding; the value must be bounded.
+      if (slide.layout === "quantitative" && slide.composition === "gauge_row") {
+        slide.content.metrics.forEach((metric, metricIndex) => {
+          if (metric.value < 0 || metric.value > 100) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["slides", slideIndex, "content", "metrics", metricIndex, "value"],
+              message: `gauge_row renders each metric against a fixed 0-100 arc, so '${metric.label}' (${metric.value}) cannot be drawn honestly. Use 'kpi_row' or 'ranked_bars' for unbounded values.`,
+            });
+          }
+        });
+      }
       if (slide.layout === "quantitative" && slide.composition === "sparkline_row" && slide.content.metrics.length < 2) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

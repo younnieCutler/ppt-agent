@@ -100,6 +100,8 @@ Core QA now hard-fails two data-encoding defects, before any render or judgment:
 - `MISLEADING_QUANTITATIVE_ENCODING` — a `ranked_bars` / `sparkline_row` / `gauge_row` slide whose metrics carry different units. Those compositions plot everything on one shared axis, so mixed units invite a comparison the data does not support. **Repair by changing composition to `kpi_row` or `metric_story`**, which present each figure on its own terms — never by deleting the data.
 - `INCOMPARABLE_METRIC_SCALE` — same compositions, one unit, but the largest metric is over 100× the smallest, so the small bars carry no readable length.
 
+`gauge_row` is a **bounded** encoding and the schema enforces both halves of that: every metric's `unit` must be `%`, and every `value` must fall within `0`–`100`. The renderer draws `value / 100`, so 250% would fill the same arc as 100%. Unbounded figures belong on `kpi_row` or `ranked_bars`.
+
 Text budgets are measured in **display columns**, not codepoints, so a Japanese glyph counts as two. Japanese decks (`contract.language` starting `ja`) additionally get `JAPANESE_ORPHAN_PUNCTUATION` and `JAPANESE_AWKWARD_LINE_BREAK` from a kinsoku wrap simulation, and every deck gets `HEADLINE_BAD_WRAP`. These are `risk`, not `hard`: they run against an estimated column budget rather than real font metrics, so live measurement is still `qa --powerpoint`.
 
 ## Run metrics
@@ -118,7 +120,9 @@ node dist/cli.js score  --spec <deck.json> --run-dir <run-dir> --scores <scores.
 node dist/cli.js record --spec <deck.json> --run-dir <run-dir> --benchmark <id> --version <label>
 ```
 
-`tokens` reads the Claude Code session transcript (`~/.claude/projects/<slug>/*.jsonl`) — the only real source of `usage`, since no LLM runs inside this CLI — and writes `<run-dir>/tokens.json`. It reports `total` (everything, cache reads included) and `effective` (`input + cache_creation + output`) separately; per-slide targets are read against `effective`. Phases are attributed by run-dir artifact mtime windows, which the artifact labels `artifact-mtime-window` so it is never mistaken for provider metadata.
+`tokens` reads the Claude Code session transcript (`~/.claude/projects/<slug>/*.jsonl`) — the only real source of `usage`, since no LLM runs inside this CLI — and writes `<run-dir>/tokens.json`. It reports `total` (everything, cache reads included) and `effective` (`input + cache_creation + output`) separately; per-slide targets are read against `effective`.
+
+**The measurement window is `[run-dir creation, last phase boundary]`.** It has to close, or work you do later in the same session gets billed to this deck. `style`, `reference`, `render`, `visual-qa`, and `repair-context` each append a marker to `<run-dir>/run.jsonl` as they complete, so boundaries are *recorded* rather than guessed; artifact mtimes remain a fallback for runs made before markers existed. `tokens.json` says which was used (`phase-marker` / `mixed` / `artifact-mtime-window`) and how the window closed. Override with `--since` / `--until` when you need a different window.
 
 `score` takes `{ "scores": { <dimension>: 0-100 } }` covering every dimension in `src/score.ts` (`contentFidelity`, `narrativeQuality`, `visualHierarchy`, `semanticVisualization`, `referenceGrammarFit`, `layoutVariety`, `typographyReadability`, `purposeFit`, `antiSlop`). Weights live in code, not in your input, and `referenceGrammarFit` must be **omitted** when the contract declares no `referenceIds` — its weight is redistributed so a no-reference deck is not capped at 90. **A hard finding in `qa.json` or `visual-qa.json` fails the run whatever the dimensions say.**
 

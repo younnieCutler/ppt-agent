@@ -83,3 +83,38 @@ describe("misleading quantitative encoding", () => {
     ]))[0].code).toBe("INCOMPARABLE_METRIC_SCALE");
   });
 });
+
+// A gauge is a bounded encoding. Pinning the unit to '%' is not enough on its own: the renderer
+// draws `value / 100`, so 250% fills exactly the same arc as 100% and -15% draws nothing.
+describe("gauge_row bounded domain", () => {
+  it("rejects a value above the 0-100 arc", () => {
+    expect(() => codesFor(deckWith("gauge_row", [
+      { label: "達成率", value: 250, unit: "%" },
+      { label: "進捗", value: 40, unit: "%" },
+    ]))).toThrow(/cannot be drawn honestly/);
+  });
+
+  it("rejects a negative value", () => {
+    expect(() => codesFor(deckWith("gauge_row", [
+      { label: "成長率", value: -15, unit: "%" },
+      { label: "進捗", value: 40, unit: "%" },
+    ]))).toThrow(/cannot be drawn honestly/);
+  });
+
+  it("names the compositions that can carry an unbounded value", () => {
+    try {
+      codesFor(deckWith("gauge_row", [{ label: "達成率", value: 250, unit: "%" }, { label: "進捗", value: 40, unit: "%" }]));
+      throw new Error("expected a schema rejection");
+    } catch (error) {
+      expect(String(error)).toMatch(/kpi_row|ranked_bars/);
+    }
+  });
+
+  it("accepts values on the arc, including its endpoints", () => {
+    expect(codesFor(deckWith("gauge_row", [
+      { label: "完了", value: 100, unit: "%" },
+      { label: "未着手", value: 0, unit: "%" },
+      { label: "進行中", value: 55, unit: "%" },
+    ]))).toHaveLength(0);
+  });
+});

@@ -11,7 +11,7 @@ import { visualQa } from "./visual-qa";
 import { applyRepair, buildRepairContext, recordRepairAttempt } from "./repair";
 import { resolvePresentationStyle, styleContext } from "./style";
 import { writeP3Metrics } from "./metrics";
-import { resolveTranscript, writeTokenReport } from "./tokens";
+import { markPhase, resolveTranscript, writeTokenReport } from "./tokens";
 import { recordRun, writeQualityReport } from "./score";
 
 function option(args: string[], name: string): string {
@@ -99,6 +99,7 @@ async function main(): Promise<void> {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
+      markPhase(runDir, "styleResolution");
     }
     emit({ status: "pass", themeId: style.themeId, designDirection: style.designDirection, resolvedBy: style.provenance.resolvedBy, outputPath: runDir ? path.join(path.resolve(runDir), "style-context.json") : undefined }, style);
     return;
@@ -116,6 +117,7 @@ async function main(): Promise<void> {
     if (runDir) {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "reference-selection.json"), JSON.stringify(selected, null, 2));
+      markPhase(runDir, "referenceRetrieval");
     }
     emit({ status: "pass", selected: selected.map((entry) => entry.id), outputPath: runDir ? path.join(path.resolve(runDir), "reference-selection.json") : undefined }, selected);
     return;
@@ -150,6 +152,7 @@ async function main(): Promise<void> {
     const report = visualQa(deck, findings, undefined, style);
     const outputPath = path.join(path.resolve(runDir), "visual-qa.json");
     fs.writeFileSync(outputPath, JSON.stringify(report, null, 2));
+    markPhase(runDir, "visualJudgment");
     emitReport(report, outputPath);
     if (report.status !== "pass") process.exitCode = 2;
     return;
@@ -176,6 +179,7 @@ async function main(): Promise<void> {
     fs.mkdirSync(outDir, { recursive: true });
     const contextPath = path.join(outDir, "context.json");
     fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
+    markPhase(runDir, "repair");
     // The repair author needs the whole context, but it needs exactly one copy of it: read the file.
     emit({ status: "pass", slideId, outputPath: contextPath, findings: (context as { findings?: Array<{ code: string }> }).findings?.map((finding) => finding.code) ?? [] }, context);
     return;
@@ -260,6 +264,7 @@ async function main(): Promise<void> {
       specPath,
       benchmark: optionalOption(args, "--benchmark"),
       since: optionalOption(args, "--since") ? Date.parse(option(args, "--since")) : undefined,
+      until: optionalOption(args, "--until") ? Date.parse(option(args, "--until")) : undefined,
     });
     emit({
       status: "pass",
@@ -316,9 +321,11 @@ async function main(): Promise<void> {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
+      markPhase(runDir, "styleResolution");
     }
     const result = await renderDeck(deck, outPath, projectDir, { contentModel, referenceSelection });
     fs.writeFileSync(`${path.resolve(outPath)}.geometry.json`, JSON.stringify(result.slideRects, null, 2));
+    if (runDir) markPhase(runDir, "compositionAuthoring");
     print({ status: "pass", outputPath: result.outputPath });
     return;
   }

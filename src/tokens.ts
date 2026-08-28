@@ -42,8 +42,9 @@ export type TokenTotals = {
 export type TokenReport = {
   benchmark?: string;
   transcript: string;
-  attribution: "artifact-mtime-window";
-  window: { from: string; to: string };
+  /** `phase-marker` when run.jsonl recorded the boundaries; `artifact-mtime-window` when inferred. */
+  attribution: "phase-marker" | "artifact-mtime-window" | "mixed";
+  window: { from: string; to: string; closedBy: "explicit" | "last-phase-boundary" | "open" };
   slides: number;
   acceptedSlides: number;
   tokenUsage: {
@@ -128,17 +129,56 @@ function mtimeOf(filePath: string): number | undefined {
   return fs.existsSync(filePath) ? fs.statSync(filePath).mtimeMs : undefined;
 }
 
+export type PhaseBoundary = { phase: PhaseName; at: number };
+
+const markerFile = "run.jsonl";
+
 /**
- * Phase boundaries, in pipeline order. Each entry marks the moment its phase *finished*, so a turn
- * belongs to the first boundary that has not yet passed. Missing artifacts simply drop out.
+ * Records that `phase` just completed. Called by the CLI commands that end each phase, so boundaries
+ * are observed rather than inferred — mtime inference cannot tell a phase's completion from a later
+ * incidental touch of the same file, and gives no end to the measurement window at all.
  */
-function phaseBoundaries(runDir: string, specPath?: string): Array<{ phase: PhaseName; at: number }> {
+export function markPhase(runDir: string, phase: PhaseName, at = Date.now()): void {
   const resolved = path.resolve(runDir);
+  fs.mkdirSync(resolved, { recursive: true });
+  fs.appendFileSync(path.join(resolved, markerFile), `${JSON.stringify({ phase, at: new Date(at).toISOString() })}\n`);
+}
+
+function readMarkers(runDir: string): PhaseBoundary[] {
+  const markerPath = path.join(path.resolve(runDir), markerFile);
+  if (!fs.existsSync(markerPath)) return [];
+  const boundaries: PhaseBoundary[] = [];
+  for (const line of fs.readFileSync(markerPath, "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      const entry = JSON.parse(line) as { phase: PhaseName; at: string };
+      if (phaseNames.includes(entry.phase)) boundaries.push({ phase: entry.phase, at: Date.parse(entry.at) });
+    } catch { continue; }
+  }
+  // A phase can be marked more than once (a re-render, a second repair). The last mark is when it
+  // actually finished.
+  const latest = new Map<PhaseName, number>();
+  for (const boundary of boundaries) latest.set(boundary.phase, Math.max(latest.get(boundary.phase) ?? 0, boundary.at));
+  return [...latest].map(([phase, at]) => ({ phase, at }));
+}
+
+/**
+ * Phase boundaries, in chronological order. Each entry marks the moment its phase *finished*, so a
+ * turn belongs to the first boundary it has not yet crossed.
+ *
+ * Recorded markers win. Artifact mtimes are the fallback, and exist only so runs produced before
+ * markers were introduced still report something rather than nothing.
+ */
+export function phaseBoundaries(runDir: string, specPath?: string): PhaseBoundary[] {
+  const resolved = path.resolve(runDir);
+  const marked = readMarkers(resolved);
+  const markedPhases = new Set(marked.map((boundary) => boundary.phase));
   const repairDir = path.join(resolved, "repair");
   const repairMtimes = fs.existsSync(repairDir)
     ? fs.readdirSync(repairDir).map((slide) => mtimeOf(path.join(repairDir, slide, "context.json"))).filter((value): value is number => value !== undefined)
     : [];
-  const candidates: Array<{ phase: PhaseName; at: number | undefined }> = [
+  const inferred: Array<{ phase: PhaseName; at: number | undefined }> = [
+    // content-model.json is authored by the agent, not by any CLI command, so it has no marker.
     { phase: "sourceUnderstanding", at: mtimeOf(path.join(resolved, "content-model.json")) },
     { phase: "referenceRetrieval", at: mtimeOf(path.join(resolved, "reference-selection.json")) },
     { phase: "styleResolution", at: mtimeOf(path.join(resolved, "style-context.json")) },
@@ -146,22 +186,29 @@ function phaseBoundaries(runDir: string, specPath?: string): Array<{ phase: Phas
     { phase: "visualJudgment", at: mtimeOf(path.join(resolved, "visual-qa.json")) },
     { phase: "repair", at: repairMtimes.length > 0 ? Math.max(...repairMtimes) : undefined },
   ];
-  return candidates
-    .filter((entry): entry is { phase: PhaseName; at: number } => entry.at !== undefined)
-    .sort((a, b) => a.at - b.at);
+  return [
+    ...marked,
+    ...inferred.filter((entry): entry is PhaseBoundary => entry.at !== undefined && !markedPhases.has(entry.phase)),
+  ].sort((a, b) => a.at - b.at);
 }
 
 /**
  * A boundary marks the moment its phase finished, so a turn belongs to the first boundary it has not
- * yet crossed. Turns past every boundary are in whatever phase follows the last one that completed —
- * calling them all `repair` would report 100% repair overhead on a run that never repaired anything.
+ * yet crossed. Turns past every boundary are in whatever phase follows the last one that completed.
+ *
+ * `repair` is never inferred. It is the last phase in the pipeline, so a naive "successor" rule
+ * would sweep every turn after Visual QA into it and report 100% repair overhead on a run that
+ * repaired nothing. A turn only counts as repair when a repair boundary actually exists.
  */
-function phaseFor(at: number, boundaries: Array<{ phase: PhaseName; at: number }>): PhaseName {
+function phaseFor(at: number, boundaries: PhaseBoundary[]): PhaseName {
   const boundary = boundaries.find((entry) => at <= entry.at);
   if (boundary) return boundary.phase;
   const last = boundaries.at(-1);
   if (!last) return "outline";
-  return phaseNames[Math.min(phaseNames.indexOf(last.phase) + 1, phaseNames.length - 1)];
+  const successor = phaseNames[phaseNames.indexOf(last.phase) + 1];
+  if (!successor) return last.phase;
+  const repairHappened = boundaries.some((entry) => entry.phase === "repair");
+  return successor === "repair" && !repairHappened ? last.phase : successor;
 }
 
 function readJsonIfExists<T>(filePath: string): T | undefined {
@@ -176,6 +223,8 @@ export function buildTokenReport(options: {
   benchmark?: string;
   /** Epoch ms to start counting from. Defaults to the run directory's creation time. */
   since?: number;
+  /** Epoch ms to stop counting at. Defaults to the last recorded phase boundary. */
+  until?: number;
 }): TokenReport {
   const resolved = path.resolve(options.runDir);
   // The run directory's own creation marks the start of the run; turns before it belong to whatever
@@ -184,7 +233,11 @@ export function buildTokenReport(options: {
   const stats = fs.statSync(resolved);
   const runStart = options.since ?? (stats.birthtimeMs || stats.mtimeMs);
   const boundaries = phaseBoundaries(resolved, options.specPath);
-  const turns = readTurns(options.transcriptPath).filter((turn) => turn.at >= runStart);
+  const markedCount = readMarkers(resolved).length;
+  // The window must close, or unrelated work done later in the same session gets billed to this
+  // deck. Generation ends at the last phase boundary; everything after it is somebody else's cost.
+  const runEnd = options.until ?? boundaries.at(-1)?.at ?? Date.now();
+  const turns = readTurns(options.transcriptPath).filter((turn) => turn.at >= runStart && turn.at <= runEnd);
 
   const total = emptyTotals();
   const sidechain = emptyTotals();
@@ -204,8 +257,12 @@ export function buildTokenReport(options: {
   return {
     benchmark: options.benchmark,
     transcript: options.transcriptPath,
-    attribution: "artifact-mtime-window",
-    window: { from: new Date(runStart).toISOString(), to: new Date(turns.at(-1)?.at ?? runStart).toISOString() },
+    attribution: markedCount === 0 ? "artifact-mtime-window" : markedCount === boundaries.length ? "phase-marker" : "mixed",
+    window: {
+      from: new Date(runStart).toISOString(),
+      to: new Date(runEnd).toISOString(),
+      closedBy: options.until ? "explicit" : boundaries.length > 0 ? "last-phase-boundary" : "open",
+    },
     slides: options.slides,
     acceptedSlides,
     tokenUsage: { total, sidechain, phases },
