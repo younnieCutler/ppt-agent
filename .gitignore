@@ -15,3 +15,6 @@ output/
 # control so later versions can be compared against a real pre-improvement deck.
 !evals/real-world/**/baseline/*.pdf
 !evals/real-world/**/baseline/*.pptx
+
+# Scratch probes
+probe.tmp.*
