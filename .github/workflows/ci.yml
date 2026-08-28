@@ -6,16 +6,13 @@ on:
   pull_request:
 
 jobs:
-  # This PR makes measurement and regression a product concern, so "166 tests pass" cannot stay a
-  # local claim. Ubuntu is the fast required check; Windows additionally exercises the render,
-  # font-preflight, and PowerPoint COM paths that are skipped elsewhere.
+  # Windows runs the full suite: font preflight reads the Windows font registry (src/fonts.ts), so
+  # every render/OOXML/template test needs it. Tests that additionally require Microsoft PowerPoint
+  # itself probe for the COM object and skip when it is absent — a CI runner has Windows but no
+  # Office, and that is a missing application, not a product regression.
   test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    name: test (windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,4 +22,20 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run build
+
+  # Linux cannot run the suite — font preflight deliberately supports Windows and macOS only, and
+  # a deck must never render with an unverified typeface. This job still catches type and build
+  # portability breaks, which is what it is honestly able to check.
+  portability:
+    name: typecheck + build (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
       - run: npm run build
