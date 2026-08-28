@@ -276,7 +276,7 @@ function applyLegacyBrand(
       : [];
   return {
     palette,
-    data: [brand.palette.primary, brand.palette.accent, theme.data[2], theme.data[3], theme.data[4], theme.data[5]],
+    data: brand.data ?? [brand.palette.primary, brand.palette.accent, theme.data[2], theme.data[3], theme.data[4], theme.data[5]],
     fonts: { heading: contract.fonts.heading, body: contract.fonts.body, locked: fontsLocked },
     logoPath,
     footer: brand.footer,
@@ -323,8 +323,8 @@ export function resolvePresentationStyle(
   if (resolved.locks.palette.includes("text") && resolved.locks.palette.includes("background") && contrastRatio(resolved.palette.text, resolved.palette.background) < 4.5) {
     throw new Error("BRAND_CONTRAST_VIOLATION: locked brand text/background colors do not meet the 4.5:1 practical contrast floor.");
   }
-  if (resolved.locks.palette.includes("muted") && resolved.locks.palette.includes("background") && contrastRatio(resolved.palette.textSecondary, resolved.palette.background) < 4.5) {
-    throw new Error("BRAND_CONTRAST_VIOLATION: locked brand secondary text/background colors do not meet the 4.5:1 practical contrast floor.");
+  if (resolved.locks.palette.includes("muted") && resolved.locks.palette.includes("background") && contrastRatio(resolved.palette.muted, resolved.palette.background) < 4.5) {
+    throw new Error("BRAND_CONTRAST_VIOLATION: locked brand muted/background colors do not meet the 4.5:1 practical contrast floor.");
   }
   return resolved;
 }

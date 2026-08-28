@@ -266,8 +266,8 @@ async function main(): Promise<void> {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
     const referenceSelectionPath = path.join(path.resolve(runDir), "reference-selection.json");
-    const result = await renderDeck(deck, outPath, projectDir, { pageLimit: 1, contentModel: loadContentModelIfExists(contentModelPath) });
     const references = loadReferenceSelectionIfExists(referenceSelectionPath);
+    const result = await renderDeck(deck, outPath, projectDir, { pageLimit: 1, contentModel: loadContentModelIfExists(contentModelPath), referenceSelection: references });
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
     const canonicalDeck = { ...deck, theme: style as any };
     const firstSlideId = canonicalDeck.slides[0].id;

@@ -171,6 +171,11 @@ export const themeV2Schema = z.object({
 export const brandFileSchema = z.object({
   name: z.string().min(1),
   palette: paletteSchema,
+  // Optional: an organisation's own categorical chart colors. Without this, chart series 3-6 fall
+  // back to the archetype's data colors, which can visibly clash with a brand's identity colors
+  // (series 1-2). Organization Brand outranks Archetype, so a brand that cares about its chart
+  // palette should declare all six here.
+  data: z.tuple([hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema]).optional(),
   fonts: z
     .object({ heading: z.string().min(1), body: z.string().min(1), locked: z.boolean().default(false) })
     .optional(),

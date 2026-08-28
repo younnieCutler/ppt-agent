@@ -116,6 +116,92 @@ describe("P3 presentation style resolution", () => {
     expect(style.grammar.chartTreatment).toBe("data-first");
   });
 
+  it("lets an organization brand declare its own chart data palette instead of borrowing the archetype's", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-style-org-data-"));
+    fs.writeFileSync(path.join(root, "template.pptx"), "placeholder");
+    fs.writeFileSync(path.join(root, "brand.yaml"), [
+      "name: Data Org",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "CC0000"',
+      '  accent: "000000"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+      "data:",
+      '  - "CC0000"',
+      '  - "000000"',
+      '  - "990000"',
+      '  - "333333"',
+      '  - "666666"',
+      '  - "AA3333"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
+      version: 1,
+      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+    const contract = contractSchema.parse({ ...fixture, presentationStyle: "analytical", organization: { kind: "directory", path: root } });
+    const style = resolvePresentationStyle(contract, { projectDir: process.cwd() });
+    expect(style.data).toEqual(["CC0000", "000000", "990000", "333333", "666666", "AA3333"]);
+  });
+
+  it("falls back to archetype data colors 3-6 when an organization brand declares no data palette", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-style-org-nodata-"));
+    fs.writeFileSync(path.join(root, "template.pptx"), "placeholder");
+    fs.writeFileSync(path.join(root, "brand.yaml"), [
+      "name: No Data Org",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "CC0000"',
+      '  accent: "000000"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
+      version: 1,
+      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+    const contract = contractSchema.parse({ ...fixture, presentationStyle: "analytical", organization: { kind: "directory", path: root } });
+    const style = resolvePresentationStyle(contract, { projectDir: process.cwd() });
+    const analyticalTheme = resolvePresentationStyle(contractSchema.parse({ ...fixture, presentationStyle: "analytical" }), { projectDir: process.cwd() });
+    expect(style.data.slice(0, 2)).toEqual(["CC0000", "000000"]);
+    expect(style.data.slice(2)).toEqual(analyticalTheme.data.slice(2));
+  });
+
+  it("checks the locked muted color itself for contrast, not the derived secondary text token", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-style-muted-contrast-"));
+    fs.writeFileSync(path.join(root, "template.pptx"), "placeholder");
+    fs.writeFileSync(path.join(root, "brand.yaml"), [
+      "name: Muted Org",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "F2F2F2"', // near-white on white background: fails 4.5:1 against background
+      '  border: "DDDDDD"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
+      version: 1,
+      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+    const contract = contractSchema.parse({ ...fixture, organization: { kind: "directory", path: root } });
+    expect(() => resolvePresentationStyle(contract, { projectDir: process.cwd() })).toThrow(/BRAND_CONTRAST_VIOLATION/i);
+  });
+
   it("hard-fails a locked organization font conflict", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-style-font-"));
     fs.writeFileSync(path.join(root, "template.pptx"), "placeholder");
