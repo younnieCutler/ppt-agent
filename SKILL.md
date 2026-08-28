@@ -31,7 +31,13 @@ node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
 #   Author compositions against style-context.json; never author palette HEX into the DeckSpec.
 ```
 
-An organisation template pack is selected with `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`, 16:9 only). It cannot be combined with a standalone `brand.kind: "file"`, and a locked identity conflict hard-fails rather than falling back.
+An organisation template pack is selected with `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`). Aspect ratio:
+
+- **default / no-organization renderer: 16:9 only** — a plain 4:3 deck is rejected.
+- **Organization Template Pack: 16:9 or 4:3.** A 4:3 pack requires `template-map.json`'s `aspectRatio: "4:3"` **and** a real `template.pptx` sized exactly 10×7.5in.
+- `contract.aspectRatio` and the pack's declared `aspectRatio` must agree, or style resolution hard-fails with `ORGANIZATION_TEMPLATE_ASPECT_RATIO_MISMATCH`.
+
+It cannot be combined with a standalone `brand.kind: "file"`, and a locked identity conflict hard-fails rather than falling back.
 
 ```sh
 npm run build
