@@ -19,7 +19,15 @@ node dist/cli.js render --spec tests/fixtures/deck.json --out output/example.ppt
 node dist/cli.js qa --spec tests/fixtures/deck.json --pptx output/example.pptx --run-dir output/run
 ```
 
-Each slide's `sourceRefs` reference an excerpt `id` from a `content-model.json` you provide via `--run-dir`; excerpt text lives there once instead of being duplicated on every slide.
+Each slide's `sourceRefs` reference an excerpt `id` from a `content-model.json` you provide via `--run-dir`; excerpt text lives there once instead of being duplicated on every slide. A `chart` layout slide's `content.dataRef` similarly resolves against a `datasets` entry in the same `content-model.json`, so its values render as an editable native PowerPoint chart instead of DeckSpec-authored numbers.
+
+### Reference retrieval
+
+```bash
+node dist/cli.js reference --contract contract.json --reference-root /path/to/ppt-master --run-dir output/run --top-k 3
+```
+
+Reads `templates/{styles,layouts}/*_index.json` from an external `ppt-master`-shaped directory (never bundled in this repo), scores entries deterministically against the contract's purpose/audience/designDirection/visualIntent/storyline, and writes the top-k selection to `<run-dir>/reference-selection.json`. Set `contract.designDirection: "reference"` and `contract.referenceIds` (ids from that selection) to require it — `qa` hard-fails if a referenced id is missing.
 
 `qa` performs structural, source-grounding, and OOXML-based checks (font substitution, required native objects, full-slide rasterization, font embedding) on every platform — this is the release bar. Pass `--powerpoint` on Windows with Microsoft PowerPoint installed for additional, optional PowerPoint COM verification; its absence never blocks a pass.
 

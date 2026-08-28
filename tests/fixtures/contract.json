@@ -1,0 +1,29 @@
+{
+  "sources": [
+    {
+      "kind": "prompt",
+      "id": "prompt",
+      "text": "A comparison and data flow deck"
+    }
+  ],
+  "purpose": "technical",
+  "audience": "engineering leaders",
+  "designDirection": "balanced",
+  "visualIntent": ["comparison"],
+  "language": "en",
+  "slideCount": 3,
+  "brand": {
+    "kind": "default"
+  },
+  "fonts": {
+    "heading": "Arial",
+    "body": "Arial"
+  },
+  "fontDelivery": "managed_device",
+  "aspectRatio": "16:9",
+  "storyline": [
+    "opening",
+    "problem",
+    "design"
+  ]
+}

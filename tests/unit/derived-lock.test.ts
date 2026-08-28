@@ -15,6 +15,7 @@ const expectedVisualByLayout: Record<(typeof layoutNames)[number], string> = {
   quantitative: "chart",
   timeline: "timeline",
   evidence: "evidence_panel",
+  chart: "chart",
 };
 
 const expectedNativeObjectsByComposition: Record<string, string[]> = {
@@ -23,8 +24,10 @@ const expectedNativeObjectsByComposition: Record<string, string[]> = {
   sequence: ["text", "shapes", "connectors"], stage_gate: ["text", "shapes"],
   pipeline_lanes: ["text", "shapes", "connectors"], architecture_zones: ["text", "shapes", "connectors"],
   kpi_row: ["text", "shapes"], ranked_bars: ["text", "shapes"], metric_story: ["text", "shapes"],
+  gauge_row: ["text", "shapes"], sparkline_row: ["text", "connectors"],
   linear_roadmap: ["text", "shapes", "connectors"], now_next_later: ["text", "shapes"],
   evidence_list: ["text"], evidence_panel: ["text"],
+  native_chart: ["text", "chart"],
 };
 
 function slideStub(layout: string, composition: string, content: Record<string, unknown> = {}): SlideSpec {

@@ -7,5 +7,15 @@
         { "id": "R001", "locator": "prompt", "text": "A semantic deck with comparison, ordered process, pipeline, architecture, metrics 12 8 4, timeline, and evidence." }
       ]
     }
+  ],
+  "datasets": [
+    {
+      "id": "D001",
+      "sourceId": "prompt",
+      "excerptId": "R001",
+      "categories": ["Coverage", "Latency", "Defects"],
+      "series": [{ "name": "fixture period", "values": [12, 8, 4] }],
+      "unit": "%"
+    }
   ]
 }

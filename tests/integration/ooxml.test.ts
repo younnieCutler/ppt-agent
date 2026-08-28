@@ -4,12 +4,13 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { renderDeck } from "../../src/renderer";
 import { ooxmlQa } from "../../src/qa";
-import { deckSchema } from "../../src/schema";
+import { contentModelSchema, deckSchema } from "../../src/schema";
 
 // Cross-platform equivalent of the PowerShell/PowerPoint-COM checks in tests/integration/render.test.ts.
 // Runs on every OS (no PowerPoint dependency) so Core QA has real coverage on macOS/Linux CI.
 
 const fixture = deckSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/all-layouts.json"), "utf8")));
+const contentModel = contentModelSchema.parse(JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/content-model-all-layouts.json"), "utf8")));
 const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-ooxml-"));
 
 afterAll(() => fs.rmSync(runDir, { recursive: true, force: true }));
@@ -17,7 +18,7 @@ afterAll(() => fs.rmSync(runDir, { recursive: true, force: true }));
 describe("OOXML-based Core QA", () => {
   it("finds no findings against a deck rendered with its own confirmed fonts and derived native objects", async () => {
     const pptxPath = path.join(runDir, "all-layouts.pptx");
-    await renderDeck(fixture, pptxPath, process.cwd());
+    await renderDeck(fixture, pptxPath, process.cwd(), { contentModel });
     const findings = await ooxmlQa(pptxPath, fixture);
     expect(findings).toEqual([]);
   }, 30000);

@@ -10,7 +10,7 @@
     "purpose": "technical",
     "audience": "engineering leaders",
     "language": "en",
-    "slideCount": 9,
+    "slideCount": 10,
     "brand": {
       "kind": "default"
     },
@@ -406,6 +406,32 @@
       "claims": [
         {
           "text": "Evidence stays beside the claim it supports",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ]
+    },
+    {
+      "id": "S10",
+      "role": "chart",
+      "headline": "A native chart keeps the same numbers editable",
+      "layout": "chart",
+      "content": {
+        "chartType": "bar",
+        "dataRef": "D001",
+        "caption": "Illustrative coverage trend"
+      },
+      "sourceRefs": [
+        {
+          "sourceId": "prompt",
+          "excerptId": "R001"
+        }
+      ],
+      "composition": "native_chart",
+      "storyBeat": "closing",
+      "claims": [
+        {
+          "text": "A native chart keeps the same numbers editable",
           "kind": "interpretation",
           "status": "verified"
         }
