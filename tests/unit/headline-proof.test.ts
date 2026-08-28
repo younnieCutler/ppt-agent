@@ -23,14 +23,18 @@ function withS07Steps(steps: unknown[]) {
   return withS07((slide) => ({ ...slide, content: { steps } }));
 }
 
-const membersByStage = [4, 4, 4, 3, 3]; // sums to 18, matching the "18 skills" headline
-
-function stepsWithMembers(): Array<Record<string, unknown>> {
+function stepsWithMemberCounts(counts: number[]): Array<Record<string, unknown>> {
   const original = deck.slides.find((slide: { id: string }) => slide.id === "S07").content.steps as Array<{ id: string; label: string }>;
   return original.map((step, index) => ({
     ...step,
-    members: Array.from({ length: membersByStage[index] }, (_, memberIndex) => `Skill ${index + 1}.${memberIndex + 1}`),
+    members: Array.from({ length: counts[index] }, (_, memberIndex) => `Skill ${index + 1}.${memberIndex + 1}`),
   }));
+}
+
+const membersByStage = [4, 4, 4, 3, 3]; // sums to 18, matching the "18 skills" headline
+
+function stepsWithMembers(): Array<Record<string, unknown>> {
+  return stepsWithMemberCounts(membersByStage);
 }
 
 describe("headline-visual proof (VISUAL_DOES_NOT_PROVE_HEADLINE)", () => {
@@ -79,6 +83,40 @@ describe("headline-visual proof (VISUAL_DOES_NOT_PROVE_HEADLINE)", () => {
       contentModel,
     );
     expect(report.findings.some((finding) => finding.code === "VISUAL_DOES_NOT_PROVE_HEADLINE")).toBe(false);
+  });
+
+  it("hard-fails when the headline's claimed number does not equal the declared visualProof value (headline 20, proof 18, actual 18)", () => {
+    const report = structuralQa(
+      withS07((slide) => ({
+        ...slide,
+        headline: "20 skills, one job each",
+        claims: [{ ...(slide.claims as Array<{ text: string }>)[0], text: "20 skills, one job each" }],
+        content: { steps: stepsWithMembers() }, // actual = 18, matches the declared value exactly
+        visualProof: { kind: "count", value: 18, collection: "process.members" },
+      })),
+      process.cwd(),
+      contentModel,
+    );
+    const finding = report.findings.find((candidate) => candidate.code === "VISUAL_DOES_NOT_PROVE_HEADLINE" && candidate.slideId === "S07");
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe("hard");
+    expect(finding?.message).toMatch(/Headline claims "20 skills"/);
+  });
+
+  it("hard-fails when the declared visualProof value does not exactly equal what the visual shows (headline 18, proof 18, actual 20)", () => {
+    const report = structuralQa(
+      withS07((slide) => ({
+        ...slide,
+        content: { steps: stepsWithMemberCounts([4, 4, 4, 4, 4]) }, // actual = 20, exceeds the declared value
+        visualProof: { kind: "count", value: 18, collection: "process.members" },
+      })),
+      process.cwd(),
+      contentModel,
+    );
+    const finding = report.findings.find((candidate) => candidate.code === "VISUAL_DOES_NOT_PROVE_HEADLINE" && candidate.slideId === "S07");
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe("hard");
+    expect(finding?.message).toMatch(/shows 20/);
   });
 
   it("hard-fails when the declared collection does not apply to the slide's layout", () => {

@@ -453,6 +453,13 @@ const visualProofResolvers: Record<VisualProofCollection, (slide: SlideSpec) => 
 //    evidence — it can misfire on headline phrasing that was never meant as a countable claim —
 //    so a mismatch here is `risk`, a prompt to add an explicit contract or rephrase, not a
 //    release blocker on its own.
+type HeadlineCountClaim = { text: string; value: number };
+
+/** Every "<number> <plural noun>" the headline names, e.g. "18 skills" in "18 skills, one job each". */
+function headlineCountClaims(headline: string): HeadlineCountClaim[] {
+  return [...headline.matchAll(/\b(\d+)\s+[A-Za-z]+s\b/g)].map((match) => ({ text: match[0], value: Number(match[1]) }));
+}
+
 function addHeadlineProofFindings(slide: SlideSpec, findings: QaFinding[]): void {
   const proof = slide.visualProof;
   if (proof) {
@@ -461,12 +468,25 @@ function addHeadlineProofFindings(slide: SlideSpec, findings: QaFinding[]): void
       findings.push({ severity: "hard", code: "VISUAL_DOES_NOT_PROVE_HEADLINE", slideId: slide.id, message: `visualProof.collection '${proof.collection}' does not apply to layout '${slide.layout}'.` });
       return;
     }
-    if (proof.value > actual) {
+    // An explicit contract is a claim that three numbers agree: what the headline says, what the
+    // author declared, and what the visual actually shows. Any one of them disagreeing is a hard
+    // failure — once the count is made explicit, "the visual shows enough" is no longer good
+    // enough; it must show exactly what was declared, and the headline must say what was declared.
+    const mismatchedClaim = headlineCountClaims(slide.headline).find((claim) => claim.value !== proof.value);
+    if (mismatchedClaim) {
       findings.push({
         severity: "hard",
         code: "VISUAL_DOES_NOT_PROVE_HEADLINE",
         slideId: slide.id,
-        message: `visualProof declares ${proof.value} via '${proof.collection}', but the slide's visual (${slide.layout}/${slide.composition}) shows only ${actual}. Either the visual must represent ${proof.value}, or lower the declared value.`,
+        message: `Headline claims "${mismatchedClaim.text}" but visualProof declares ${proof.value} via '${proof.collection}'. The headline's number and the declared proof value must match exactly.`,
+      });
+    }
+    if (proof.value !== actual) {
+      findings.push({
+        severity: "hard",
+        code: "VISUAL_DOES_NOT_PROVE_HEADLINE",
+        slideId: slide.id,
+        message: `visualProof declares ${proof.value} via '${proof.collection}', but the slide's visual (${slide.layout}/${slide.composition}) shows ${actual}. The declared value must equal what the visual actually shows exactly.`,
       });
     }
     // The contract settles the question for this slide either way — the heuristic below would
@@ -476,19 +496,17 @@ function addHeadlineProofFindings(slide: SlideSpec, findings: QaFinding[]): void
 
   const count = countableElements(slide);
   if (count === undefined) return;
-  const matches = [...slide.headline.matchAll(/\b(\d+)\s+[A-Za-z]+s\b/g)];
-  for (const match of matches) {
-    const claimed = Number(match[1]);
-    if (claimed <= count) continue;
+  for (const claim of headlineCountClaims(slide.headline)) {
+    if (claim.value <= count) continue;
     // The number may still be grounded in plain sight — e.g. a metric or a node label that
     // spells out the same figure the headline claims. Only flag when it appears nowhere else.
     const contentText = JSON.stringify((slide as { content: unknown }).content);
-    if (new RegExp(`(?<![\\d.])${claimed}(?![\\d.])`).test(contentText)) continue;
+    if (new RegExp(`(?<![\\d.])${claim.value}(?![\\d.])`).test(contentText)) continue;
     findings.push({
       severity: "risk",
       code: "VISUAL_DOES_NOT_PROVE_HEADLINE",
       slideId: slide.id,
-      message: `Headline claims "${match[0]}" but the slide's visual (${slide.layout}/${slide.composition}) shows only ${count} countable element(s) by heuristic count. Add an explicit visualProof contract to make this a hard failure, represent ${claimed} visually, or rephrase the headline.`,
+      message: `Headline claims "${claim.text}" but the slide's visual (${slide.layout}/${slide.composition}) shows only ${count} countable element(s) by heuristic count. Add an explicit visualProof contract to make this a hard failure, represent ${claim.value} visually, or rephrase the headline.`,
     });
   }
 }
