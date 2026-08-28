@@ -103,7 +103,7 @@ describe("P3 presentation style resolution", () => {
     fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
       version: 1,
       chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
       layouts: {},
       requiredElements: [],
     }));
@@ -140,7 +140,7 @@ describe("P3 presentation style resolution", () => {
     fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
       version: 1,
       chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
       layouts: {},
       requiredElements: [],
     }));
@@ -166,7 +166,7 @@ describe("P3 presentation style resolution", () => {
     fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
       version: 1,
       chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
       layouts: {},
       requiredElements: [],
     }));
@@ -194,12 +194,57 @@ describe("P3 presentation style resolution", () => {
     fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
       version: 1,
       chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
       layouts: {},
       requiredElements: [],
     }));
     const contract = contractSchema.parse({ ...fixture, organization: { kind: "directory", path: root } });
     expect(() => resolvePresentationStyle(contract, { projectDir: process.cwd() })).toThrow(/BRAND_CONTRAST_VIOLATION/i);
+  });
+
+  it("keeps a V2 organization brand's own semantic tokens instead of re-deriving them from archetype/legacy blends", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-style-org-v2-"));
+    fs.writeFileSync(path.join(root, "template.pptx"), "placeholder");
+    fs.writeFileSync(path.join(root, "brand.yaml"), [
+      "name: V2 Org",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "F5F5F5"',
+      '  surfaceAlt: "E8E8E8"',
+      '  text: "111111"',
+      '  textSecondary: "444444"',
+      '  muted: "666666"',
+      '  inverseText: "FFFFFF"',
+      '  primary: "CC0000"',
+      '  accent: "000000"',
+      '  accentSecondary: "222222"',
+      '  border: "DDDDDD"',
+      '  divider: "EEEEEE"',
+      '  gridline: "F0F0F0"',
+      '  mutedFill: "FAFAFA"',
+      '  highlightedRegion: "FFE0E0"',
+      '  positive: "008000"',
+      '  warning: "B8860B"',
+      '  negative: "B22222"',
+      '  neutral: "808080"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
+      version: 1,
+      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+    const contract = contractSchema.parse({ ...fixture, presentationStyle: "analytical", organization: { kind: "directory", path: root } });
+    const style = resolvePresentationStyle(contract, { projectDir: process.cwd() });
+    expect(style.palette.surfaceAlt).toBe("E8E8E8");
+    expect(style.palette.textSecondary).toBe("444444");
+    expect(style.palette.divider).toBe("EEEEEE");
+    expect(style.palette.gridline).toBe("F0F0F0");
+    expect(style.palette.mutedFill).toBe("FAFAFA");
+    expect(style.palette.highlightedRegion).toBe("FFE0E0");
+    expect(style.palette.inverseText).toBe("FFFFFF");
+    expect(style.palette.accentSecondary).toBe("222222");
   });
 
   it("hard-fails a locked organization font conflict", () => {
@@ -223,7 +268,7 @@ describe("P3 presentation style resolution", () => {
     fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
       version: 1,
       chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
       layouts: {},
       requiredElements: [],
     }));
@@ -248,7 +293,7 @@ describe("P3 presentation style resolution", () => {
     fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
       version: 1,
       chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "1", canvasColor: "777777", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      defaultLayout: { nativeLayout: "1", canvasColor: "777777", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
       layouts: {},
       requiredElements: [],
     }));

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { renderDeck } from "../../src/renderer";
+import { defaultContentRegion, renderDeck } from "../../src/renderer";
 import { deckSchema } from "../../src/schema";
 import { readPptxOoxml } from "../../src/ooxml";
 
@@ -34,7 +34,7 @@ describe("organization template adapter", () => {
     fs.writeFileSync(path.join(organizationDir, "template-map.json"), JSON.stringify({
       version: 1,
       chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
       layouts: {},
       requiredElements: [],
     }));
@@ -75,7 +75,7 @@ describe("organization template adapter", () => {
     fs.writeFileSync(path.join(organizationDir, "template-map.json"), JSON.stringify({
       version: 1,
       chromeOwnership: { background: "renderer", logo: "renderer", footer: "renderer", pageNumber: "renderer" },
-      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
       layouts: { comparison: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: region, reservedRegions: [] } },
       requiredElements: [],
     }));
@@ -92,5 +92,40 @@ describe("organization template adapter", () => {
       expect(rect.x + rect.w).toBeLessThanOrEqual(region.x + region.w + epsilon);
       expect(rect.y + rect.h).toBeLessThanOrEqual(region.y + region.h + epsilon);
     });
+  }, 30000);
+
+  it("reproduces the renderer's own default geometry exactly when a template declares defaultContentRegion", async () => {
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-template-identity-"));
+    const scratch = path.join(runDir, "scratch.pptx");
+    const baseline = await renderDeck(fixture, scratch, process.cwd());
+
+    const organizationDir = path.join(runDir, "organization");
+    fs.mkdirSync(organizationDir, { recursive: true });
+    fs.copyFileSync(scratch, path.join(organizationDir, "template.pptx"));
+    fs.writeFileSync(path.join(organizationDir, "brand.yaml"), [
+      "name: Identity Test",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(organizationDir, "template-map.json"), JSON.stringify({
+      version: 1,
+      chromeOwnership: { background: "renderer", logo: "renderer", footer: "renderer", pageNumber: "renderer" },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: defaultContentRegion, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+
+    const deck = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, organization: { kind: "directory", path: organizationDir } } });
+    const output = path.join(runDir, "filled.pptx");
+    const result = await renderDeck(deck, output, process.cwd());
+    for (const slideId of Object.keys(baseline.slideRects)) {
+      expect(result.slideRects[slideId]).toEqual(baseline.slideRects[slideId]);
+    }
   }, 30000);
 });

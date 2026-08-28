@@ -25,6 +25,12 @@ const CANON_TOP = 0.48;
 const CANON_W = 11.85;
 const CANON_H = CONTENT_Y + CONTENT_H - CANON_TOP;
 
+// The contentRegion an organization template can declare to reproduce the renderer's own default
+// geometry exactly (an identity transform). Declaring the old body-only box here — {x:0.72,
+// y:1.42, w:11.85, h:5.2} — would silently push the headline down and compress body content,
+// since that box excludes the headline row this canonical space now includes.
+export const defaultContentRegion = { x: CANON_X, y: CANON_TOP, w: CANON_W, h: CANON_H };
+
 type Pptx = any;
 type Slide = any;
 type Decoration = "filled" | "flat" | "outline";
@@ -66,6 +72,12 @@ function contextFor(theme: ResolvedPresentationStyle, layout: (typeof semanticLa
   const organization = theme.organization;
   if (!organization) return { style, transform: (rect) => rect };
   const region = bindingForLayout(organization.map, layout).contentRegion;
+  // Bypass the arithmetic entirely for the declared-identity case: floating-point round-trip
+  // through a mathematically-1.0 scale and mathematically-0 offset can still perturb the last bit,
+  // and a template that explicitly asked for the renderer's own geometry should get it exactly.
+  if (region.x === CANON_X && region.y === CANON_TOP && region.w === CANON_W && region.h === CANON_H) {
+    return { style, transform: (rect) => rect };
+  }
   const scaleX = region.w / CANON_W;
   const scaleY = region.h / CANON_H;
   return {

@@ -28,7 +28,7 @@ function createPack(map: unknown): string {
 const validMap = {
   version: 1,
   chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-  defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 1.42, w: 11.85, h: 5.2 }, reservedRegions: [] },
+  defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
   layouts: {},
   requiredElements: [],
 };

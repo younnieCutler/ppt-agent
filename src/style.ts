@@ -256,18 +256,23 @@ function applyLegacyBrand(
   if (fontsLocked && (brand.fonts?.heading !== contract.fonts.heading || brand.fonts?.body !== contract.fonts.body)) {
     throw new Error("Locked brand fonts must be confirmed exactly in the GenerationContract.");
   }
-  const palette: ThemePalette = {
-    ...theme.palette,
-    ...brand.palette,
-    surfaceAlt: blend(brand.palette.surface, brand.palette.background, 0.6),
-    textSecondary: blend(brand.palette.text, brand.palette.muted, 0.45),
-    inverseText: theme.palette.inverseText,
-    accentSecondary: theme.palette.accentSecondary,
-    divider: blend(brand.palette.border, brand.palette.background, 0.5),
-    gridline: blend(brand.palette.border, brand.palette.background, 0.72),
-    mutedFill: blend(brand.palette.surface, brand.palette.background, 0.7),
-    highlightedRegion: blend(brand.palette.accent, brand.palette.background, 0.86),
-  };
+  // A V2 brand.yaml already declares the full semantic palette explicitly — organization brand
+  // outranks archetype, so its own tokens must win outright, not get overwritten by a derivation
+  // pass meant only for migrating a legacy 7-token brand that never had these fields to begin with.
+  const palette: ThemePalette = "surfaceAlt" in brand.palette
+    ? { ...theme.palette, ...brand.palette }
+    : {
+        ...theme.palette,
+        ...brand.palette,
+        surfaceAlt: blend(brand.palette.surface, brand.palette.background, 0.6),
+        textSecondary: blend(brand.palette.text, brand.palette.muted, 0.45),
+        inverseText: theme.palette.inverseText,
+        accentSecondary: theme.palette.accentSecondary,
+        divider: blend(brand.palette.border, brand.palette.background, 0.5),
+        gridline: blend(brand.palette.border, brand.palette.background, 0.72),
+        mutedFill: blend(brand.palette.surface, brand.palette.background, 0.7),
+        highlightedRegion: blend(brand.palette.accent, brand.palette.background, 0.86),
+      };
   const declaredPaletteLocks = brand.locks?.palette ?? brand.lockedPalette;
   const paletteLocks = declaredPaletteLocks.length > 0
     ? declaredPaletteLocks
