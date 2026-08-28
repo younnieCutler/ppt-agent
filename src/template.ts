@@ -69,8 +69,9 @@ async function validateTemplateContract(templatePath: string, map: TemplateMap, 
   const sizeTag = presentationXml.match(/<p:sldSz\b[^>]*>/)?.[0];
   const cx = Number(sizeTag?.match(/\bcx="(\d+)"/)?.[1] ?? 0);
   const cy = Number(sizeTag?.match(/\bcy="(\d+)"/)?.[1] ?? 0);
-  if (!cx || !cy || Math.abs(cx / cy - 16 / 9) > 0.02) {
-    throw new Error("Organization template must be 16:9; template.pptx has an incompatible slide size.");
+  const expectedRatio = map.aspectRatio === "4:3" ? 4 / 3 : 16 / 9;
+  if (!cx || !cy || Math.abs(cx / cy - expectedRatio) > 0.02) {
+    throw new Error(`Organization template must be ${map.aspectRatio}; template.pptx has an incompatible slide size.`);
   }
 
   const layoutFiles = Object.keys(zip.files)

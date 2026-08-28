@@ -7,13 +7,19 @@ import { deckSchema, type ContentModel, type DeckSpec, type SlideSpec } from "./
 import { drawGauge, drawSparkline } from "./visuals";
 import { resolvePresentationStyle, type ReferenceSelectionEntry, type ResolvedPresentationStyle } from "./style";
 import { applyOrganizationTemplate } from "./template";
-import { bindingForLayout, semanticLayouts } from "./organization";
+import { bindingForLayout, semanticLayouts, CANVAS_DIMENSIONS } from "./organization";
 
 const SLIDE_W = 13.333;
 const SLIDE_H = 7.5;
 const MARGIN_X = 0.72;
 const CONTENT_Y = 1.42;
 const CONTENT_H = 5.2;
+
+// Chrome (logo, page number) sits directly against the real canvas edge, not the canonical
+// content box, so it's positioned as a fixed margin from the true right edge. Expressed as a
+// margin rather than an absolute x so it generalizes to a narrower 4:3 canvas.
+const CHROME_LOGO_RIGHT_MARGIN = SLIDE_W - 12.05;
+const CHROME_PAGE_NUM_RIGHT_MARGIN = SLIDE_W - 12.1;
 
 // The coordinate space every layout function below is authored against. When an organization
 // template binds a semantic layout to a different `contentRegion`, ctx.transform maps this
@@ -154,20 +160,20 @@ export function addLine(slide: Slide, pptx: Pptx, x: number, y: number, w: numbe
   rects.push({ id, x: transformed.x, y: transformed.y, w: transformed.w, h: transformed.h, allowOverlap: true });
 }
 
-function addChrome(slide: Slide, pptx: Pptx, deck: RenderDeck, page: number, rects: Rect[], ctx: RenderContext): void {
+function addChrome(slide: Slide, pptx: Pptx, deck: RenderDeck, page: number, rects: Rect[], ctx: RenderContext, canvas: { w: number; h: number }): void {
   const theme = deck.theme;
   const ownership = theme.organization?.map.chromeOwnership;
   // Chrome sits at fixed slide-edge coordinates regardless of any layout's contentRegion — an
   // organization template owns or doesn't own it via chromeOwnership, it never gets stretched.
   const chromeCtx = identityContext(ctx.style);
   if (theme.logoPath && (!ownership || ownership.logo === "renderer")) {
-    slide.addImage({ path: theme.logoPath, x: 12.05, y: 0.22, w: 0.58, h: 0.34, altText: "ppt-agent-logo" });
+    slide.addImage({ path: theme.logoPath, x: canvas.w - CHROME_LOGO_RIGHT_MARGIN, y: 0.22, w: 0.58, h: 0.34, altText: "ppt-agent-logo" });
   }
   if (theme.footer.text && (!ownership || ownership.footer === "renderer")) {
     addText(slide, theme.footer.text, { x: MARGIN_X, y: 7.12, w: 8.8, h: 0.18, fontSize: 8, valign: "mid" }, rects, `footer-${page}`, theme.fonts.body, theme.palette.muted, chromeCtx);
   }
   if (theme.footer.showPageNumber && (!ownership || ownership.pageNumber === "renderer")) {
-    addText(slide, String(page), { x: 12.1, y: 7.08, w: 0.48, h: 0.22, fontSize: 9, align: "right", name: "ppt-agent-page-number" }, rects, `page-${page}`, theme.fonts.body, theme.palette.muted, chromeCtx);
+    addText(slide, String(page), { x: canvas.w - CHROME_PAGE_NUM_RIGHT_MARGIN, y: 7.08, w: 0.48, h: 0.22, fontSize: 9, align: "right", name: "ppt-agent-page-number" }, rects, `page-${page}`, theme.fonts.body, theme.palette.muted, chromeCtx);
   }
 }
 
@@ -557,7 +563,7 @@ function renderChart(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<S
   }
 }
 
-function renderSlide(pptx: Pptx, deck: RenderDeck, projectDir: string, spec: SlideSpec, page: number, contentModel: ContentModel | undefined): { rects: Rect[] } {
+function renderSlide(pptx: Pptx, deck: RenderDeck, projectDir: string, spec: SlideSpec, page: number, contentModel: ContentModel | undefined, canvas: { w: number; h: number }): { rects: Rect[] } {
   const slide = pptx.addSlide();
   const ctx = contextFor(deck.theme, spec.layout);
   if (!deck.theme.organization || deck.theme.organization.map.chromeOwnership.background === "renderer") {
@@ -578,8 +584,8 @@ function renderSlide(pptx: Pptx, deck: RenderDeck, projectDir: string, spec: Sli
     if (spec.layout === "evidence") renderEvidence(slide, pptx, deck, projectDir, spec, rects, ctx);
     if (spec.layout === "chart") renderChart(slide, pptx, deck, spec, rects, contentModel, ctx);
   }
-  addChrome(slide, pptx, deck, page, rects, ctx);
-  const geometryIssues = validateGeometry(rects);
+  addChrome(slide, pptx, deck, page, rects, ctx, canvas);
+  const geometryIssues = validateGeometry(rects, canvas.w, canvas.h);
   if (geometryIssues.length > 0) {
     throw new Error(`Geometry QA failed on ${spec.id}: ${geometryIssues.map((issue) => issue.message).join(" ")}`);
   }
@@ -590,15 +596,16 @@ export type RenderResult = { outputPath: string; slideRects: Record<string, Rect
 
 export async function renderDeck(input: unknown, outputPath: string, projectDir = process.cwd(), options: { pageLimit?: number; contentModel?: ContentModel; referenceSelection?: ReferenceSelectionEntry[] } = {}): Promise<RenderResult> {
   const parsedDeck = deckSchema.parse(input);
-  if (parsedDeck.contract.aspectRatio !== "16:9") {
+  const deck: RenderDeck = { ...parsedDeck, theme: resolvePresentationStyle(parsedDeck.contract, { projectDir, referenceSelection: options.referenceSelection, legacyTheme: parsedDeck.theme }) };
+  if (!deck.theme.organization && deck.contract.aspectRatio !== "16:9") {
     throw new Error("The deterministic renderer only supports 16:9. A 4:3 Company Template Pack must use the native-template-fill workflow.");
   }
-  const deck: RenderDeck = { ...parsedDeck, theme: resolvePresentationStyle(parsedDeck.contract, { projectDir, referenceSelection: options.referenceSelection, legacyTheme: parsedDeck.theme }) };
   if (!options.pageLimit && deck.contract.slideCount !== deck.slides.length) throw new Error(`Contract slideCount ${deck.contract.slideCount} does not match ${deck.slides.length} slides.`);
   assertFontsInstalled(deck.theme.fonts);
 
+  const canvas = CANVAS_DIMENSIONS[deck.contract.aspectRatio];
   const pptx: Pptx = new (pptxgen as any)();
-  pptx.layout = "LAYOUT_WIDE";
+  pptx.layout = canvas.pptxLayout;
   pptx.author = "Claude Code /ppt";
   pptx.subject = deck.contract.purpose;
   pptx.title = deck.title;
@@ -608,7 +615,7 @@ export async function renderDeck(input: unknown, outputPath: string, projectDir 
 
   const slideRects: Record<string, Rect[]> = {};
   deck.slides.slice(0, options.pageLimit).forEach((spec, index) => {
-    slideRects[spec.id] = renderSlide(pptx, deck, projectDir, spec, index + 1, options.contentModel).rects;
+    slideRects[spec.id] = renderSlide(pptx, deck, projectDir, spec, index + 1, options.contentModel, canvas).rects;
   });
   const resolvedOutput = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });

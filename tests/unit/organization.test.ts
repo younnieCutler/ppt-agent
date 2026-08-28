@@ -49,4 +49,25 @@ describe("organization template contract", () => {
     });
     expect(() => loadOrganizationPack(root)).toThrow(/16:9 canvas/i);
   });
+
+  it("validates contentRegion against the narrower 10in-wide 4:3 canvas when declared, not the 16:9 default", () => {
+    // This region fits a 13.333in-wide 16:9 canvas (x+w=10.5 &lt; 13.333) but overflows a 10in-wide
+    // 4:3 canvas — proves aspectRatio actually changes the bounds check, not just accepted syntax.
+    const root = createPack({
+      ...validMap,
+      aspectRatio: "4:3",
+      defaultLayout: { ...validMap.defaultLayout, contentRegion: { x: 5, y: 1, w: 5.5, h: 2 } },
+    });
+    expect(() => loadOrganizationPack(root)).toThrow(/4:3 canvas/i);
+  });
+
+  it("accepts a 4:3 pack whose contentRegion fits the narrower canvas", () => {
+    const root = createPack({
+      ...validMap,
+      aspectRatio: "4:3",
+      defaultLayout: { ...validMap.defaultLayout, contentRegion: { x: 0.5, y: 0.5, w: 9, h: 6.3 } },
+    });
+    const pack = loadOrganizationPack(root);
+    expect(pack.map.aspectRatio).toBe("4:3");
+  });
 });

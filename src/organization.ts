@@ -7,6 +7,14 @@ import type { BrandFile } from "./schema";
 const rectSchema = z.object({ x: z.number().nonnegative(), y: z.number().nonnegative(), w: z.number().positive(), h: z.number().positive() });
 export const semanticLayouts = ["title", "statement", "comparison", "process", "pipeline", "architecture", "quantitative", "timeline", "evidence", "chart"] as const;
 
+// Single source of truth for physical canvas size per aspect ratio, shared by organization pack
+// geometry validation (here) and the renderer's own pptxgenjs page setup / chrome placement.
+// Height is 7.5in for both — pptxgenjs's LAYOUT_WIDE and LAYOUT_4x3 only differ in width.
+export const CANVAS_DIMENSIONS = {
+  "16:9": { w: 13.333, h: 7.5, pptxLayout: "LAYOUT_WIDE" },
+  "4:3": { w: 10, h: 7.5, pptxLayout: "LAYOUT_4x3" },
+} as const;
+
 export const layoutBindingSchema = z.object({
   nativeLayout: z.string().min(1),
   canvasColor: z.string().regex(/^[0-9A-Fa-f]{6}$/),
@@ -16,6 +24,7 @@ export const layoutBindingSchema = z.object({
 
 export const templateMapSchema = z.object({
   version: z.literal(1),
+  aspectRatio: z.enum(["16:9", "4:3"]).default("16:9"),
   chromeOwnership: z.object({
     background: z.enum(["template", "renderer"]),
     logo: z.enum(["template", "renderer"]),
@@ -46,12 +55,13 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
 }
 
 function validateMapGeometry(map: TemplateMap): void {
+  const { w: canvasW, h: canvasH } = CANVAS_DIMENSIONS[map.aspectRatio];
   const bindings = [map.defaultLayout, ...Object.values(map.layouts)];
   bindings.forEach((binding) => {
     const region = binding.contentRegion;
-    if (region.x + region.w > 13.333 || region.y + region.h > 7.5) throw new Error(`Template contentRegion for '${binding.nativeLayout}' exceeds the supported 16:9 canvas.`);
+    if (region.x + region.w > canvasW || region.y + region.h > canvasH) throw new Error(`Template contentRegion for '${binding.nativeLayout}' exceeds the supported ${map.aspectRatio} canvas.`);
     binding.reservedRegions.forEach((reserved) => {
-      if (reserved.x + reserved.w > 13.333 || reserved.y + reserved.h > 7.5) throw new Error(`Template reserved region for '${binding.nativeLayout}' exceeds the supported 16:9 canvas.`);
+      if (reserved.x + reserved.w > canvasW || reserved.y + reserved.h > canvasH) throw new Error(`Template reserved region for '${binding.nativeLayout}' exceeds the supported ${map.aspectRatio} canvas.`);
       const overlaps = region.x < reserved.x + reserved.w && region.x + region.w > reserved.x && region.y < reserved.y + reserved.h && region.y + region.h > reserved.y;
       if (overlaps) throw new Error(`Template contentRegion for '${binding.nativeLayout}' overlaps a reserved region.`);
     });

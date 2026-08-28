@@ -116,6 +116,58 @@ describe("P3 presentation style resolution", () => {
     expect(style.grammar.chartTreatment).toBe("data-first");
   });
 
+  it("hard-fails when contract.aspectRatio does not match the organization pack's declared aspectRatio", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-style-org-ratio-mismatch-"));
+    fs.writeFileSync(path.join(root, "template.pptx"), "placeholder");
+    fs.writeFileSync(path.join(root, "brand.yaml"), [
+      "name: Ratio Org",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
+      version: 1,
+      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+    const contract = contractSchema.parse({ ...fixture, aspectRatio: "4:3", organization: { kind: "directory", path: root } });
+    expect(() => resolvePresentationStyle(contract, { projectDir: process.cwd() })).toThrow(/ORGANIZATION_TEMPLATE_ASPECT_RATIO_MISMATCH/);
+  });
+
+  it("resolves a 4:3 organization pack whose declared aspectRatio matches the contract", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-style-org-43-"));
+    fs.writeFileSync(path.join(root, "template.pptx"), "placeholder");
+    fs.writeFileSync(path.join(root, "brand.yaml"), [
+      "name: 4:3 Org",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+    ].join("\n"));
+    fs.writeFileSync(path.join(root, "template-map.json"), JSON.stringify({
+      version: 1,
+      aspectRatio: "4:3",
+      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
+      defaultLayout: { nativeLayout: "1", canvasColor: "FFFFFF", contentRegion: { x: 0.5, y: 0.5, w: 9, h: 6.3 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+    const contract = contractSchema.parse({ ...fixture, aspectRatio: "4:3", organization: { kind: "directory", path: root } });
+    const style = resolvePresentationStyle(contract, { projectDir: process.cwd() });
+    expect(style.organization?.map.aspectRatio).toBe("4:3");
+  });
+
   it("lets an organization brand declare its own chart data palette instead of borrowing the archetype's", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-style-org-data-"));
     fs.writeFileSync(path.join(root, "template.pptx"), "placeholder");
