@@ -5,11 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+# Windows only, deliberately.
+#
+# This project targets Windows and macOS: font preflight reads the Windows font registry or macOS
+# fontconfig (src/fonts.ts) and hard-fails rather than let a deck render with an unverified typeface.
+# Linux cannot satisfy that contract, so every render/OOXML/template test fails there.
+#
+# A Linux job could still typecheck and build, but it would only be re-checking what the Windows job
+# already checks, on a platform nobody runs this on. It buys no coverage — dropped rather than kept
+# as decoration.
+#
+# Tests that additionally need Microsoft PowerPoint itself probe for the COM object and skip when it
+# is absent: a CI runner has Windows but no Office, and that is a missing application, not a product
+# regression.
 jobs:
-  # Windows runs the full suite: font preflight reads the Windows font registry (src/fonts.ts), so
-  # every render/OOXML/template test needs it. Tests that additionally require Microsoft PowerPoint
-  # itself probe for the COM object and skip when it is absent — a CI runner has Windows but no
-  # Office, and that is a missing application, not a product regression.
   test:
     name: test (windows)
     runs-on: windows-latest
@@ -22,20 +31,4 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build
-
-  # Linux cannot run the suite — font preflight deliberately supports Windows and macOS only, and
-  # a deck must never render with an unverified typeface. This job still catches type and build
-  # portability breaks, which is what it is honestly able to check.
-  portability:
-    name: typecheck + build (linux)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
       - run: npm run build
