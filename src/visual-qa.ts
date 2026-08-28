@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { rollUp, type QaFinding, type QaReport } from "./qa";
 import type { DeckSpec } from "./schema";
+import { contrastRatio, type ResolvedPresentationStyle } from "./style";
 
 // Closed set: only codes that produce distinct repair behavior. LLM findings that use any other
 // code are rejected outright by visualFindingSchema, so the judgment layer can never invent one.
@@ -13,6 +14,9 @@ export const visualFindingCodes = [
   // judgment layer — hard
   "SEMANTIC_VISUAL_MISMATCH",
   "CHART_UNREADABLE",
+  "BRAND_COLOR_VIOLATION",
+  "BRAND_FONT_VIOLATION",
+  "THEME_DATA_COLOR_VIOLATION",
   // judgment layer — risk
   "WEAK_VISUAL_HIERARCHY",
   "EXCESSIVE_INFORMATION_DENSITY",
@@ -21,6 +25,14 @@ export const visualFindingCodes = [
   "EXCESSIVE_CARDIFICATION",
   "MEANINGLESS_DECORATION",
   "LOW_VISUAL_CONTRAST",
+  "LOW_CONTRAST_SECONDARY_TEXT",
+  "ARCHETYPE_DENSITY_MISMATCH",
+  "ARCHETYPE_HIERARCHY_MISMATCH",
+  "ARCHETYPE_VISUAL_WEIGHT_MISMATCH",
+  "UNNECESSARY_GRADIENT",
+  "GENERIC_DASHBOARD_LAYOUT",
+  "REPEATED_THREE_COLUMN_PATTERN",
+  "ARBITRARY_ICON_USAGE",
   // deck-level — risk
   "LAYOUT_REPETITION",
   "INCONSISTENT_SECTION_RHYTHM",
@@ -37,6 +49,9 @@ export const findingSeverityByCode: Record<(typeof visualFindingCodes)[number], 
   MISSING_RENDERED_OBJECT: "hard",
   SEMANTIC_VISUAL_MISMATCH: "hard",
   CHART_UNREADABLE: "hard",
+  BRAND_COLOR_VIOLATION: "hard",
+  BRAND_FONT_VIOLATION: "hard",
+  THEME_DATA_COLOR_VIOLATION: "hard",
   WEAK_VISUAL_HIERARCHY: "risk",
   EXCESSIVE_INFORMATION_DENSITY: "risk",
   LOW_INFORMATION_DENSITY: "risk",
@@ -44,6 +59,14 @@ export const findingSeverityByCode: Record<(typeof visualFindingCodes)[number], 
   EXCESSIVE_CARDIFICATION: "risk",
   MEANINGLESS_DECORATION: "risk",
   LOW_VISUAL_CONTRAST: "risk",
+  LOW_CONTRAST_SECONDARY_TEXT: "risk",
+  ARCHETYPE_DENSITY_MISMATCH: "risk",
+  ARCHETYPE_HIERARCHY_MISMATCH: "risk",
+  ARCHETYPE_VISUAL_WEIGHT_MISMATCH: "risk",
+  UNNECESSARY_GRADIENT: "risk",
+  GENERIC_DASHBOARD_LAYOUT: "risk",
+  REPEATED_THREE_COLUMN_PATTERN: "risk",
+  ARBITRARY_ICON_USAGE: "risk",
   LAYOUT_REPETITION: "risk",
   INCONSISTENT_SECTION_RHYTHM: "risk",
   REFERENCE_VISUAL_DRIFT: "risk",
@@ -76,7 +99,34 @@ function mapLevel3Findings(level3: Record<string, unknown>): QaFinding[] {
     });
 }
 
-export function visualQa(deck: DeckSpec, findings: unknown, level3?: Record<string, unknown>): QaReport {
+const visualCompositions = new Set(["sequence", "stage_gate", "pipeline_lanes", "architecture_zones", "native_chart", "gauge_row", "sparkline_row"]);
+
+function addArchetypeFitFindings(deck: DeckSpec, style: ResolvedPresentationStyle | undefined, collected: QaFinding[]): void {
+  if (!style) return;
+  const bodyContrast = contrastRatio(style.palette.text, style.palette.background);
+  const secondaryContrast = contrastRatio(style.palette.textSecondary, style.palette.background);
+  if (bodyContrast < 4.5) {
+    collected.push({ severity: "risk", code: "LOW_VISUAL_CONTRAST", message: `Resolved ${style.themeId} body text contrast is ${bodyContrast.toFixed(2)}:1, below the 4.5:1 practical floor.` });
+  }
+  if (secondaryContrast < 4.5) {
+    collected.push({ severity: "risk", code: "LOW_CONTRAST_SECONDARY_TEXT", message: `Resolved ${style.themeId} secondary text contrast is ${secondaryContrast.toFixed(2)}:1, below the 4.5:1 practical floor.` });
+  }
+  const bodySlides = deck.slides.filter((slide) => slide.layout !== "title");
+  if (bodySlides.length < 3) return;
+  const preferred = new Set(style.grammar.compositionPreferences);
+  const preferredShare = bodySlides.filter((slide) => preferred.has(slide.layout) || preferred.has(slide.composition)).length / bodySlides.length;
+  if (preferredShare < 0.25) {
+    collected.push({ severity: "risk", code: "ARCHETYPE_HIERARCHY_MISMATCH", message: `${style.themeId} archetype preferences appear on only ${Math.round(preferredShare * 100)}% of body slides.` });
+  }
+  if (style.themeId === "analytical" && bodySlides.filter((slide) => slide.layout === "chart" || slide.layout === "quantitative" || slide.layout === "evidence").length / bodySlides.length < 0.34) {
+    collected.push({ severity: "risk", code: "ARCHETYPE_DENSITY_MISMATCH", message: "Analytical archetype expects chart/evidence-led hierarchy on at least one third of body slides." });
+  }
+  if (style.themeId === "stage" && bodySlides.filter((slide) => visualCompositions.has(slide.composition)).length / bodySlides.length < 0.5) {
+    collected.push({ severity: "risk", code: "ARCHETYPE_VISUAL_WEIGHT_MISMATCH", message: "Stage archetype expects large visual or diagram-led compositions on at least half of body slides." });
+  }
+}
+
+export function visualQa(deck: DeckSpec, findings: unknown, level3?: Record<string, unknown>, style?: ResolvedPresentationStyle): QaReport {
   const slideIds = new Set(deck.slides.map((slide) => slide.id));
   const parsed = z.array(visualFindingInputSchema).safeParse(findings);
   const collected: QaFinding[] = [];
@@ -92,5 +142,6 @@ export function visualQa(deck: DeckSpec, findings: unknown, level3?: Record<stri
     });
   }
   if (level3) collected.push(...mapLevel3Findings(level3));
-  return { ...rollUp(collected), reference: "not_applicable", attempts: 0, findings: collected };
+  addArchetypeFitFindings(deck, style, collected);
+  return { ...rollUp(collected), reference: "not_applicable", attempts: 0, findings: collected, ...(style ? { presentationStyle: style.themeId } : {}) };
 }

@@ -1,0 +1,23 @@
+schemaVersion: 2
+id: editorial
+palette:
+  background: "FDFDFC"
+  surface: "FFFFFF"
+  surfaceAlt: "F4F4F2"
+  text: "111111"
+  textSecondary: "3C3C3A"
+  muted: "6E6E6A"
+  inverseText: "FFFFFF"
+  primary: "161616"
+  accent: "245AB5"
+  accentSecondary: "B9543D"
+  border: "D2D2CE"
+  divider: "E0E0DC"
+  gridline: "EBEBE7"
+  mutedFill: "F5F5F2"
+  highlightedRegion: "EEF2F8"
+  positive: "34735A"
+  warning: "9C6B15"
+  negative: "A94A42"
+  neutral: "73736E"
+data: ["245AB5", "B9543D", "3B7A68", "8A6734", "6D5A9A", "526E7A"]

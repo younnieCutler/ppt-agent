@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { deckSchema } from "../../src/schema";
+import { deckSchema, paletteSchema } from "../../src/schema";
 import { structuralQa } from "../../src/qa";
 
 const fixture = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/deck.json"), "utf8"));
@@ -13,6 +13,24 @@ describe("DeckSpec schema", () => {
     expect(deck.contract.fonts).toEqual({ heading: "Arial", body: "Arial" });
     expect(deck.slides[2].layout).toBe("pipeline");
     expect(deck.slides[0].headlineAlignment).toBe("left");
+  });
+
+  it("accepts a palette-free DeckSpec and a V2 token object during migration", () => {
+    const withoutTheme = { ...fixture };
+    delete withoutTheme.theme;
+    expect(deckSchema.parse(withoutTheme).theme).toBeUndefined();
+    const v2 = {
+      schemaVersion: 2,
+      id: "corporate",
+      palette: {
+        background: "F7F9FC", surface: "FFFFFF", surfaceAlt: "EDF2F7", text: "142033", textSecondary: "3F4E63", muted: "64748A", inverseText: "F8FAFC",
+        primary: "2457A6", accent: "0B7F84", accentSecondary: "B56A1F", border: "C9D4E3", divider: "D8E0EB", gridline: "E5EAF1", mutedFill: "EEF2F6", highlightedRegion: "E5EEF9",
+        positive: "287A52", warning: "9F6108", negative: "B44949", neutral: "657286",
+      },
+      data: ["2457A6", "0B7F84", "6C5AA7", "B56A1F", "4D708F", "A64B5B"],
+    };
+    expect(paletteSchema.parse(v2.palette)).toMatchObject({ surfaceAlt: "EDF2F7", highlightedRegion: "E5EEF9" });
+    expect(deckSchema.parse({ ...withoutTheme, theme: v2 }).theme).toMatchObject({ schemaVersion: 2, id: "corporate" });
   });
 
   it("rejects a slide count mismatch before rendering", () => {

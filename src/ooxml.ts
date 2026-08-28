@@ -1,16 +1,26 @@
 import fs from "node:fs";
+import path from "node:path";
 import JSZip from "jszip";
+import { DOMParser } from "@xmldom/xmldom";
 
-// ponytail: regex over the raw part XML instead of a full XML/DOM parser. This is safe because
-// every part read here is produced by our own deterministic renderer (pptxgenjs), not arbitrary
-// third-party XML — the shapes it emits are well-known and stable. If a future renderer change
-// (or a Company Template Pack fill) introduces XML this can't see through, add a real parser then.
+// Parsed as XML, not regex: an Organization Template Pack ships arbitrary PowerPoint parts whose
+// prefixes, attribute order, nesting (grouped shapes), and whitespace are outside our control.
+// Lookups are namespace-based so a template that binds `pp:` instead of `p:` still reads correctly.
+
+const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const C_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart";
+const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
 
 export type NativeObjectCounts = { text: number; shapes: number; connectors: number; table: number; chart: number; source_image: number };
 
 export type SlideOoxmlFacts = {
   typefaces: string[];
   nativeObjects: NativeObjectCounts;
+  chartColors: string[][];
+  /** Gradient fills authored by the renderer (slide shapes) or a native chart — never template chrome. */
+  gradientFills: number;
   fullSlideImage: boolean;
   hasEastAsianText: boolean;
   hasEastAsianTypeface: boolean;
@@ -23,71 +33,123 @@ export type PptxOoxmlFacts = {
   slides: SlideOoxmlFacts[];
 };
 
-const EAST_ASIAN_PATTERN = /[぀-ヿ㐀-䶿一-鿿가-힣豈-﫿]/;
+const EAST_ASIAN_PATTERN = /[぀-ヿ㐀-䶿一-鿿가-힣豈-﫿]/;
 
-function attr(tag: string, name: string): string | undefined {
-  const match = tag.match(new RegExp(`${name}="([^"]*)"`));
-  return match?.[1];
+// xmldom reports parse problems through a handler instead of throwing.
+function parseXml(xml: string): Document | undefined {
+  let failed = false;
+  const document = new DOMParser({
+    onError: (level) => {
+      if (level !== "warning") failed = true;
+    },
+  }).parseFromString(xml, "text/xml");
+  return failed || !document?.documentElement ? undefined : (document as unknown as Document);
 }
 
-function typefacesIn(xml: string): string[] {
-  return [...xml.matchAll(/<a:(?:latin|ea|cs)\s+typeface="([^"]*)"/g)].map((match) => match[1]).filter((typeface) => typeface.length > 0);
+function elements(scope: Document | Element, namespace: string, localName: string): Element[] {
+  return Array.from(scope.getElementsByTagNameNS(namespace, localName));
 }
 
-function visibleTextIn(xml: string): string {
-  return [...xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((match) => match[1]).join(" ");
+function textOf(node: Element): string {
+  return node.textContent ?? "";
 }
 
-function slideSizeIn(presentationXml: string): { cx: number; cy: number } {
-  const tag = presentationXml.match(/<p:sldSz[^/]*\/>/)?.[0] ?? "";
-  return { cx: Number(attr(tag, "cx") ?? "0"), cy: Number(attr(tag, "cy") ?? "0") };
+function typefacesIn(scope: Element): string[] {
+  return ["latin", "ea", "cs"]
+    .flatMap((localName) => elements(scope, A_NS, localName))
+    .map((node) => node.getAttribute("typeface") ?? "")
+    .filter((typeface) => typeface.length > 0);
 }
 
-function shapeXmlBlocks(xml: string, tag: string): string[] {
-  return xml.match(new RegExp(`<${tag}>.*?</${tag}>`, "gs")) ?? [];
+function chartColorsIn(chartXml: string): string[] {
+  const document = parseXml(chartXml);
+  if (!document) return [];
+  const colors = elements(document, C_NS, "ser")
+    .flatMap((series) => elements(series, C_NS, "spPr"))
+    .flatMap((properties) => elements(properties, A_NS, "solidFill"))
+    .flatMap((fill) => elements(fill, A_NS, "srgbClr"))
+    .map((color) => (color.getAttribute("val") ?? "").toUpperCase())
+    .filter((color) => color.length > 0);
+  return [...new Set(colors)];
 }
 
-function analyzeSlide(xml: string, slideSize: { cx: number; cy: number }): SlideOoxmlFacts {
+function chartGradientCount(chartXml: string): number {
+  const document = parseXml(chartXml);
+  return document ? elements(document, A_NS, "gradFill").length : 0;
+}
+
+function analyzeSlide(xml: string, slideSize: { cx: number; cy: number }, chartParts: string[]): SlideOoxmlFacts | undefined {
+  const document = parseXml(xml);
+  if (!document) return undefined;
   const nativeObjects: NativeObjectCounts = { text: 0, shapes: 0, connectors: 0, table: 0, chart: 0, source_image: 0 };
   let fullSlideImage = false;
 
-  for (const pic of shapeXmlBlocks(xml, "p:pic")) {
+  const pictures = elements(document, P_NS, "pic");
+  pictures.forEach((picture) => {
     nativeObjects.source_image += 1;
-    const ext = pic.match(/<a:ext\s+cx="(\d+)"\s+cy="(\d+)"\/>/);
-    if (ext && slideSize.cx > 0 && slideSize.cy > 0) {
-      const [, cx, cy] = ext;
-      if (Number(cx) / slideSize.cx > 0.95 && Number(cy) / slideSize.cy > 0.95) fullSlideImage = true;
-    }
-  }
-  for (const frame of shapeXmlBlocks(xml, "p:graphicFrame")) {
-    if (frame.includes("<a:tbl>")) nativeObjects.table += 1;
-    if (frame.includes("c:chart")) nativeObjects.chart += 1;
-  }
-  nativeObjects.connectors += shapeXmlBlocks(xml, "p:cxnSp").length;
-  for (const sp of shapeXmlBlocks(xml, "p:sp")) {
-    const isLine = /prstGeom\s+prst="line"/.test(sp);
-    if (isLine) {
-      // The deterministic renderer draws pipeline/architecture/roadmap edges as a plain line
-      // autoshape rather than a true `p:cxnSp` connector. Level 1 QA treats it as satisfying a
-      // `connectors` requirement; Level 3 PowerPoint QA is stricter (checks `shape.Connector`).
-      nativeObjects.connectors += 1;
-      continue;
-    }
-    const hasVisibleText = /<a:t>[^<]*\S[^<]*<\/a:t>/.test(sp);
-    if (hasVisibleText) nativeObjects.text += 1;
-    else nativeObjects.shapes += 1;
-  }
+    const extent = elements(picture, A_NS, "ext")[0];
+    const cx = Number(extent?.getAttribute("cx") ?? "0");
+    const cy = Number(extent?.getAttribute("cy") ?? "0");
+    if (slideSize.cx > 0 && slideSize.cy > 0 && cx / slideSize.cx > 0.95 && cy / slideSize.cy > 0.95) fullSlideImage = true;
+  });
 
-  const typefaces = [...new Set(typefacesIn(xml))];
-  const eastAsianTypefaces = [...xml.matchAll(/<a:ea\s+typeface="([^"]*)"/g)].map((match) => match[1]).filter((typeface) => typeface.length > 0);
-  const visibleText = visibleTextIn(xml);
+  const frames = elements(document, P_NS, "graphicFrame");
+  frames.forEach((frame) => {
+    if (elements(frame, A_NS, "tbl").length > 0) nativeObjects.table += 1;
+    const graphicData = elements(frame, A_NS, "graphicData")[0];
+    if (elements(frame, C_NS, "chart").length > 0 || (graphicData?.getAttribute("uri") ?? "").includes("/chart")) nativeObjects.chart += 1;
+  });
+
+  nativeObjects.connectors += elements(document, P_NS, "cxnSp").length;
+  const shapes = elements(document, P_NS, "sp");
+  shapes.forEach((shape) => {
+    // The deterministic renderer draws pipeline/architecture/roadmap edges as a plain line
+    // autoshape rather than a true `p:cxnSp` connector. Level 1 QA treats it as satisfying a
+    // `connectors` requirement; Level 3 PowerPoint QA is stricter (checks `shape.Connector`).
+    if (elements(shape, A_NS, "prstGeom").some((geometry) => geometry.getAttribute("prst") === "line")) {
+      nativeObjects.connectors += 1;
+      return;
+    }
+    if (elements(shape, A_NS, "t").some((run) => textOf(run).trim().length > 0)) nativeObjects.text += 1;
+    else nativeObjects.shapes += 1;
+  });
+
+  // Everything the slide part itself authors — background, shapes, frames, native charts — minus
+  // a picture's own artwork. Template master/layout chrome lives in other parts and is never read
+  // here, so an organization template's own gradients stay out of this count by construction.
+  const gradientFills = elements(document, A_NS, "gradFill").length
+    - pictures.reduce((total, picture) => total + elements(picture, A_NS, "gradFill").length, 0)
+    + chartParts.reduce((total, chartXml) => total + chartGradientCount(chartXml), 0);
+
+  const root = document.documentElement as unknown as Element;
+  const typefaces = [...new Set(typefacesIn(root))];
+  const eastAsianTypefaces = elements(root, A_NS, "ea").map((node) => node.getAttribute("typeface") ?? "").filter((typeface) => typeface.length > 0);
+  const visibleText = elements(root, A_NS, "t").map(textOf).join(" ");
   return {
     typefaces,
     nativeObjects,
+    chartColors: chartParts.map(chartColorsIn),
+    gradientFills,
     fullSlideImage: fullSlideImage && nativeObjects.text === 0,
     hasEastAsianText: EAST_ASIAN_PATTERN.test(visibleText),
     hasEastAsianTypeface: eastAsianTypefaces.length > 0,
   };
+}
+
+function relationshipTargets(relsXml: string): Map<string, { target: string; type: string }> {
+  const document = parseXml(relsXml);
+  if (!document) return new Map();
+  return new Map(
+    elements(document, PKG_REL_NS, "Relationship").map((relationship) => [
+      relationship.getAttribute("Id") ?? "",
+      { target: relationship.getAttribute("Target") ?? "", type: relationship.getAttribute("Type") ?? "" },
+    ]),
+  );
+}
+
+function packagePath(base: string, target: string): string {
+  // OOXML package paths are always POSIX, even on Windows.
+  return target.startsWith("/") ? target.slice(1) : path.posix.normalize(path.posix.join(base, target));
 }
 
 export async function readPptxOoxml(pptxPath: string): Promise<PptxOoxmlFacts> {
@@ -104,17 +166,31 @@ export async function readPptxOoxml(pptxPath: string): Promise<PptxOoxmlFacts> {
   const presentationRels = await zip.file("ppt/_rels/presentation.xml.rels")?.async("string");
   if (!contentTypes || !presentationXml || !presentationRels) return empty;
 
-  const relTargets = new Map([...presentationRels.matchAll(/<Relationship\s+Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map((match) => [match[1], match[2]]));
-  const orderedRelIds = [...presentationXml.matchAll(/<p:sldId\s+id="\d+"\s+r:id="([^"]+)"\/>/g)].map((match) => match[1]);
-  const slidePaths = orderedRelIds.map((relId) => relTargets.get(relId)).filter((target): target is string => Boolean(target));
+  const presentation = parseXml(presentationXml);
+  if (!presentation) return empty;
+  const relTargets = relationshipTargets(presentationRels);
+  const slidePaths = elements(presentation, P_NS, "sldId")
+    .map((slideId) => relTargets.get(slideId.getAttributeNS(R_NS, "id") ?? "")?.target)
+    .filter((target): target is string => Boolean(target));
   if (slidePaths.length === 0) return empty;
 
-  const slideSize = slideSizeIn(presentationXml);
+  const sldSz = elements(presentation, P_NS, "sldSz")[0];
+  const slideSize = { cx: Number(sldSz?.getAttribute("cx") ?? "0"), cy: Number(sldSz?.getAttribute("cy") ?? "0") };
+
   const slides: SlideOoxmlFacts[] = [];
   for (const relativePath of slidePaths) {
-    const xml = await zip.file(`ppt/${relativePath}`)?.async("string");
+    const slidePackagePath = packagePath("ppt", relativePath);
+    const xml = await zip.file(slidePackagePath)?.async("string");
     if (xml === undefined) return empty;
-    slides.push(analyzeSlide(xml, slideSize));
+    const slideDir = path.posix.dirname(slidePackagePath);
+    const slideRels = await zip.file(`${slideDir}/_rels/${path.posix.basename(slidePackagePath)}.rels`)?.async("string");
+    const chartTargets = slideRels
+      ? [...relationshipTargets(slideRels).values()].filter((relationship) => relationship.type.endsWith("/chart")).map((relationship) => relationship.target)
+      : [];
+    const chartParts = (await Promise.all(chartTargets.map(async (target) => (await zip.file(packagePath(slideDir, target))?.async("string")) ?? ""))).filter(Boolean);
+    const facts = analyzeSlide(xml, slideSize, chartParts);
+    if (!facts) return empty;
+    slides.push(facts);
   }
 
   const embeddedFonts = Object.keys(zip.files).some((name) => name.startsWith("ppt/fonts/") && name.endsWith(".fntdata"));

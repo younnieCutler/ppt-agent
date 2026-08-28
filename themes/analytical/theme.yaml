@@ -1,0 +1,23 @@
+schemaVersion: 2
+id: analytical
+palette:
+  background: "FFFFFF"
+  surface: "F8F9FA"
+  surfaceAlt: "F0F2F4"
+  text: "111418"
+  textSecondary: "3F454B"
+  muted: "68717A"
+  inverseText: "FFFFFF"
+  primary: "173B67"
+  accent: "007A8A"
+  accentSecondary: "C45A28"
+  border: "CDD3D8"
+  divider: "DBDFE3"
+  gridline: "E8EBED"
+  mutedFill: "F3F5F6"
+  highlightedRegion: "EAF1F7"
+  positive: "2E7654"
+  warning: "A06400"
+  negative: "B94747"
+  neutral: "66727D"
+data: ["173B67", "007A8A", "C45A28", "7057A3", "3E7A4F", "A94464"]

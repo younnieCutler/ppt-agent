@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { structuralQa } from "../../src/qa";
+import { contentModelSchema } from "../../src/schema";
 
 const fixture = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/all-layouts.json"), "utf8"));
 const contentModel = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/content-model-all-layouts.json"), "utf8"));
@@ -31,5 +32,13 @@ describe("native chart grounding", () => {
     const report = structuralQa(fixture, process.cwd(), taintedModel);
     expect(report.status).toBe("fail");
     expect(report.findings.some((finding) => finding.code === "CHART_DATA_GROUNDING")).toBe(true);
+  });
+
+  it("accepts six categorical series but rejects an accidental seventh palette cycle", () => {
+    const base = contentModel.datasets[0];
+    const six = { ...contentModel, datasets: [{ ...base, series: Array.from({ length: 6 }, (_, index) => ({ name: `series-${index}`, values: [12, 8, 4] })) }] };
+    expect(contentModelSchema.parse(six).datasets?.[0].series).toHaveLength(6);
+    const seven = { ...six, datasets: [{ ...six.datasets[0], series: [...six.datasets[0].series, { name: "series-6", values: [12, 8, 4] }] }] };
+    expect(() => contentModelSchema.parse(seven)).toThrow(/at most 6|six/i);
   });
 });

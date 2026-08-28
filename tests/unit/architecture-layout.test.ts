@@ -28,7 +28,6 @@ describe("architecture layout", () => {
     };
     const deck = {
       ...fixture,
-      contract: { ...fixture.contract, fonts: { heading: "Pretendard", body: "Pretendard" } },
       slides: [fixture.slides[0], fixture.slides[1], architecture],
     };
     const result = await renderDeck(deck, path.join(runDir, "architecture.pptx"), process.cwd());

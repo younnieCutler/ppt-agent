@@ -1,0 +1,23 @@
+schemaVersion: 2
+id: corporate
+palette:
+  background: "F7F9FC"
+  surface: "FFFFFF"
+  surfaceAlt: "EDF2F7"
+  text: "142033"
+  textSecondary: "3F4E63"
+  muted: "64748A"
+  inverseText: "F8FAFC"
+  primary: "2457A6"
+  accent: "0B7F84"
+  accentSecondary: "B56A1F"
+  border: "C9D4E3"
+  divider: "D8E0EB"
+  gridline: "E5EAF1"
+  mutedFill: "EEF2F6"
+  highlightedRegion: "E5EEF9"
+  positive: "287A52"
+  warning: "9F6108"
+  negative: "B44949"
+  neutral: "657286"
+data: ["2457A6", "0B7F84", "6C5AA7", "B56A1F", "4D708F", "A64B5B"]
