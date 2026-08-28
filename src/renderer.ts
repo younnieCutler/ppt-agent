@@ -170,7 +170,14 @@ function addChrome(slide: Slide, pptx: Pptx, deck: RenderDeck, page: number, rec
     slide.addImage({ path: theme.logoPath, x: canvas.w - CHROME_LOGO_RIGHT_MARGIN, y: 0.22, w: 0.58, h: 0.34, altText: "ppt-agent-logo" });
   }
   if (theme.footer.text && (!ownership || ownership.footer === "renderer")) {
-    addText(slide, theme.footer.text, { x: MARGIN_X, y: 7.12, w: 8.8, h: 0.18, fontSize: 8, valign: "mid" }, rects, `footer-${page}`, theme.fonts.body, theme.palette.muted, chromeCtx);
+    // Capped at the original design width (8.8in, unchanged on the 16:9 canvas this was authored
+    // against) but shrunk further when a narrower canvas plus a visible page number would
+    // otherwise overlap it — footer is left-anchored, page number is right-anchored.
+    const pageNumberShown = theme.footer.showPageNumber && (!ownership || ownership.pageNumber === "renderer");
+    const footerRightGap = 0.25;
+    const availableW = pageNumberShown ? canvas.w - CHROME_PAGE_NUM_RIGHT_MARGIN - footerRightGap - MARGIN_X : canvas.w - MARGIN_X * 2;
+    const footerW = Math.min(8.8, availableW);
+    addText(slide, theme.footer.text, { x: MARGIN_X, y: 7.12, w: footerW, h: 0.18, fontSize: 8, valign: "mid" }, rects, `footer-${page}`, theme.fonts.body, theme.palette.muted, chromeCtx);
   }
   if (theme.footer.showPageNumber && (!ownership || ownership.pageNumber === "renderer")) {
     addText(slide, String(page), { x: canvas.w - CHROME_PAGE_NUM_RIGHT_MARGIN, y: 7.08, w: 0.48, h: 0.22, fontSize: 9, align: "right", name: "ppt-agent-page-number" }, rects, `page-${page}`, theme.fonts.body, theme.palette.muted, chromeCtx);

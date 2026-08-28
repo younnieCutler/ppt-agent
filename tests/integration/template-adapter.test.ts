@@ -190,4 +190,58 @@ describe("organization template adapter", () => {
       });
     }
   }, 30000);
+
+  it("renders a renderer-owned footer and page number on a 4:3 canvas without collision", async () => {
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-template-43-footer-"));
+
+    const templatePptx = new (pptxgen as any)();
+    templatePptx.layout = "LAYOUT_4x3";
+    templatePptx.addSlide();
+    const templatePath = path.join(runDir, "template-source.pptx");
+    await templatePptx.writeFile({ fileName: templatePath });
+
+    const organizationDir = path.join(runDir, "organization");
+    fs.mkdirSync(organizationDir, { recursive: true });
+    fs.copyFileSync(templatePath, path.join(organizationDir, "template.pptx"));
+    fs.writeFileSync(path.join(organizationDir, "brand.yaml"), [
+      "name: 4:3 Footer Test",
+      "palette:",
+      '  background: "FFFFFF"',
+      '  surface: "FFFFFF"',
+      '  text: "111111"',
+      '  primary: "123456"',
+      '  accent: "654321"',
+      '  muted: "666666"',
+      '  border: "DDDDDD"',
+      "footer:",
+      "  showPageNumber: true",
+      '  text: "CONFIDENTIAL — ACME Corp."',
+    ].join("\n"));
+    const region = { x: 0.5, y: 0.5, w: 9, h: 6.3 };
+    fs.writeFileSync(path.join(organizationDir, "template-map.json"), JSON.stringify({
+      version: 1,
+      aspectRatio: "4:3",
+      chromeOwnership: { background: "renderer", logo: "renderer", footer: "renderer", pageNumber: "renderer" },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: region, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+    }));
+
+    const deck = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, aspectRatio: "4:3", organization: { kind: "directory", path: organizationDir } } });
+    const output = path.join(runDir, "filled.pptx");
+    // A footer/page-number collision throws inside renderSlide's geometry QA — reaching a
+    // successful render at all is part of what this test proves.
+    const result = await renderDeck(deck, output, process.cwd());
+
+    const epsilon = 0.01;
+    for (const rects of Object.values(result.slideRects)) {
+      const footer = rects.find((rect) => rect.id.startsWith("footer-"));
+      const pageNumber = rects.find((rect) => rect.id.startsWith("page-"));
+      expect(footer).toBeDefined();
+      expect(pageNumber).toBeDefined();
+      expect(footer!.x + footer!.w).toBeLessThanOrEqual(pageNumber!.x + epsilon);
+      expect(footer!.x + footer!.w).toBeLessThanOrEqual(10 + epsilon);
+      expect(pageNumber!.x + pageNumber!.w).toBeLessThanOrEqual(10 + epsilon);
+    }
+  }, 30000);
 });
