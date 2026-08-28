@@ -20,6 +20,11 @@ async function render(slide: unknown, fileName: string) {
 }
 
 describe("architecture_zones content-fitted band (D1/D2/D3)", () => {
+  // Two sequential renderDeck() calls in one test — on a cold Windows CI runner this can exceed
+  // vitest's default 5000ms test timeout (a cold first pptxgenjs/font-check pass alone can take
+  // several seconds; every other renderDeck test in this file does only one call and stays well
+  // under the default). The work itself is correct at any speed, so the fix is headroom, not less
+  // work.
   it("shrinks the band to fit fewer nodes while keeping its vertical center fixed", async () => {
     const sparse = await render(
       architectureSlide("architecture_zones", { zones: [{ id: "a", label: "A", nodes: ["one"] }, { id: "b", label: "B", nodes: ["two"] }], edges: [{ from: "a:one", to: "b:two" }] }),
@@ -37,7 +42,7 @@ describe("architecture_zones content-fitted band (D1/D2/D3)", () => {
     const sparseCenter = sparseZone.y + sparseZone.h / 2;
     const denseCenter = denseZone.y + denseZone.h / 2;
     expect(Math.abs(sparseCenter - denseCenter)).toBeLessThan(0.15);
-  });
+  }, 30000);
 
   it("widens the zone every edge converges on and gives it the accent border (the slide's focal subject)", async () => {
     const rects = await render(
