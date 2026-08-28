@@ -314,15 +314,15 @@
             "period": "fixture period"
           },
           {
-            "label": "Latency",
+            "label": "Latency budget used",
             "value": 8,
-            "unit": "ms",
+            "unit": "%",
             "period": "fixture period"
           },
           {
-            "label": "Defects",
+            "label": "Defect rate",
             "value": 4,
-            "unit": "count",
+            "unit": "%",
             "period": "fixture period"
           }
         ]

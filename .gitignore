@@ -10,3 +10,8 @@ output/
 *.png
 *.jpg
 *.jpeg
+
+# Real-world regression baselines are fixtures, not build output: they must stay under version
+# control so later versions can be compared against a real pre-improvement deck.
+!evals/real-world/**/baseline/*.pdf
+!evals/real-world/**/baseline/*.pptx

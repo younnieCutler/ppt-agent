@@ -63,6 +63,7 @@ Renders `<run-dir>/visual/slide-NNN.png`, `montage.png` (slide-ID labeled), `bac
 - **Density**, read against `deck-context.json`'s `designDirection`: `dense` → high density is fine; `visual` → large text blocks are suspicious; `minimal` → empty space is fine; `balanced` → avoid both extremes.
 - **Semantic fit** — is the visual representation structurally valid but semantically weak (a process shown as unrelated cards, a comparison with no visible contrast, a quantitative story rendered as decoration instead of data)?
 - **Archetype fit**, read against `deck-context.json`'s `resolvedStyle`: does the slide match its archetype's `surfaceUsage`, `chartTreatment`, and spacing/headline scale? An analytical deck that reads as decorative, or a stage deck rendered at report density, is `ARCHETYPE_*_MISMATCH`. Brand/theme colors and fonts are resolved deterministically — a color or typeface outside `resolvedStyle` is `BRAND_COLOR_VIOLATION` / `BRAND_FONT_VIOLATION` / `THEME_DATA_COLOR_VIOLATION`, all hard.
+- **Semantic visualization** — `WEAK_SEMANTIC_VISUALIZATION` when the slide *contains* its information without *explaining* it: text plus primitive shapes where a diagram would carry the message, bullets for conceptually rich material, a KPI row with no narrative implication. This is weaker than `SEMANTIC_VISUAL_MISMATCH` (hard), which is for a representation that is outright wrong for the message.
 - **Anti-slop** — flag: excessive rounded cards, decorative shapes with no semantic role, repeated 3-column layouts across many slides, unnecessary gradients, identical structure slide after slide, arbitrary icons, generic dashboard styling unrelated to content, fake infographics that encode no information.
 - **Not slop by themselves**: plain white backgrounds, tables, sparse layouts, minimal decoration, dense report-style slides, a rough utilitarian style. Quality is purpose-fit, not visual complexity.
 
@@ -80,6 +81,7 @@ node dist/cli.js repair-context --spec <deck.json> --run-dir <run-dir> --slide S
 # → <run-dir>/repair/S04/context.json: that slide, its cited excerpts, its dataset (if chart),
 #   its reference selection, its findings, designDirection, theme, and its rendered PNG path.
 #   Nothing about any other slide, no raw source text, no full reference index.
+#   The command prints the path and the finding codes; read context.json for the contents.
 
 # Author a replacement slide fragment for S04 only, then:
 node dist/cli.js repair-apply --spec <deck.json> --run-dir <run-dir> --slide S04 \
@@ -91,6 +93,15 @@ After a repair: re-run `qa` (Core QA, full deck — it's free), then `visual`/`v
 
 A repair replaces exactly one `SlideSpec`. It cannot change `organization`, `brand`, `presentationStyle`, `designDirection`, or the reference grammar — those live in the contract and are resolved once. If a finding can only be fixed by changing the style, stop and re-run the interview instead of repairing.
 
+## Structural findings you cannot argue with
+
+Core QA now hard-fails two data-encoding defects, before any render or judgment:
+
+- `MISLEADING_QUANTITATIVE_ENCODING` — a `ranked_bars` / `sparkline_row` / `gauge_row` slide whose metrics carry different units. Those compositions plot everything on one shared axis, so mixed units invite a comparison the data does not support. **Repair by changing composition to `kpi_row` or `metric_story`**, which present each figure on its own terms — never by deleting the data.
+- `INCOMPARABLE_METRIC_SCALE` — same compositions, one unit, but the largest metric is over 100× the smallest, so the small bars carry no readable length.
+
+Text budgets are measured in **display columns**, not codepoints, so a Japanese glyph counts as two. Japanese decks (`contract.language` starting `ja`) additionally get `JAPANESE_ORPHAN_PUNCTUATION` and `JAPANESE_AWKWARD_LINE_BREAK` from a kinsoku wrap simulation, and every deck gets `HEADLINE_BAD_WRAP`. These are `risk`, not `hard`: they run against an estimated column budget rather than real font metrics, so live measurement is still `qa --powerpoint`.
+
 ## Run metrics
 
 ```sh
@@ -98,5 +109,23 @@ node dist/cli.js metrics --spec <deck.json> --run-dir <run-dir>
 ```
 
 Writes `<run-dir>/p3-metrics.json` with a numerator/denominator per metric (brand violations, archetype fit, chart palette violations, layout repetition, Visual QA failures, repair success, style-resolution failure, style-context tokens). It reads only artifacts already in the run directory and sends nothing anywhere.
+
+## Quality and cost — always reported together
+
+```sh
+node dist/cli.js tokens --spec <deck.json> --run-dir <run-dir> [--transcript <path>] [--since <iso>]
+node dist/cli.js score  --spec <deck.json> --run-dir <run-dir> --scores <scores.json>
+node dist/cli.js record --spec <deck.json> --run-dir <run-dir> --benchmark <id> --version <label>
+```
+
+`tokens` reads the Claude Code session transcript (`~/.claude/projects/<slug>/*.jsonl`) — the only real source of `usage`, since no LLM runs inside this CLI — and writes `<run-dir>/tokens.json`. It reports `total` (everything, cache reads included) and `effective` (`input + cache_creation + output`) separately; per-slide targets are read against `effective`. Phases are attributed by run-dir artifact mtime windows, which the artifact labels `artifact-mtime-window` so it is never mistaken for provider metadata.
+
+`score` takes `{ "scores": { <dimension>: 0-100 } }` covering every dimension in `src/score.ts` (`contentFidelity`, `narrativeQuality`, `visualHierarchy`, `semanticVisualization`, `referenceGrammarFit`, `layoutVariety`, `typographyReadability`, `purposeFit`, `antiSlop`). Weights live in code, not in your input, and `referenceGrammarFit` must be **omitted** when the contract declares no `referenceIds` — its weight is redistributed so a no-reference deck is not capped at 90. **A hard finding in `qa.json` or `visual-qa.json` fails the run whatever the dimensions say.**
+
+`record` appends one line to `evals/real-world/<benchmark>/history.jsonl` merging quality and tokens. It refuses to run without `tokens.json`: quality is never recorded without its cost context.
+
+## Output is summarized by default
+
+Every command that writes a run-dir artifact prints a one-line summary, not the whole blob — the artifact is on disk, and printing it puts a second copy into the conversation for nothing. **Read the file when you need the contents.** Failing QA runs still print their full findings, because that is what you have to act on. `--print` restores full output on any command.
 
 `release` additionally accepts `--visual-qa <path>` and `--accept-risk`: a hard visual finding always blocks; an unresolved risk finding blocks unless `--accept-risk` is passed, in which case the release status is `pass_with_warning` instead of `pass`.

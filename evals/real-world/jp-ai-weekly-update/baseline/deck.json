@@ -1,0 +1,158 @@
+{
+  "contract": {
+    "sources": [
+      {
+        "kind": "prompt",
+        "id": "news-digest",
+        "text": "生成AI 週次ニュースダイジェスト（2026年8月時点・主要6ニュース）\n政府はAI事業者向けに著作権・知的財産を保護する新ルールの整備を進めている。学習データや生成物を巡る権利侵害リスクへの対応が焦点であり、国内AI産業の成長と権利者保護のバランスが論点となっている。\nAIエージェントの本番運用について、調査対象国のなかで日本は最下位となった。PoC・実証実験から本番運用への移行が進まない企業が依然多く、既存システム連携、データ基盤、権限設計、組織体制が実用化の障壁となっている。\nIBM自身が4000超のデジタルワーカーと人間が協働する業務環境を構築した。あわせて「IBM Enterprise Advantage」の国内展開を本格化しており、単純利用からAIエージェントが業務フローの主体へ移行しつつある。\n国内で稼働するヒューマノイドは200台。累計学習データは30万時間に達した。導入意向台数は100台と報告されている。\n防衛省の情報分析業務へのAI活用を支援する動きが出ている。自衛隊の指揮統制システム高度化にも既に関与している。\nAI/生成AIに100万円以上投資予定の中堅・中小企業は70%にのぼる。\nガバナンス整備・エージェント本番化・フィジカルAI・安全保障・SMB投資が同時に進行している。ガバナンス整備とPoC突破が同時進行し、エージェント・フィジカルAIへ実装領域が拡大、投資は大企業から中堅・中小企業へ裾野拡大している。"
+      }
+    ],
+    "purpose": "internal",
+    "audience": "経営層および事業部門リーダー",
+    "designDirection": "balanced",
+    "presentationStyle": "corporate",
+    "storyline": ["opening", "problem", "implementation", "evidence", "insight", "closing"],
+    "language": "ja-JP",
+    "slideCount": 8,
+    "brand": { "kind": "default" },
+    "organization": { "kind": "none" },
+    "fonts": { "heading": "Meiryo", "body": "Meiryo" },
+    "fontDelivery": "managed_device",
+    "editability": "native_editable",
+    "aspectRatio": "16:9"
+  },
+  "title": "AI WEEKLY UPDATE",
+  "slides": [
+    {
+      "id": "S01",
+      "role": "cover",
+      "storyBeat": "opening",
+      "layout": "title",
+      "composition": "cover",
+      "headline": "日本の生成AIは「普及」から「実装」へ動き出した",
+      "content": { "kicker": "AI WEEKLY UPDATE", "subtitle": "2026年8月時点・主要6ニュース" },
+      "claims": [{ "text": "日本の生成AIは「普及」から「実装」へ動き出した", "kind": "interpretation", "status": "verified" }],
+      "sourceRefs": [{ "sourceId": "news-digest", "excerptId": "R001" }]
+    },
+    {
+      "id": "S02",
+      "role": "governance",
+      "storyBeat": "problem",
+      "layout": "statement",
+      "composition": "hero_evidence",
+      "headline": "日本の生成AI政策は「普及促進」から「実運用ガバナンス」のフェーズへ",
+      "content": {
+        "body": "政府はAI事業者向けに著作権・知的財産を保護する新ルールの整備を進めている。",
+        "proofs": [
+          "著作権・知財保護ルールを生成AI事業者向けに整備",
+          "学習データ・生成物の権利侵害リスクへの対応範囲を明確化",
+          "国内AI産業の成長と権利者保護のバランスが論点"
+        ]
+      },
+      "claims": [{ "text": "日本の生成AI政策は「普及促進」から「実運用ガバナンス」のフェーズへ", "kind": "interpretation", "status": "verified" }],
+      "sourceRefs": [{ "sourceId": "news-digest", "excerptId": "R002" }]
+    },
+    {
+      "id": "S03",
+      "role": "adoption-gap",
+      "storyBeat": "problem",
+      "layout": "statement",
+      "composition": "claim_actions",
+      "headline": "日本企業の課題はAI導入率ではなく、「PoCから業務プロセスへ組み込む力」",
+      "content": {
+        "body": "AIエージェント本番運用、調査対象国で最下位。",
+        "proofs": [
+          "PoC・実証実験から本番運用への移行が進まない企業が依然多い",
+          "既存システム連携、データ基盤、権限設計、組織体制が実用化の障壁"
+        ]
+      },
+      "claims": [{ "text": "日本企業の課題はAI導入率ではなく、「PoCから業務プロセスへ組み込む力」", "kind": "interpretation", "status": "verified" }],
+      "sourceRefs": [{ "sourceId": "news-digest", "excerptId": "R003" }]
+    },
+    {
+      "id": "S04",
+      "role": "digital-worker",
+      "storyBeat": "implementation",
+      "layout": "process",
+      "composition": "sequence",
+      "headline": "AI活用の単位が「ツール」から「デジタルワーカー」へ変わり始めた",
+      "content": {
+        "steps": [
+          { "id": "step1", "label": "社内実践", "detail": "IBM自身が4000超のデジタルワーカーと人間が協働" },
+          { "id": "step2", "label": "導入支援", "detail": "「IBM Enterprise Advantage」の国内展開を本格化" },
+          { "id": "step3", "label": "役割転換", "detail": "AIエージェントが業務フローの主体へ移行" }
+        ]
+      },
+      "claims": [{ "text": "AI活用の単位が「ツール」から「デジタルワーカー」へ変わり始めた", "kind": "interpretation", "status": "verified" }],
+      "sourceRefs": [{ "sourceId": "news-digest", "excerptId": "R004" }]
+    },
+    {
+      "id": "S05",
+      "role": "physical-ai",
+      "storyBeat": "evidence",
+      "layout": "quantitative",
+      "composition": "ranked_bars",
+      "headline": "生成AIの次の競争軸として、日本でもPhysical AIの産業化が始まる",
+      "content": {
+        "kind": "bar",
+        "metrics": [
+          { "label": "稼働ヒューマノイド台数", "value": 200, "unit": "台", "period": "2026年8月" },
+          { "label": "累計学習データ", "value": 30, "unit": "万時間", "period": "2026年8月" },
+          { "label": "導入意向台数", "value": 100, "unit": "台", "period": "2026年8月" }
+        ]
+      },
+      "claims": [{ "text": "生成AIの次の競争軸として、日本でもPhysical AIの産業化が始まる", "kind": "interpretation", "status": "verified" }],
+      "sourceRefs": [{ "sourceId": "news-digest", "excerptId": "R005" }, { "sourceId": "news-digest", "excerptId": "R001" }]
+    },
+    {
+      "id": "S06",
+      "role": "national-security",
+      "storyBeat": "evidence",
+      "layout": "evidence",
+      "composition": "evidence_list",
+      "headline": "国産AIは民間PoCだけでなく、安全保障インフラへ実装され始めている",
+      "content": {
+        "bullets": [
+          "防衛省の情報分析業務へのAI活用を支援",
+          "自衛隊の指揮統制システム高度化にも既に関与"
+        ]
+      },
+      "claims": [{ "text": "国産AIは民間PoCだけでなく、安全保障インフラへ実装され始めている", "kind": "interpretation", "status": "verified" }],
+      "sourceRefs": [{ "sourceId": "news-digest", "excerptId": "R006" }]
+    },
+    {
+      "id": "S07",
+      "role": "smb-investment",
+      "storyBeat": "insight",
+      "layout": "quantitative",
+      "composition": "kpi_row",
+      "headline": "日本のAI投資は大企業限定のテーマから、中堅・中小企業の標準IT投資へ",
+      "content": {
+        "kind": "kpi",
+        "metrics": [
+          { "label": "AI/生成AIに100万円以上投資予定の中堅・中小企業", "value": 70, "unit": "%", "period": "2026年8月" }
+        ]
+      },
+      "claims": [{ "text": "日本のAI投資は大企業限定のテーマから、中堅・中小企業の標準IT投資へ", "kind": "interpretation", "status": "verified" }],
+      "sourceRefs": [{ "sourceId": "news-digest", "excerptId": "R007" }, { "sourceId": "news-digest", "excerptId": "R001" }]
+    },
+    {
+      "id": "S08",
+      "role": "closing",
+      "storyBeat": "closing",
+      "layout": "statement",
+      "composition": "claim_actions",
+      "headline": "AIは実証から実装へ、規模を問わず標準装備になりつつある",
+      "content": {
+        "body": "ガバナンス整備・エージェント本番化・フィジカルAI・安全保障・SMB投資が同時に進行している。",
+        "proofs": [
+          "ガバナンス整備とPoC突破が同時進行",
+          "エージェント・フィジカルAIへ実装領域が拡大",
+          "投資は大企業から中堅・中小企業へ裾野拡大"
+        ]
+      },
+      "claims": [{ "text": "AIは実証から実装へ、規模を問わず標準装備になりつつある", "kind": "interpretation", "status": "verified" }],
+      "sourceRefs": [{ "sourceId": "news-digest", "excerptId": "R008" }]
+    }
+  ]
+}

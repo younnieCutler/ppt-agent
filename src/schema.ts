@@ -531,7 +531,13 @@ const requiredNativeObjectsByComposition: Record<string, NativeObject[]> = {
 };
 
 export function requiredNativeObjectsFor(slide: SlideSpec): NativeObject[] {
-  const base = requiredNativeObjectsByComposition[slide.composition] ?? [];
+  const declared = requiredNativeObjectsByComposition[slide.composition] ?? [];
+  // kpi_row's only shapes are the separators *between* metrics, so a single-KPI slide legitimately
+  // draws none. Demanding one made a valid single-metric DeckSpec impossible to release — and
+  // kpi_row is exactly where a slide flagged for MISLEADING_QUANTITATIVE_ENCODING gets repaired to.
+  const base = slide.layout === "quantitative" && slide.composition === "kpi_row" && slide.content.metrics.length < 2
+    ? declared.filter((kind) => kind !== "shapes")
+    : declared;
   const usesSourceImage = (slide.layout === "title" && Boolean(slide.content.imagePath)) || (slide.layout === "evidence" && Boolean(slide.content.assetPath));
   return usesSourceImage && !base.includes("source_image") ? [...base, "source_image"] : base;
 }

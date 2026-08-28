@@ -18,6 +18,7 @@ export const visualFindingCodes = [
   "BRAND_FONT_VIOLATION",
   "THEME_DATA_COLOR_VIOLATION",
   // judgment layer — risk
+  "WEAK_SEMANTIC_VISUALIZATION",
   "WEAK_VISUAL_HIERARCHY",
   "EXCESSIVE_INFORMATION_DENSITY",
   "LOW_INFORMATION_DENSITY",
@@ -52,6 +53,9 @@ export const findingSeverityByCode: Record<(typeof visualFindingCodes)[number], 
   BRAND_COLOR_VIOLATION: "hard",
   BRAND_FONT_VIOLATION: "hard",
   THEME_DATA_COLOR_VIOLATION: "hard",
+  // Distinct from SEMANTIC_VISUAL_MISMATCH (hard): the representation is not *wrong* for the
+  // message, it just contains the information instead of explaining it.
+  WEAK_SEMANTIC_VISUALIZATION: "risk",
   WEAK_VISUAL_HIERARCHY: "risk",
   EXCESSIVE_INFORMATION_DENSITY: "risk",
   LOW_INFORMATION_DENSITY: "risk",

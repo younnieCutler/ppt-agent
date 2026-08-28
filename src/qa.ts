@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { contentModelSchema, deckSchema, requiredNativeObjectsFor, type ContentModel, type DeckSpec, type SlideSpec, type SourceRef } from "./schema";
 import { readPptxOoxml, type NativeObjectCounts } from "./ooxml";
+import { displayWidth, headlineWrapProblem, kinsokuProblems } from "./typography";
 import type { ResolvedPresentationStyle } from "./style";
 
 export type QaFinding = {
@@ -40,8 +41,8 @@ function flattenVisibleText(slide: SlideSpec): string {
 function numericTokens(text: string): string[] {
   // Keep 1-digit metrics (e.g. 7%, 3x, 4 cases) and compare complete tokens,
   // never substrings such as `12` inside `120`.
-  return [...text.matchAll(/(?<![\p{L}\p{N}])[-+]?\d+(?:[.,]\d+)?(?:\s?(?:%|x|X|×|[가-힣]{1,4}))?(?![\p{L}\p{N}])/gu)]
-    .map((match) => match[0].replace(/\s+/g, " ").trim());
+  return [...text.matchAll(/(?<![\p{N}\p{Script=Latin}])([-+]?\d+(?:[.,]\d+)?)(?:\s?(?:%|x|X|×|[가-힣]{1,4}))?(?![\p{N}\p{Script=Latin}])/gu)]
+    .map((match) => match[1].trim());
 }
 
 function excerptTokenSet(excerpts: string[]): Set<string> {
@@ -88,17 +89,80 @@ function addSemanticFindings(slide: SlideSpec, findings: QaFinding[]): void {
   }
 }
 
-function addTextBudgetFinding(slide: SlideSpec, findings: QaFinding[], element: string, text: string | undefined, maximum: number): void {
-  if (!text || text.length <= maximum) return;
-  findings.push({
-    severity: "risk",
-    code: "TEXT_WRAP_RISK",
-    slideId: slide.id,
-    message: `${element} contains ${text.length} characters (maximum ${maximum}). Split, shorten, or select a layout with a larger text region before release.`,
-  });
+// Compositions that plot every metric against one shared axis. `kpi_row` and `metric_story` are
+// deliberately absent: they present each figure on its own terms, so mixed units are legitimate
+// there. That asymmetry is the repair path — a flagged slide is fixed by changing composition,
+// never by dropping the data.
+const sharedAxisCompositions = new Set(["ranked_bars", "sparkline_row", "gauge_row"]);
+
+// A slide can be source-grounded, geometrically valid, and free of overflow while still encoding a
+// lie. 200 humanoids, 300,000 learning hours, and 100 planned deployments drawn as one bar row
+// invites a comparison that the units do not support.
+function addQuantitativeEncodingFindings(slide: SlideSpec, findings: QaFinding[]): void {
+  if (slide.layout !== "quantitative" || !sharedAxisCompositions.has(slide.composition)) return;
+  const metrics = slide.content.metrics;
+  const units = [...new Set(metrics.map((metric) => metric.unit))];
+  if (units.length > 1) {
+    findings.push({
+      severity: "hard",
+      code: "MISLEADING_QUANTITATIVE_ENCODING",
+      slideId: slide.id,
+      message: `Composition '${slide.composition}' plots every metric on one shared axis, but the metrics carry ${units.length} different units (${units.join(", ")}). Use 'kpi_row' or 'metric_story', which present each figure separately.`,
+    });
+    return;
+  }
+  const magnitudes = metrics.map((metric) => Math.abs(metric.value)).filter((value) => value > 0);
+  if (magnitudes.length < 2) return;
+  const ratio = Math.max(...magnitudes) / Math.min(...magnitudes);
+  if (ratio > 100) {
+    findings.push({
+      severity: "hard",
+      code: "INCOMPARABLE_METRIC_SCALE",
+      slideId: slide.id,
+      message: `Largest metric is ${Math.round(ratio)}x the smallest, so the smaller bars carry no readable length on a shared axis. Split the slide, use a log-scaled native chart, or present the figures as 'kpi_row'.`,
+    });
+  }
 }
 
-function addTextBudgetFindings(slide: SlideSpec, findings: QaFinding[]): void {
+// Budgets are expressed in display columns, not codepoints: a Japanese glyph occupies two of them,
+// so `text.length` used to let a 40-character Japanese headline through a budget that a 65-character
+// Latin one failed. `element` is also break-checked against the same budget, because a string can
+// fit its region and still wrap badly.
+function addTextBudget(
+  slide: SlideSpec,
+  findings: QaFinding[],
+  element: string,
+  text: string | undefined,
+  maximum: number,
+  language: string,
+): void {
+  if (!text) return;
+  const width = displayWidth(text);
+  if (width > maximum) {
+    findings.push({
+      severity: "risk",
+      code: "TEXT_WRAP_RISK",
+      slideId: slide.id,
+      message: `${element} occupies ${width} display columns (maximum ${maximum}). Split, shorten, or select a layout with a larger text region before release.`,
+    });
+  }
+  if (/^ja\b/i.test(language)) {
+    for (const problem of kinsokuProblems(text, maximum)) {
+      findings.push({ severity: "risk", code: problem.issue, slideId: slide.id, message: `${element}: ${problem.detail}. Rephrase or shorten so the break falls at a natural boundary.` });
+    }
+  }
+}
+
+function addTextBudgetFindings(slide: SlideSpec, findings: QaFinding[], language: string): void {
+  // Shadows the module helper so every budget call below inherits the deck language without
+  // repeating it at ~25 call sites.
+  const addTextBudgetFinding = (target: SlideSpec, collected: QaFinding[], element: string, text: string | undefined, maximum: number): void =>
+    addTextBudget(target, collected, element, text, maximum, language);
+
+  const headlineProblem = headlineWrapProblem(slide.headline, 64);
+  if (headlineProblem) {
+    findings.push({ severity: "risk", code: headlineProblem.issue, slideId: slide.id, message: `Headline: ${headlineProblem.detail}. Compose the break or shorten the headline.` });
+  }
   addTextBudgetFinding(slide, findings, "Headline", slide.headline, 64);
   switch (slide.layout) {
     case "title":
@@ -442,7 +506,8 @@ export function structuralQa(input: unknown, projectDir = process.cwd(), content
 
   deck.slides.forEach((slide) => {
     addSemanticFindings(slide, findings);
-    addTextBudgetFindings(slide, findings);
+    addTextBudgetFindings(slide, findings, deck.contract.language);
+    addQuantitativeEncodingFindings(slide, findings);
     if (slide.sourceRefs.length === 0) findings.push({ severity: "hard", code: "SOURCE_OMISSION", slideId: slide.id, message: "Every slide requires at least one source reference." });
     if (model) addSourceExcerptFindings(deck, slide, findings, projectDir, model);
     const excerptTokens = excerptTokenSet(resolveExcerptTexts(slide, model));

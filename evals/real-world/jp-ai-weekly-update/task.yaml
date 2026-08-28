@@ -1,0 +1,36 @@
+id: jp-ai-weekly-update
+name: AI WEEKLY UPDATE (Japanese corporate, no reference)
+domain: japanese-corporate
+referenceMode: none
+
+# The first real-world regression fixture. This is the pre-PR5 deck that motivated the quality and
+# efficiency work: it communicates a coherent narrative (governance -> PoC adoption -> digital
+# workers -> Physical AI -> national security -> SMB investment) and still needs a human redesign.
+prompt: >
+  Turn the attached Japanese AI news digest into an 8-slide weekly update for executives and
+  business-unit leaders. Keep every numeric claim grounded in the digest. Japanese output.
+
+contract:
+  purpose: internal
+  audience: 経営層および事業部門リーダー
+  language: ja-JP
+  slideCount: 8
+  aspectRatio: "16:9"
+  presentationStyle: corporate
+  designDirection: balanced
+  fonts:
+    heading: Meiryo
+    body: Meiryo
+
+sources:
+  - source/news-digest.md
+
+baseline:
+  version: pre-pr5
+  pptx: baseline/pre-pr5.pptx
+  pdf: baseline/pre-pr5.pdf
+  # DeckSpec reconstructed from the baseline PPTX's slide XML. It is a regression fixture, not a
+  # re-run: it exists so detectors can be asserted against the real failing content.
+  deck: baseline/deck.json
+  contentModel: baseline/content-model.json
+  approximateTokens: 70000

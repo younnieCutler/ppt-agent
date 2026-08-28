@@ -1,0 +1,58 @@
+# Scoring weights are authoritative in src/score.ts, not here — this file records them for review
+# and cannot change them. The judgment layer supplies dimension scores; it never supplies weights.
+dimensions:
+  contentFidelity: 20
+  narrativeQuality: 15
+  visualHierarchy: 15
+  semanticVisualization: 10
+  referenceGrammarFit: 10   # dropped and redistributed: this task uses no reference
+  layoutVariety: 10
+  typographyReadability: 10
+  purposeFit: 5
+  antiSlop: 5
+
+# Defects observed in the pre-PR5 baseline. `detector: structural` findings are asserted against
+# baseline/deck.json by tests/integration/jp-baseline.test.ts and must keep firing.
+knownFindings:
+  - code: MISLEADING_QUANTITATIVE_ENCODING
+    severity: hard
+    detector: structural
+    slide: S05
+    note: >
+      200台 / 30万時間 / 100台 drawn as one ranked_bars row. Source-grounded, native, geometrically
+      valid, no overflow — and still a false comparison, because the units do not share an axis.
+
+  - code: HEADLINE_BAD_WRAP
+    severity: risk
+    detector: structural
+    slides: [S02, S03, S07]
+    note: A two-column fragment ('へ') pushed onto a line of its own.
+
+  - code: JAPANESE_ORPHAN_PUNCTUATION
+    severity: risk
+    detector: structural
+    slide: S07
+    note: The metric label breaks with '・' at the head of line two.
+
+  - code: JAPANESE_AWKWARD_LINE_BREAK
+    severity: risk
+    detector: structural
+    reproducedInFixture: false
+    note: >
+      Implemented and unit-tested in tests/unit/typography.test.ts, but not reproduced by this
+      fixture. The wrap simulation runs on the repo's estimated column budgets; the awkward breaks
+      visible in baseline/pre-pr5.pdf come from real font metrics at real region widths. Treat this
+      as covered by the detector, not by the fixture, until live measurement is wired in.
+
+  - code: WEAK_SEMANTIC_VISUALIZATION
+    severity: risk
+    detector: judgment
+    note: >
+      Judgment-layer only — it needs eyes on the render. Slides contain their information without
+      explaining it (text plus primitive shapes where a diagram would carry the message).
+
+# Not in the PRD's list, but the baseline trips it and it is the §6.3/§6.4 complaint made concrete.
+  - code: DOMINANT_LAYOUT
+    severity: risk
+    detector: structural
+    note: 3 of 7 body slides are `statement`; the deck reaches for the structurally safe composition.
