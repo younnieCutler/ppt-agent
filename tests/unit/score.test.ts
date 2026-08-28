@@ -99,6 +99,9 @@ describe("regression history", () => {
     });
     const { record, historyPath } = recordRun({ deck: noReference, runDir: dir, benchmark: "demo", version: "pre-pr5", projectDir: runDir });
     expect(record).toMatchObject({ benchmark: "demo", version: "pre-pr5", tokens: 70000, effectiveTokens: 41000, qualityScore: 71.4, hardFailures: 2 });
+    // PRD §14: quality is never comparable across versions without its cost denominator.
+    expect(record.qualityPer10kEffectiveTokens).toBeCloseTo(71.4 / 4.1, 2);
+    expect(record.effectiveTokensPerSlide).toBeCloseTo(41000 / noReference.slides.length, 2);
     expect(fs.readFileSync(historyPath, "utf8").trim().split("\n")).toHaveLength(1);
 
     recordRun({ deck: noReference, runDir: dir, benchmark: "demo", version: "next", projectDir: runDir });

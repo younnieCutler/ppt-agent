@@ -179,6 +179,10 @@ async function main(): Promise<void> {
     fs.mkdirSync(outDir, { recursive: true });
     const contextPath = path.join(outDir, "context.json");
     fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
+    // Opens the repair phase. `repair-apply` marks it again when the repair actually lands, and the
+    // later mark wins — so the measurement window covers the authoring turns in between rather than
+    // closing here, before the model has written anything. Marking here at all is what keeps an
+    // abandoned repair (context built, never applied) from vanishing from the accounting entirely.
     markPhase(runDir, "repair");
     // The repair author needs the whole context, but it needs exactly one copy of it: read the file.
     emit({ status: "pass", slideId, outputPath: contextPath, findings: (context as { findings?: Array<{ code: string }> }).findings?.map((finding) => finding.code) ?? [] }, context);
@@ -203,6 +207,9 @@ async function main(): Promise<void> {
     const lastFindings = priorFindings.filter((finding) => !finding.slideId || finding.slideId === slideId).map((finding) => finding.code);
     const statePath = path.join(path.resolve(runDir), "repair-state.json");
     const state = recordRepairAttempt(statePath, slideId, lastFindings, "in_progress");
+    // Closes the repair phase. The authoring turns between `repair-context` and here are the actual
+    // cost of the repair, and they only fall inside the measurement window because this mark exists.
+    markPhase(runDir, "repair");
     print({ status: "pass", outputPath: path.resolve(outPath), regressionScope, repairState: state });
     return;
   }

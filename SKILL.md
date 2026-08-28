@@ -126,7 +126,9 @@ node dist/cli.js record --spec <deck.json> --run-dir <run-dir> --benchmark <id> 
 
 `score` takes `{ "scores": { <dimension>: 0-100 } }` covering every dimension in `src/score.ts` (`contentFidelity`, `narrativeQuality`, `visualHierarchy`, `semanticVisualization`, `referenceGrammarFit`, `layoutVariety`, `typographyReadability`, `purposeFit`, `antiSlop`). Weights live in code, not in your input, and `referenceGrammarFit` must be **omitted** when the contract declares no `referenceIds` — its weight is redistributed so a no-reference deck is not capped at 90. **A hard finding in `qa.json` or `visual-qa.json` fails the run whatever the dimensions say.**
 
-`record` appends one line to `evals/real-world/<benchmark>/history.jsonl` merging quality and tokens. It refuses to run without `tokens.json`: quality is never recorded without its cost context.
+`record` appends one line to `evals/real-world/<benchmark>/history.jsonl` merging quality and tokens. It refuses to run without `tokens.json`: quality is never recorded without its cost context. Each record carries `tokensPerSlide`, `effectiveTokensPerSlide`, and `qualityPer10kEffectiveTokens` together, so a version whose score rose while its cost rose faster cannot read as an improvement.
+
+A repair extends the measurement window: `repair-context` opens the repair phase and `repair-apply` closes it, so the turns spent authoring the replacement slide are counted. Run `tokens` **after** `repair-apply`, not between the two.
 
 ## Output is summarized by default
 

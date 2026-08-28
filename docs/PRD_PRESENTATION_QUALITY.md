@@ -833,8 +833,9 @@ Traceability from this document to shipped work. Update with each PR in the init
 | §6.2 | `WEAK_SEMANTIC_VISUALIZATION` | code registered; judgment-layer only | `src/visual-qa.ts` |
 | §10 | Quality dimensions and weights, hard-failure override | done | `src/score.ts` |
 | §13 §14 | Token telemetry by phase, per-slide, repair overhead | done — boundaries recorded to `run.jsonl`, mtime inference kept only as fallback | `src/tokens.ts` |
-| §14 | Quality per 10k tokens | not yet derived | — |
-| §20 | History as quality regression, not pass/fail | done | `record` command |
+| §14 | Quality per 10k tokens | done — `qualityPer10kEffectiveTokens` in every history record | `src/score.ts` |
+| §20 | History as quality regression, not pass/fail | done — carries `tokensPerSlide`, `effectiveTokensPerSlide`, and `qualityPer10kEffectiveTokens` together | `record` command |
+| §1 | "16:9 / 4:3 canvas support" | **partial, and narrower than §1 implies.** The deterministic renderer is 16:9 only (`renderer.ts:594`); 4:3 requires the native-template-fill path. Organization template packs are 16:9 only (`style.ts:302`, `template.ts:73`). `SKILL.md` states this correctly. | — |
 | §16 | Stop re-injecting normalized artifacts | partial — CLI stdout diet only | `src/cli.ts` |
 | §3 G1, §6.3, §6.4 | Default design overhaul | **not started** | next PR |
 | §3 G2, §4, §18 | Reference grammar manifest and retrieval | **not started** | next PR |

@@ -168,6 +168,36 @@ describe("recorded phase markers", () => {
     expect(report.tokenUsage.phases.visualJudgment.output).toBe(200);
   });
 
+  // The real repair flow is: repair-context writes the brief, the model authors a replacement, then
+  // repair-apply lands it. Marking only at repair-context would close the window before any
+  // authoring happened, and drop the entire cost of the repair from the report.
+  it("counts the authoring turns between repair-context and repair-apply", () => {
+    const runDir = makeRun("repair-flow", {});
+    markPhase(runDir, "visualJudgment", base + 40 * 60_000);
+    markPhase(runDir, "repair", base + 50 * 60_000); // repair-context
+    markPhase(runDir, "repair", base + 60 * 60_000); // repair-apply
+    const transcript = makeTranscript("repair-flow", [
+      turn(30, 1000), // Visual QA judgment
+      turn(55, 400), // the model authoring the replacement slide
+    ]);
+    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base });
+
+    expect(Date.parse(report.window.to)).toBe(base + 60 * 60_000);
+    expect(report.tokenUsage.phases.repair.output).toBe(400);
+    expect(report.tokenUsage.phases.visualJudgment.output).toBe(1000);
+    expect(report.repairOverhead).toBeGreaterThan(0);
+  });
+
+  it("still accounts for a repair that was started but never applied", () => {
+    const runDir = makeRun("repair-abandoned", {});
+    markPhase(runDir, "visualJudgment", base + 40 * 60_000);
+    markPhase(runDir, "repair", base + 50 * 60_000); // repair-context, no repair-apply
+    const transcript = makeTranscript("repair-abandoned", [turn(45, 300)]);
+    const report = buildTokenReport({ runDir, transcriptPath: transcript, slides: 8, since: base });
+    expect(report.tokenUsage.phases.repair.output).toBe(300);
+    expect(Date.parse(report.window.to)).toBe(base + 50 * 60_000);
+  });
+
   it("treats the last mark of a repeated phase as when it finished", () => {
     const runDir = makeRun("remark", {});
     markPhase(runDir, "compositionAuthoring", base + 10 * 60_000);

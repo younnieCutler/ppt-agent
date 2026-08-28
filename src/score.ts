@@ -113,6 +113,10 @@ export type HistoryRecord = {
   tokens: number;
   effectiveTokens: number;
   tokensPerSlide: number;
+  /** PRD §15's per-slide targets are read against effective tokens, so history carries both. */
+  effectiveTokensPerSlide: number;
+  /** PRD §14. Quality is never comparable across versions without its cost denominator. */
+  qualityPer10kEffectiveTokens: number;
   repairOverhead: number;
   qualityScore: number;
   hardFailures: number;
@@ -137,8 +141,12 @@ export function recordRun(options: {
   const tokens = JSON.parse(fs.readFileSync(tokensPath, "utf8")) as {
     tokenUsage: { total: { total: number; effective: number } };
     tokensPerSlide: number;
+    effectiveTokensPerSlide?: number;
     repairOverhead: number;
   };
+
+  const effective = tokens.tokenUsage.total.effective;
+  const round = (value: number): number => Math.round(value * 100) / 100;
 
   const record: HistoryRecord = {
     benchmark: options.benchmark,
@@ -146,8 +154,12 @@ export function recordRun(options: {
     date: new Date().toISOString().slice(0, 10),
     slides: options.deck.slides.length,
     tokens: tokens.tokenUsage.total.total,
-    effectiveTokens: tokens.tokenUsage.total.effective,
+    effectiveTokens: effective,
     tokensPerSlide: tokens.tokensPerSlide,
+    effectiveTokensPerSlide: tokens.effectiveTokensPerSlide ?? round(effective / Math.max(1, options.deck.slides.length)),
+    // A quality score that rose while cost rose faster is not an improvement. Dividing here keeps
+    // the two numbers from being read apart in the history file.
+    qualityPer10kEffectiveTokens: effective > 0 ? round(quality.qualityScore / (effective / 10_000)) : 0,
     repairOverhead: tokens.repairOverhead,
     qualityScore: quality.qualityScore,
     hardFailures: quality.hardFailures,
