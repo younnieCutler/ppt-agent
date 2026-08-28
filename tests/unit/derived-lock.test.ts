@@ -29,6 +29,8 @@ const expectedNativeObjectsByComposition: Record<string, string[]> = {
   linear_roadmap: ["text", "shapes", "connectors"], now_next_later: ["text", "shapes"],
   evidence_list: ["text"], evidence_panel: ["text"],
   native_chart: ["text", "chart"],
+  central_hub: ["text", "shapes", "connectors"], layered_stack: ["text", "shapes"],
+  verdict_contrast: ["text", "shapes"],
 };
 
 function slideStub(layout: string, composition: string, content: Record<string, unknown> = {}): SlideSpec {
@@ -84,6 +86,9 @@ describe("derived editability contract", () => {
       "LAYOUT_REPETITION",
       "INCONSISTENT_SECTION_RHYTHM",
       "REFERENCE_VISUAL_DRIFT",
+      "VISUAL_QA_STALE_RENDER",
+      "VISUAL_RENDER_PROVENANCE_UNKNOWN",
+      "RENDER_FONT_SUBSTITUTION",
     ]);
   });
 
@@ -117,6 +122,9 @@ describe("derived editability contract", () => {
       LAYOUT_REPETITION: "risk",
       INCONSISTENT_SECTION_RHYTHM: "risk",
       REFERENCE_VISUAL_DRIFT: "risk",
+      VISUAL_QA_STALE_RENDER: "hard",
+      VISUAL_RENDER_PROVENANCE_UNKNOWN: "risk",
+      RENDER_FONT_SUBSTITUTION: "risk",
     });
   });
 });

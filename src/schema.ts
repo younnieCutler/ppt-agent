@@ -225,7 +225,13 @@ const comparisonSlideSchema = baseSlideSchema.extend({
 
 const processSlideSchema = baseSlideSchema.extend({
   layout: z.literal("process"),
-  content: z.object({ steps: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), detail: z.string().optional() })).min(2).max(7) }),
+  content: z.object({
+    // `members` names the concrete items a stage groups (e.g. the named skills inside a
+    // "Capture" stage). Optional and rendered only on stage_gate, but it is what lets a headline
+    // like "18 skills, one job each" be proven visually rather than merely asserted — see
+    // addHeadlineProofFindings in qa.ts.
+    steps: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), detail: z.string().optional(), members: z.array(z.string().min(1)).max(8).optional() })).min(2).max(7),
+  }),
 });
 
 function calculatePipelineRanks(nodes: Array<{ id: string }>, edges: Array<{ from: string; to: string }>): Map<string, number> | undefined {
@@ -374,6 +380,53 @@ export const legacyThemeSchema = z.object({
 // optional field is retained only for old decks and import compatibility.
 export const themeSchema = z.union([legacyThemeSchema, themeV2Schema]);
 
+export const allowedCompositions: Record<string, string[]> = {
+  title: ["cover"],
+  statement: ["hero_evidence", "claim_actions"],
+  comparison: ["two_column", "diagnosis_matrix", "ownership_split", "verdict_contrast"],
+  process: ["sequence", "stage_gate"],
+  pipeline: ["pipeline_lanes"],
+  architecture: ["architecture_zones", "central_hub", "layered_stack"],
+  quantitative: ["kpi_row", "ranked_bars", "metric_story", "gauge_row", "sparkline_row"],
+  timeline: ["linear_roadmap", "now_next_later"],
+  evidence: ["evidence_list", "evidence_panel"],
+  chart: ["native_chart"],
+};
+
+// Every composition's perceptual skeleton, independent of its authored layout name. Two
+// compositions with different names can still read as the same primitive on a rendered slide —
+// `architecture_zones`, `central_hub`, and `layered_stack` are all `layout: "architecture"`, but
+// only the first lays equal-width columns; `central_hub` is radial and `layered_stack` is
+// unequal stacked bands. Repetition QA (qa.ts `addCompositionFindings`) counts variety at this
+// family level, not the composition name, so renaming a layout cannot manufacture variety.
+export type CompositionFamily = "single_focal" | "split_panels" | "column_zones" | "horizontal_sequence" | "stacked_rows" | "radial" | "plot";
+
+export const compositionFamily: Record<string, CompositionFamily> = {
+  cover: "single_focal",
+  hero_evidence: "split_panels",
+  claim_actions: "split_panels",
+  two_column: "split_panels",
+  diagnosis_matrix: "split_panels",
+  ownership_split: "split_panels",
+  verdict_contrast: "split_panels",
+  sequence: "horizontal_sequence",
+  stage_gate: "horizontal_sequence",
+  linear_roadmap: "horizontal_sequence",
+  now_next_later: "horizontal_sequence",
+  pipeline_lanes: "stacked_rows",
+  layered_stack: "stacked_rows",
+  architecture_zones: "column_zones",
+  central_hub: "radial",
+  kpi_row: "column_zones",
+  gauge_row: "column_zones",
+  ranked_bars: "plot",
+  sparkline_row: "plot",
+  native_chart: "plot",
+  metric_story: "split_panels",
+  evidence_list: "single_focal",
+  evidence_panel: "split_panels",
+};
+
 const deckShapeSchema = z.object({
   contract: contractSchema,
   title: z.string().min(1),
@@ -422,18 +475,6 @@ export const deckSchema = z
       slide.sourceRefs.forEach((ref, refIndex) => {
         if (!sourceSet.has(ref.sourceId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slides", slideIndex, "sourceRefs", refIndex, "sourceId"], message: `Unknown source id '${ref.sourceId}'.` });
       });
-      const allowedCompositions: Record<string, string[]> = {
-        title: ["cover"],
-        statement: ["hero_evidence", "claim_actions"],
-        comparison: ["two_column", "diagnosis_matrix", "ownership_split"],
-        process: ["sequence", "stage_gate"],
-        pipeline: ["pipeline_lanes"],
-        architecture: ["architecture_zones"],
-        quantitative: ["kpi_row", "ranked_bars", "metric_story", "gauge_row", "sparkline_row"],
-        timeline: ["linear_roadmap", "now_next_later"],
-        evidence: ["evidence_list", "evidence_panel"],
-        chart: ["native_chart"],
-      };
       if (!allowedCompositions[slide.layout].includes(slide.composition)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -532,6 +573,16 @@ export function primaryVisualFor(layout: SlideSpec["layout"]): PrimaryVisual {
   return primaryVisualByLayout[layout];
 }
 
+// Shared between the renderer (which draws the hub zone larger and accented) and QA's
+// perceptual-repetition check (which needs to know a hub slide's cells are no longer equal-width
+// before it counts an architecture_zones slide toward `UNIFORM_CELL_RHYTHM`). Kept as one
+// definition so "which zone is the hub" can never drift between what's drawn and what's judged.
+export function architectureHubZone(edges: Array<{ to: string }>): string | undefined {
+  if (edges.length === 0) return undefined;
+  const targets = new Set(edges.map((edge) => edge.to.split(":")[0]));
+  return targets.size === 1 ? [...targets][0] : undefined;
+}
+
 const requiredNativeObjectsByComposition: Record<string, NativeObject[]> = {
   cover: ["text"], hero_evidence: ["text", "shapes"], claim_actions: ["text", "shapes"],
   two_column: ["text", "shapes"], diagnosis_matrix: ["text", "shapes"], ownership_split: ["text", "shapes"],
@@ -542,6 +593,8 @@ const requiredNativeObjectsByComposition: Record<string, NativeObject[]> = {
   linear_roadmap: ["text", "shapes", "connectors"], now_next_later: ["text", "shapes"],
   evidence_list: ["text"], evidence_panel: ["text"],
   native_chart: ["text", "chart"],
+  central_hub: ["text", "shapes", "connectors"], layered_stack: ["text", "shapes"],
+  verdict_contrast: ["text", "shapes"],
 };
 
 export function requiredNativeObjectsFor(slide: SlideSpec): NativeObject[] {

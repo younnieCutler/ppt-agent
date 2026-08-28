@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "sourceId": "repo",
+      "excerpts": [
+        {
+          "id": "E01",
+          "locator": "E01",
+          "text": "Evidence-based career decision support for the Japanese job market."
+        },
+        {
+          "id": "E02",
+          "locator": "E02",
+          "text": "Your career record stays on your machine, and nothing becomes a fact without your approval."
+        },
+        {
+          "id": "E03",
+          "locator": "E03",
+          "text": "Record what happened: past work becomes contexts, experiences and checkable evidence, and what you cannot verify stays Unknown."
+        },
+        {
+          "id": "E04",
+          "locator": "E04",
+          "text": "Approve it: nothing enters your canonical career record until you confirm it, and a number without a source is refused."
+        },
+        {
+          "id": "E05",
+          "locator": "E05",
+          "text": "Use it: JD matching, a Japanese resume, interview practice and next actions, all quoting only confirmed evidence."
+        },
+        {
+          "id": "E06",
+          "locator": "E06",
+          "text": "Evidence, not invented scores or career history."
+        },
+        {
+          "id": "E07",
+          "locator": "E07",
+          "text": "If a fact is not confirmed, it stays Unknown."
+        },
+        {
+          "id": "E08",
+          "locator": "E08",
+          "text": "A confirmed hard, legal, must-have, or dealbreaker conflict is not averaged away by another strength."
+        },
+        {
+          "id": "E09",
+          "locator": "E09",
+          "text": "The system does not predict whether you will be hired."
+        },
+        {
+          "id": "E10",
+          "locator": "E10",
+          "text": "You make the final decision and keep approval control; it does not submit applications or send messages for you."
+        },
+        {
+          "id": "E11",
+          "locator": "E11",
+          "text": "It runs as a Claude Code and Codex plugin, as a standalone command, and as an optional local GUI, over one Python runtime and one Career Vault."
+        },
+        {
+          "id": "E12",
+          "locator": "E12",
+          "text": "A plugin never holds its own copy of your career facts; the plugin changes how you reach the core, never what it says."
+        },
+        {
+          "id": "E13",
+          "locator": "E13",
+          "text": "The model is context, then experience, then evidence, discovered in that order; the order is the design, not a presentation choice."
+        },
+        {
+          "id": "E14",
+          "locator": "E14",
+          "text": "The career inventory recovers what happened; it does not interpret it, and it never turns a strength or a number into a confirmed fact on your behalf."
+        },
+        {
+          "id": "E15",
+          "locator": "E15",
+          "text": "The JD changes the lens, never the fact."
+        },
+        {
+          "id": "E16",
+          "locator": "E16",
+          "text": "No axis is summed, averaged, multiplied, or ranked into a total, and requirement states are Matched, Missing, or Unknown."
+        },
+        {
+          "id": "E17",
+          "locator": "E17",
+          "text": "A plugin never writes canonical state outside the core contract, so a host cannot approve on your behalf, skip the evidence requirement, or add a fact the CLI would have refused."
+        },
+        {
+          "id": "E18",
+          "locator": "E18",
+          "text": "The layers run Entry, then Command line, then Application, then Domain, then Local data; dependencies point down and nothing at any layer imports an entry point."
+        },
+        {
+          "id": "E19",
+          "locator": "E19",
+          "text": "Application owners include onboarding, approvals, sessions, guided_flow, documents and experiences; the domain holds models, validation, vault, routing, proposals, lifecycle, projection, document, render and execution_plans."
+        },
+        {
+          "id": "E20",
+          "locator": "E20",
+          "text": "The canonical runtime is Python, and every entry point runs that same program against the same Career Vault."
+        },
+        {
+          "id": "E21",
+          "locator": "E21",
+          "text": "For a multi-Skill host turn the runtime builds a bounded plan; each step uses the skill-open, SOP, skill-report lifecycle and Python never calls an LLM host or another Skill."
+        },
+        {
+          "id": "E22",
+          "locator": "E22",
+          "text": "The evidence vocabulary keeps Confirmed, Unknown, Contradictory, Stale and Low Confidence apart, and interest_level records preference without changing objective evidence or decision status."
+        }
+      ]
+    },
+    {
+      "sourceId": "brief",
+      "excerpts": [
+        {
+          "id": "B01",
+          "locator": "B01",
+          "text": "Japan Career Agent is a Career Operating System: it does not decide a career for the user, it accumulates and verifies evidence so the user can make a better decision."
+        },
+        {
+          "id": "B02",
+          "locator": "B02",
+          "text": "A resume, a Japanese CV, interview answers, JD notes, company research and self-analysis usually live in different chats, documents and memories."
+        },
+        {
+          "id": "B03",
+          "locator": "B03",
+          "text": "The suite ships 18 specialized skills, split across capture, analysis, decision, document and verification work."
+        },
+        {
+          "id": "B04",
+          "locator": "B04",
+          "text": "Capture covers the career inventory and ongoing maintenance; analysis covers self-analysis and company research; decision covers JD matching and company battlecards; creation covers document building and Japanese phrasing; verification covers intent, factcheck, challenge and verify."
+        },
+        {
+          "id": "B05",
+          "locator": "B05",
+          "text": "Illustrative: a generic assistant weights Java 90, English 80 and cloud 95, discounts a work visa at 20, and still reports a blended 82 out of 100 as a good match."
+        },
+        {
+          "id": "B06",
+          "locator": "B06",
+          "text": "Read on independent axes, the same case keeps the work visa as a missing hard requirement and sets the decision to Review rather than a score."
+        },
+        {
+          "id": "B07",
+          "locator": "B07",
+          "text": "The document pipeline turns a confirmed evidence pool into a target-specific document model, passes it through a deterministic fidelity gate, and only then renders it."
+        },
+        {
+          "id": "B08",
+          "locator": "B08",
+          "text": "Governed execution means intent, a bounded plan, skill invocation, execution, verification and factcheck all sit between the user and the canonical record."
+        },
+        {
+          "id": "B09",
+          "locator": "B09",
+          "text": "Your career should compound, and so should your career memory: local-first, approval-gated, and agent-native."
+        },
+        {
+          "id": "B10",
+          "locator": "B10",
+          "text": "The knowledge graph links a target role to its contexts, the experiences inside them, and the evidence that makes each experience checkable."
+        }
+      ]
+    }
+  ]
+}

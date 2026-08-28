@@ -139,11 +139,17 @@ export function recordRun(options: {
     throw new Error("tokens.json is missing from the run directory. Quality is never recorded without its cost context — run `tokens` first.");
   }
   const tokens = JSON.parse(fs.readFileSync(tokensPath, "utf8")) as {
+    measurement?: "measured" | "unavailable";
     tokenUsage: { total: { total: number; effective: number } };
-    tokensPerSlide: number;
-    effectiveTokensPerSlide?: number;
-    repairOverhead: number;
+    tokensPerSlide: number | null;
+    effectiveTokensPerSlide?: number | null;
+    repairOverhead: number | null;
   };
+  // A quality score recorded against an unmeasured 0-token run reads as "free," which is exactly
+  // the misleading result this field exists to prevent — refuse to merge it rather than record it.
+  if (tokens.measurement === "unavailable") {
+    throw new Error("tokens.json reports measurement: \"unavailable\" — token telemetry failed for this run. Fix transcript attribution (--transcript/--session-id) and re-run `tokens` before recording.");
+  }
 
   const effective = tokens.tokenUsage.total.effective;
   const round = (value: number): number => Math.round(value * 100) / 100;
@@ -155,12 +161,14 @@ export function recordRun(options: {
     slides: options.deck.slides.length,
     tokens: tokens.tokenUsage.total.total,
     effectiveTokens: effective,
-    tokensPerSlide: tokens.tokensPerSlide,
+    // Non-null: the `measurement === "unavailable"` guard above already returned before this
+    // point whenever tokens.json's per-slide ratios could be null.
+    tokensPerSlide: tokens.tokensPerSlide ?? round(tokens.tokenUsage.total.total / Math.max(1, options.deck.slides.length)),
     effectiveTokensPerSlide: tokens.effectiveTokensPerSlide ?? round(effective / Math.max(1, options.deck.slides.length)),
     // A quality score that rose while cost rose faster is not an improvement. Dividing here keeps
     // the two numbers from being read apart in the history file.
     qualityPer10kEffectiveTokens: effective > 0 ? round(quality.qualityScore / (effective / 10_000)) : 0,
-    repairOverhead: tokens.repairOverhead,
+    repairOverhead: tokens.repairOverhead ?? 0,
     qualityScore: quality.qualityScore,
     hardFailures: quality.hardFailures,
     hardFailureCodes: quality.hardFailureCodes,

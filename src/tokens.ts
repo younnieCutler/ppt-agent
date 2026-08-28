@@ -52,10 +52,19 @@ export type TokenReport = {
     sidechain: TokenTotals;
     phases: Record<PhaseName, TokenTotals>;
   };
-  tokensPerSlide: number;
-  effectiveTokensPerSlide: number;
-  tokensPerAcceptedSlide: number;
-  repairOverhead: number;
+  /**
+   * `"measured"` when the selected transcript actually contributed turns inside the measurement
+   * window. `"unavailable"` when it did not (wrong transcript selected, empty window, etc.) — the
+   * per-slide ratios below are `null` in that case, never `0`. A real deck's cost is never
+   * legitimately zero; reporting `0` for a measurement failure is indistinguishable from a
+   * genuinely free run and has been mistaken for one before.
+   */
+  measurement: "measured" | "unavailable";
+  unavailableReason?: string;
+  tokensPerSlide: number | null;
+  effectiveTokensPerSlide: number | null;
+  tokensPerAcceptedSlide: number | null;
+  repairOverhead: number | null;
 };
 
 type Turn = { at: number; sidechain: boolean; usage: TokenTotals };
@@ -79,20 +88,52 @@ export function projectSlug(projectDir: string): string {
   return projectDir.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
-export function resolveTranscript(projectDir: string, home = os.homedir()): string {
+/**
+ * Picking "the newest .jsonl in the project slug directory" silently selects the wrong session
+ * whenever a later, unrelated Claude Code session in the same project has touched the transcript
+ * directory since the `/ppt` run finished — the real cause of a `/ppt` run reporting 0 measured
+ * tokens despite a session that plainly did the work. When a measurement `window` is available,
+ * every candidate transcript in the directory is scored by how many of its turns actually fall
+ * inside that window, and the best-covering one wins; mtime only breaks ties. Without a window
+ * (a caller that hasn't computed one), the previous newest-first behavior is preserved exactly.
+ */
+export function resolveTranscript(projectDir: string, home = os.homedir(), window?: { from: number; to: number }): string {
   const dir = path.join(home, ".claude", "projects", projectSlug(projectDir));
   if (!fs.existsSync(dir)) {
-    throw new Error(`No Claude Code transcript directory for this project (${dir}). Pass --transcript <path> to point at the session JSONL explicitly.`);
+    throw new Error(`No Claude Code transcript directory for this project (${dir}). Pass --transcript <path> or --session-id <uuid> to point at the session JSONL explicitly.`);
   }
   const sessions = fs
     .readdirSync(dir)
     .filter((name) => name.endsWith(".jsonl"))
-    .map((name) => ({ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime);
+    .map((name) => ({ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }));
   if (sessions.length === 0) {
-    throw new Error(`No session transcript found in ${dir}. Pass --transcript <path> explicitly.`);
+    throw new Error(`No session transcript found in ${dir}. Pass --transcript <path> or --session-id <uuid> explicitly.`);
   }
-  return path.join(dir, sessions[0].name);
+  if (!window) {
+    sessions.sort((a, b) => b.mtime - a.mtime);
+    return path.join(dir, sessions[0].name);
+  }
+  const scored = sessions.map((session) => {
+    const filePath = path.join(dir, session.name);
+    const turnsInWindow = readTurns(filePath).filter((turn) => turn.at >= window.from && turn.at <= window.to).length;
+    return { ...session, turnsInWindow };
+  });
+  scored.sort((a, b) => b.turnsInWindow - a.turnsInWindow || b.mtime - a.mtime);
+  return path.join(dir, scored[0].name);
+}
+
+/**
+ * The measurement window depends only on the run directory (creation time, phase boundaries) and
+ * explicit overrides — never on which transcript ends up selected. Computing it up front lets
+ * `resolveTranscript` score candidate transcripts against it instead of guessing by mtime.
+ */
+export function measurementWindow(runDir: string, specPath?: string, since?: number, until?: number): { from: number; to: number } {
+  const resolved = path.resolve(runDir);
+  const stats = fs.statSync(resolved);
+  const runStart = since ?? (stats.birthtimeMs || stats.mtimeMs);
+  const boundaries = phaseBoundaries(resolved, specPath);
+  const runEnd = until ?? boundaries.at(-1)?.at ?? Date.now();
+  return { from: runStart, to: runEnd };
 }
 
 export function readTurns(transcriptPath: string): Turn[] {
@@ -230,13 +271,9 @@ export function buildTokenReport(options: {
   // The run directory's own creation marks the start of the run; turns before it belong to whatever
   // the user was doing beforehand and are not this deck's cost. Some filesystems report no birth
   // time, so mtime is the fallback and `since` the explicit override.
-  const stats = fs.statSync(resolved);
-  const runStart = options.since ?? (stats.birthtimeMs || stats.mtimeMs);
+  const { from: runStart, to: runEnd } = measurementWindow(resolved, options.specPath, options.since, options.until);
   const boundaries = phaseBoundaries(resolved, options.specPath);
   const markedCount = readMarkers(resolved).length;
-  // The window must close, or unrelated work done later in the same session gets billed to this
-  // deck. Generation ends at the last phase boundary; everything after it is somebody else's cost.
-  const runEnd = options.until ?? boundaries.at(-1)?.at ?? Date.now();
   const turns = readTurns(options.transcriptPath).filter((turn) => turn.at >= runStart && turn.at <= runEnd);
 
   const total = emptyTotals();
@@ -254,6 +291,11 @@ export function buildTokenReport(options: {
   const acceptedSlides = Math.max(0, options.slides - failedSlides.size);
   const ratio = (numerator: number, denominator: number): number => (denominator > 0 ? Math.round((numerator / denominator) * 100) / 100 : 0);
 
+  // Zero turns is never a legitimate "this deck cost nothing" result — it means the wrong
+  // transcript was selected, the window missed every turn, or the transcript was empty. Reporting
+  // 0 in that case is a measurement failure disguised as a free run; `null` cannot be mistaken for
+  // a real number the way `0` was in the run that motivated this.
+  const measured = total.turns > 0;
   return {
     benchmark: options.benchmark,
     transcript: options.transcriptPath,
@@ -266,10 +308,12 @@ export function buildTokenReport(options: {
     slides: options.slides,
     acceptedSlides,
     tokenUsage: { total, sidechain, phases },
-    tokensPerSlide: ratio(total.total, options.slides),
-    effectiveTokensPerSlide: ratio(total.effective, options.slides),
-    tokensPerAcceptedSlide: ratio(total.total, acceptedSlides),
-    repairOverhead: ratio(phases.repair.total, total.total),
+    measurement: measured ? "measured" : "unavailable",
+    ...(measured ? {} : { unavailableReason: `No assistant turns found in ${options.transcriptPath} within the measurement window [${new Date(runStart).toISOString()}, ${new Date(runEnd).toISOString()}]. Pass --transcript or --session-id to point at the correct session explicitly.` }),
+    tokensPerSlide: measured ? ratio(total.total, options.slides) : null,
+    effectiveTokensPerSlide: measured ? ratio(total.effective, options.slides) : null,
+    tokensPerAcceptedSlide: measured ? ratio(total.total, acceptedSlides) : null,
+    repairOverhead: measured ? ratio(phases.repair.total, total.total) : null,
   };
 }
 

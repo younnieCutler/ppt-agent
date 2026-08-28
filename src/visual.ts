@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import sharp from "sharp";
+import type { QaFinding } from "./qa";
 import type { DeckSpec } from "./schema";
 import type { ResolvedPresentationStyle } from "./style";
 
@@ -136,6 +138,11 @@ const libreOfficeBackend: VisualRenderBackend = {
       });
       const pdfPath = path.join(tempDir, `${path.basename(source, path.extname(source))}.pdf`);
       if (!fs.existsSync(pdfPath)) throw new Error(`LibreOffice did not produce expected PDF: ${pdfPath}`);
+      // Kept as the deck's one judged PDF (`visual/deck.pdf`) instead of discarded with tempDir.
+      // A separate downstream conversion of the same PPTX — a different tool, a different render
+      // pass, minutes later — is a second artifact nobody QA'd; whatever it renders is not what
+      // Visual QA looked at. Pinning this copy as the delivered PDF removes that class of drift.
+      fs.copyFileSync(pdfPath, path.join(renderDir, "deck.pdf"));
       return slideMap.map((entry, outputIndex) => {
         const prefix = path.join(renderDir, `slide-${String(outputIndex + 1).padStart(3, "0")}`);
         const pngPath = `${prefix}.png`;
@@ -184,11 +191,105 @@ async function writeMontage(renderDir: string, rendered: RenderedSlide[]): Promi
     .toFile(path.join(renderDir, "montage.png"));
 }
 
-async function writeVisualArtifacts(outputDir: string, backend: VisualRenderBackend, probe: BackendProbe, rendered: RenderedSlide[]): Promise<void> {
+// pdffonts' column layout has no delimiter of its own — font names can contain spaces, so the
+// only reliable anchor is one of these fixed type tokens, which a real font name will not
+// collide with. Everything to its left on the line is the font name.
+const pdfFontTypeTokens = ["CID Type 0C", "CID TrueType", "CID Type 0", "Type 1C", "TrueType", "Type1", "Type3", "Type 3"];
+
+function parsePdfFontsOutput(raw: string): string[] {
+  const names = new Set<string>();
+  for (const line of raw.split(/\r?\n/).slice(2)) {
+    if (!line.trim()) continue;
+    const hit = pdfFontTypeTokens.map((token) => ({ token, index: line.indexOf(token) })).filter((candidate) => candidate.index >= 0).sort((a, b) => a.index - b.index)[0];
+    if (!hit) continue;
+    const name = line.slice(0, hit.index).trim();
+    if (name) names.add(name);
+  }
+  return [...names];
+}
+
+// A PDF subsetting a font prefixes it with a random 6-letter tag ("ABCDEF+Helvetica Neue"), and
+// style suffixes ("-Bold", "-Italic") make the family name diverge further from the contract's
+// plain family name. Both are stripped before comparison so an honestly-embedded contracted font
+// is not misreported as a substitution.
+function normalizeFontFamily(name: string): string {
+  return name
+    .replace(/^[A-Z]{6}\+/, "")
+    .replace(/[-,]?\s*(Bold|Italic|Oblique|Regular|MT|PS)\b/gi, "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+}
+
+/**
+ * Fonts actually embedded in the rendered PDF that fall outside the contracted heading/body
+ * fonts — the defect that produced two visibly different typefaces between the montage and the
+ * delivered PDF in the Japan Career Agent run. `undefined` when there is no PDF to probe (the
+ * PowerPoint COM backend never produces one) or `pdffonts` is unavailable; callers must not treat
+ * that as "no substitution", only as "unmeasured".
+ */
+function probeRenderedFontSubstitution(renderDir: string, fonts: { heading: string; body: string }): string[] | undefined {
+  const pdfPath = path.join(renderDir, "deck.pdf");
+  if (!fs.existsSync(pdfPath)) return undefined;
+  let raw: string;
+  try {
+    raw = execFileSync("pdffonts", [pdfPath], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, windowsHide: true });
+  } catch {
+    return undefined;
+  }
+  const allowed = new Set([fonts.heading, fonts.body].map(normalizeFontFamily));
+  return parsePdfFontsOutput(raw).filter((name) => {
+    const normalized = normalizeFontFamily(name);
+    return normalized !== "" && !allowed.has(normalized);
+  });
+}
+
+async function writeVisualArtifacts(outputDir: string, backend: VisualRenderBackend, probe: BackendProbe, rendered: RenderedSlide[], fonts: { heading: string; body: string }): Promise<void> {
   const renderDir = renderDirFor(outputDir);
   fs.writeFileSync(path.join(renderDir, "index.json"), JSON.stringify(rendered, null, 2));
-  fs.writeFileSync(path.join(renderDir, "backend.json"), JSON.stringify({ backend: backend.name, backendVersion: probe.version, detail: probe.detail, slideCount: rendered.length }, null, 2));
+  const substitutedFonts = probeRenderedFontSubstitution(renderDir, fonts);
+  fs.writeFileSync(path.join(renderDir, "backend.json"), JSON.stringify({ backend: backend.name, backendVersion: probe.version, detail: probe.detail, slideCount: rendered.length, substitutedFonts: substitutedFonts ?? "unknown" }, null, 2));
   await writeMontage(renderDir, rendered);
+}
+
+export type RenderProvenance = { pptxSha256: string; specSha256: string; renderedAt: string; slideIds: string[] };
+
+function sha256OfFile(filePath: string): string {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function sha256OfDeck(deck: DeckSpec): string {
+  return crypto.createHash("sha256").update(JSON.stringify(deck)).digest("hex");
+}
+
+function writeRenderProvenance(runDir: string, pptxPath: string, deck: DeckSpec, slideIds: string[]): void {
+  const provenance: RenderProvenance = {
+    pptxSha256: sha256OfFile(pptxPath),
+    specSha256: sha256OfDeck(deck),
+    renderedAt: new Date().toISOString(),
+    slideIds,
+  };
+  fs.writeFileSync(path.join(renderDirFor(runDir), "render-provenance.json"), JSON.stringify(provenance, null, 2));
+}
+
+/**
+ * Visual QA must judge the artifacts it actually looked at, not whatever the PPTX/DeckSpec
+ * happen to be at the moment `visual-qa` runs. Without this, a slide fixed after `visual` last
+ * ran keeps failing on a stale screenshot, or — the Japan Career Agent case — a render made
+ * *after* judgment is mistaken for the judged one. Absence of provenance (runs made before this
+ * existed) degrades to a non-blocking risk rather than a hard failure.
+ */
+export function verifyRenderProvenance(runDir: string, pptxPath: string, deck: DeckSpec): QaFinding[] {
+  const provenancePath = path.join(renderDirFor(runDir), "render-provenance.json");
+  if (!fs.existsSync(provenancePath)) {
+    return [{ severity: "risk", code: "VISUAL_RENDER_PROVENANCE_UNKNOWN", message: "No render-provenance.json found in visual/. Cannot confirm the rendered artifacts match the current PPTX and DeckSpec — re-run `visual` to produce one." }];
+  }
+  const provenance = JSON.parse(fs.readFileSync(provenancePath, "utf8")) as RenderProvenance;
+  const pptxMatches = fs.existsSync(pptxPath) && provenance.pptxSha256 === sha256OfFile(pptxPath);
+  const specMatches = provenance.specSha256 === sha256OfDeck(deck);
+  if (!pptxMatches || !specMatches) {
+    return [{ severity: "hard", code: "VISUAL_QA_STALE_RENDER", message: `Rendered artifacts in ${path.join(runDir, "visual")} were produced at ${provenance.renderedAt} from a different PPTX or DeckSpec than the one being judged now. Re-run \`visual\` before \`visual-qa\`.` }];
+  }
+  return [];
 }
 
 export async function renderVisual(deck: DeckSpec, pptxPath: string, runDir: string, slideIds?: string[]): Promise<RenderedSlide[]> {
@@ -201,7 +302,8 @@ export async function renderVisual(deck: DeckSpec, pptxPath: string, runDir: str
   const backend = selectBackend();
   const probe = backend.probe();
   const rendered = await backend.render(pptxPath, runDir, slideMap);
-  await writeVisualArtifacts(runDir, backend, probe, rendered);
+  await writeVisualArtifacts(runDir, backend, probe, rendered, deck.contract.fonts);
+  writeRenderProvenance(runDir, pptxPath, deck, ids);
   return rendered;
 }
 

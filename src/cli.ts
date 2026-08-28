@@ -1,17 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
 import { assertFontsInstalled, listInstalledFonts } from "./fonts";
 import { resolveTheme } from "./brand";
 import { renderDeck } from "./renderer";
 import { contentModelSchema, contractSchema, deckSchema, type ContentModel } from "./schema";
 import { mergeFindings, mergeQa, ooxmlQa, runPowerPointQa, structuralQa, verifySourceRefs } from "./qa";
 import { loadReferenceIndex, previewPathsFor, queryFromContract, retrieveReferences } from "./reference";
-import { buildDeckContext, renderVisual } from "./visual";
-import { visualQa } from "./visual-qa";
+import { buildDeckContext, renderVisual, verifyRenderProvenance } from "./visual";
+import { visualQa, type ProvenanceFinding } from "./visual-qa";
 import { applyRepair, buildRepairContext, recordRepairAttempt } from "./repair";
 import { resolvePresentationStyle, styleContext } from "./style";
 import { writeP3Metrics } from "./metrics";
-import { markPhase, resolveTranscript, writeTokenReport } from "./tokens";
+import { markPhase, measurementWindow, projectSlug, resolveTranscript, writeTokenReport } from "./tokens";
 import { recordRun, writeQualityReport } from "./score";
 
 function option(args: string[], name: string): string {
@@ -179,12 +181,21 @@ async function main(): Promise<void> {
     const specPath = option(args, "--spec");
     const runDir = option(args, "--run-dir");
     const findingsPath = option(args, "--findings");
+    const pptxPath = optionalOption(args, "--pptx");
     const deck = deckSchema.parse(readJson(specPath));
     const findings = readJson(findingsPath);
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const references = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
-    const report = visualQa(deck, findings, undefined, style);
+    const provenance: ProvenanceFinding[] = pptxPath ? verifyRenderProvenance(runDir, pptxPath, deck).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId })) : [];
+    const backendPath = path.join(path.resolve(runDir), "visual", "backend.json");
+    if (fs.existsSync(backendPath)) {
+      const backendInfo = JSON.parse(fs.readFileSync(backendPath, "utf8")) as { substitutedFonts?: string[] | "unknown" };
+      if (Array.isArray(backendInfo.substitutedFonts) && backendInfo.substitutedFonts.length > 0) {
+        provenance.push({ code: "RENDER_FONT_SUBSTITUTION", message: `Rendered PDF uses font(s) outside the contracted heading/body pair: ${backendInfo.substitutedFonts.join(", ")}.` });
+      }
+    }
+    const report = visualQa(deck, findings, undefined, style, provenance);
     const outputPath = path.join(path.resolve(runDir), "visual-qa.json");
     fs.writeFileSync(outputPath, JSON.stringify(report, null, 2));
     markPhase(runDir, "visualJudgment");
@@ -236,6 +247,7 @@ async function main(): Promise<void> {
     const pptxPath = option(args, "--pptx");
     const outPath = option(args, "--out");
     const visualQaPath = optionalOption(args, "--visual-qa");
+    const runDir = optionalOption(args, "--run-dir");
     const acceptRisk = hasFlag(args, "--accept-risk");
     const qa = readJson(qaPath) as { status?: string; attempts?: number };
     const judgment = fs.readFileSync(path.resolve(judgmentPath), "utf8");
@@ -256,6 +268,19 @@ async function main(): Promise<void> {
       if (hasRisk) {
         if (!acceptRisk) throw new Error("Release blocked: visual-qa.json contains unresolved risk findings. Pass --accept-risk to release with warnings.");
         releaseStatus = "pass_with_warning";
+      }
+      // Judgment is only meaningful about the file it actually looked at. Without this, a deck
+      // can be re-rendered after visual-qa passed and released without anyone re-judging it —
+      // the exact gap that let a stale render reach the Japan Career Agent deliverable.
+      if (runDir) {
+        const provenancePath = path.join(path.resolve(runDir), "visual", "render-provenance.json");
+        if (fs.existsSync(provenancePath)) {
+          const provenance = JSON.parse(fs.readFileSync(provenancePath, "utf8")) as { pptxSha256: string };
+          const releasedSha = crypto.createHash("sha256").update(fs.readFileSync(path.resolve(pptxPath))).digest("hex");
+          if (provenance.pptxSha256 !== releasedSha) {
+            throw new Error("Release blocked: the PPTX being released does not match the PPTX visual-qa judged (visual/render-provenance.json digest mismatch). Re-run `visual` and `visual-qa` against the exact file being released.");
+          }
+        }
       }
     }
     fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
@@ -278,15 +303,20 @@ async function main(): Promise<void> {
   if (command === "tokens") {
     const runDir = option(args, "--run-dir");
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const transcriptPath = optionalOption(args, "--transcript") ?? resolveTranscript(projectDir);
+    const since = optionalOption(args, "--since") ? Date.parse(option(args, "--since")) : undefined;
+    const until = optionalOption(args, "--until") ? Date.parse(option(args, "--until")) : undefined;
+    const sessionId = optionalOption(args, "--session-id");
+    const transcriptPath = optionalOption(args, "--transcript")
+      ?? (sessionId ? path.join(os.homedir(), ".claude", "projects", projectSlug(projectDir), `${sessionId}.jsonl`) : undefined)
+      ?? resolveTranscript(projectDir, os.homedir(), measurementWindow(runDir, specPath, since, until));
     const report = writeTokenReport({
       runDir,
       transcriptPath: path.resolve(transcriptPath),
       slides: deck.slides.length,
       specPath,
       benchmark: optionalOption(args, "--benchmark"),
-      since: optionalOption(args, "--since") ? Date.parse(option(args, "--since")) : undefined,
-      until: optionalOption(args, "--until") ? Date.parse(option(args, "--until")) : undefined,
+      since,
+      until,
     });
     emit({
       status: "pass",
@@ -295,7 +325,11 @@ async function main(): Promise<void> {
       effective: report.tokenUsage.total.effective,
       tokensPerSlide: report.tokensPerSlide,
       repairOverhead: report.repairOverhead,
+      measurement: report.measurement,
     }, report);
+    // A measurement failure is not a passing run's silence — it is a distinct condition the
+    // caller must see, or a 0-token deck slips through as if telemetry had succeeded.
+    if (report.measurement === "unavailable" && !hasFlag(args, "--allow-unmeasured")) process.exitCode = 2;
     return;
   }
 

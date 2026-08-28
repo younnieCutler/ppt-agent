@@ -1,0 +1,874 @@
+{
+  "contract": {
+    "sources": [
+      {
+        "kind": "prompt",
+        "id": "repo",
+        "text": "Evidence-based career decision support for the Japanese job market.\n\nYour career record stays on your machine, and nothing becomes a fact without your approval.\n\nRecord what happened: past work becomes contexts, experiences and checkable evidence, and what you cannot verify stays Unknown.\n\nApprove it: nothing enters your canonical career record until you confirm it, and a number without a source is refused.\n\nUse it: JD matching, a Japanese resume, interview practice and next actions, all quoting only confirmed evidence.\n\nEvidence, not invented scores or career history.\n\nIf a fact is not confirmed, it stays Unknown.\n\nA confirmed hard, legal, must-have, or dealbreaker conflict is not averaged away by another strength.\n\nThe system does not predict whether you will be hired.\n\nYou make the final decision and keep approval control; it does not submit applications or send messages for you.\n\nIt runs as a Claude Code and Codex plugin, as a standalone command, and as an optional local GUI, over one Python runtime and one Career Vault.\n\nA plugin never holds its own copy of your career facts; the plugin changes how you reach the core, never what it says.\n\nThe model is context, then experience, then evidence, discovered in that order; the order is the design, not a presentation choice.\n\nThe career inventory recovers what happened; it does not interpret it, and it never turns a strength or a number into a confirmed fact on your behalf.\n\nThe JD changes the lens, never the fact.\n\nNo axis is summed, averaged, multiplied, or ranked into a total, and requirement states are Matched, Missing, or Unknown.\n\nA plugin never writes canonical state outside the core contract, so a host cannot approve on your behalf, skip the evidence requirement, or add a fact the CLI would have refused.\n\nThe layers run Entry, then Command line, then Application, then Domain, then Local data; dependencies point down and nothing at any layer imports an entry point.\n\nApplication owners include onboarding, approvals, sessions, guided_flow, documents and experiences; the domain holds models, validation, vault, routing, proposals, lifecycle, projection, document, render and execution_plans.\n\nThe canonical runtime is Python, and every entry point runs that same program against the same Career Vault.\n\nFor a multi-Skill host turn the runtime builds a bounded plan; each step uses the skill-open, SOP, skill-report lifecycle and Python never calls an LLM host or another Skill.\n\nThe evidence vocabulary keeps Confirmed, Unknown, Contradictory, Stale and Low Confidence apart, and interest_level records preference without changing objective evidence or decision status."
+      },
+      {
+        "kind": "prompt",
+        "id": "brief",
+        "text": "Japan Career Agent is a Career Operating System: it does not decide a career for the user, it accumulates and verifies evidence so the user can make a better decision.\n\nA resume, a Japanese CV, interview answers, JD notes, company research and self-analysis usually live in different chats, documents and memories.\n\nThe suite ships 18 specialized skills, split across capture, analysis, decision, document and verification work.\n\nCapture covers the career inventory and ongoing maintenance; analysis covers self-analysis and company research; decision covers JD matching and company battlecards; creation covers document building and Japanese phrasing; verification covers intent, factcheck, challenge and verify.\n\nIllustrative: a generic assistant weights Java 90, English 80 and cloud 95, discounts a work visa at 20, and still reports a blended 82 out of 100 as a good match.\n\nRead on independent axes, the same case keeps the work visa as a missing hard requirement and sets the decision to Review rather than a score.\n\nThe document pipeline turns a confirmed evidence pool into a target-specific document model, passes it through a deterministic fidelity gate, and only then renders it.\n\nGoverned execution means intent, a bounded plan, skill invocation, execution, verification and factcheck all sit between the user and the canonical record.\n\nYour career should compound, and so should your career memory: local-first, approval-gated, and agent-native.\n\nThe knowledge graph links a target role to its contexts, the experiences inside them, and the evidence that makes each experience checkable."
+      }
+    ],
+    "purpose": "narrative",
+    "audience": "Recruiting and career-industry professionals in the Japanese market",
+    "objective": "Show why career AI must be built on accumulated, verified, user-approved evidence",
+    "visualIntent": [
+      "architecture",
+      "process",
+      "evidence"
+    ],
+    "designDirection": "auto",
+    "presentationStyle": "stage",
+    "storyline": [
+      "opening",
+      "problem",
+      "design",
+      "evidence",
+      "insight",
+      "implementation",
+      "architecture",
+      "closing"
+    ],
+    "language": "en",
+    "slideCount": 14,
+    "brand": {
+      "kind": "default"
+    },
+    "organization": {
+      "kind": "none"
+    },
+    "fonts": {
+      "heading": "Helvetica Neue",
+      "body": "Helvetica Neue"
+    },
+    "fontDelivery": "managed_device",
+    "editability": "native_editable",
+    "aspectRatio": "16:9"
+  },
+  "title": "Japan Career Agent",
+  "slides": [
+    {
+      "id": "S01",
+      "role": "cover",
+      "storyBeat": "opening",
+      "headline": "Your career, backed by evidence.",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Your career, backed by evidence.",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ],
+      "composition": "cover",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E01"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E02"
+        }
+      ],
+      "layout": "title",
+      "content": {
+        "kicker": "JAPAN CAREER AGENT",
+        "subtitle": "Evidence-based career decision support for the Japanese job market."
+      }
+    },
+    {
+      "id": "S02",
+      "role": "problem",
+      "storyBeat": "problem",
+      "headline": "The most dangerous moment in career AI is the confident guess",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "The most dangerous moment in career AI is the confident guess",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ],
+      "composition": "hero_evidence",
+      "sourceRefs": [
+        {
+          "sourceId": "brief",
+          "excerptId": "B02"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E06"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E09"
+        }
+      ],
+      "layout": "statement",
+      "content": {
+        "body": "Resume, Japanese CV, interview answers, JD notes and company research each live apart.",
+        "proofs": [
+          "Every chat starts the agent from zero",
+          "A number gets repeated until nobody can source it",
+          "The riskiest output is a guess with a confident tone"
+        ]
+      }
+    },
+    {
+      "id": "S03",
+      "role": "thesis",
+      "storyBeat": "problem",
+      "headline": "Career advice needs memory, evidence, and governance",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Career advice needs memory, evidence, and governance",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ],
+      "composition": "hero_evidence",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E02"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E07"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E22"
+        }
+      ],
+      "layout": "statement",
+      "content": {
+        "body": "One record to remember it, a source to check it, and approval that stays with you.",
+        "proofs": [
+          "Memory: one career record, reused everywhere",
+          "Evidence: attach a source, or it stays Unknown",
+          "Governance: no fact enters without your yes"
+        ]
+      }
+    },
+    {
+      "id": "S04",
+      "role": "vault",
+      "storyBeat": "design",
+      "headline": "Record a career once, reuse it for every task",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Record a career once, reuse it for every task",
+          "kind": "fact",
+          "status": "verified"
+        }
+      ],
+      "composition": "architecture_zones",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E02"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E05"
+        },
+        {
+          "sourceId": "brief",
+          "excerptId": "B01"
+        }
+      ],
+      "layout": "architecture",
+      "content": {
+        "zones": [
+          {
+            "id": "vault",
+            "label": "Career Vault",
+            "nodes": [
+              "contexts",
+              "experiences",
+              "evidence"
+            ]
+          },
+          {
+            "id": "use",
+            "label": "Every task reuses it",
+            "nodes": [
+              "JD matching",
+              "Japanese CV",
+              "interview prep",
+              "self-analysis",
+              "strategy"
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "from": "vault:evidence",
+            "to": "use:JD matching"
+          },
+          {
+            "from": "vault:evidence",
+            "to": "use:Japanese CV"
+          },
+          {
+            "from": "vault:evidence",
+            "to": "use:interview prep"
+          },
+          {
+            "from": "vault:evidence",
+            "to": "use:self-analysis"
+          },
+          {
+            "from": "vault:evidence",
+            "to": "use:strategy"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S05",
+      "role": "gate",
+      "storyBeat": "design",
+      "headline": "Nothing becomes a fact without your approval",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Nothing becomes a fact without your approval",
+          "kind": "fact",
+          "status": "verified"
+        }
+      ],
+      "composition": "sequence",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E02"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E04"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E07"
+        }
+      ],
+      "layout": "process",
+      "content": {
+        "steps": [
+          {
+            "id": "s1",
+            "label": "Unknown",
+            "detail": "Anything not yet verified"
+          },
+          {
+            "id": "s2",
+            "label": "Evidence",
+            "detail": "A source is attached and checked"
+          },
+          {
+            "id": "s3",
+            "label": "Review",
+            "detail": "You see the claim and its source"
+          },
+          {
+            "id": "s4",
+            "label": "You approve",
+            "detail": "Nothing proceeds until you confirm"
+          },
+          {
+            "id": "s5",
+            "label": "Confirmed",
+            "detail": "Now usable as a current fact"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S06",
+      "role": "graph",
+      "storyBeat": "design",
+      "headline": "Context, then experience, then evidence",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Context, then experience, then evidence",
+          "kind": "fact",
+          "status": "verified"
+        }
+      ],
+      "composition": "architecture_zones",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E13"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E03"
+        },
+        {
+          "sourceId": "brief",
+          "excerptId": "B10"
+        }
+      ],
+      "layout": "architecture",
+      "content": {
+        "zones": [
+          {
+            "id": "ctx",
+            "label": "Context",
+            "nodes": [
+              "company",
+              "university",
+              "internship",
+              "open source"
+            ]
+          },
+          {
+            "id": "exp",
+            "label": "Experience",
+            "nodes": [
+              "projects",
+              "operations",
+              "incidents",
+              "mentoring"
+            ]
+          },
+          {
+            "id": "evi",
+            "label": "Evidence",
+            "nodes": [
+              "period and role",
+              "actions and decisions",
+              "result and its source"
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "from": "ctx:company",
+            "to": "exp:projects"
+          },
+          {
+            "from": "ctx:internship",
+            "to": "exp:operations"
+          },
+          {
+            "from": "exp:projects",
+            "to": "evi:period and role"
+          },
+          {
+            "from": "exp:operations",
+            "to": "evi:actions and decisions"
+          },
+          {
+            "from": "exp:mentoring",
+            "to": "evi:result and its source"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S07",
+      "role": "skills",
+      "storyBeat": "design",
+      "headline": "18 skills, one job each",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "18 skills, one job each",
+          "kind": "fact",
+          "status": "verified"
+        }
+      ],
+      "composition": "stage_gate",
+      "sourceRefs": [
+        {
+          "sourceId": "brief",
+          "excerptId": "B03"
+        },
+        {
+          "sourceId": "brief",
+          "excerptId": "B04"
+        }
+      ],
+      "layout": "process",
+      "content": {
+        "steps": [
+          {
+            "id": "capture",
+            "label": "Capture",
+            "detail": "Career inventory and ongoing maintenance"
+          },
+          {
+            "id": "analyze",
+            "label": "Analyze",
+            "detail": "Self-analysis and company research"
+          },
+          {
+            "id": "decide",
+            "label": "Decide",
+            "detail": "JD matching and company battlecards"
+          },
+          {
+            "id": "create",
+            "label": "Create",
+            "detail": "Document building and Japanese phrasing"
+          },
+          {
+            "id": "verify",
+            "label": "Verify",
+            "detail": "Intent, factcheck, challenge and verify"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S08",
+      "role": "jd",
+      "storyBeat": "evidence",
+      "headline": "From a job description to a decision, one requirement at a time",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "From a job description to a decision, one requirement at a time",
+          "kind": "fact",
+          "status": "verified"
+        }
+      ],
+      "composition": "diagnosis_matrix",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E16"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E03"
+        },
+        {
+          "sourceId": "brief",
+          "excerptId": "B10"
+        }
+      ],
+      "layout": "comparison",
+      "content": {
+        "left": {
+          "label": "Job description",
+          "items": [
+            "Required: cloud platform, Kubernetes, Java services",
+            "Preferred: team leadership, English"
+          ]
+        },
+        "right": {
+          "label": "Your recorded evidence",
+          "items": [
+            "Confirmed: cloud migration, Java services in production",
+            "Unknown: Kubernetes, not in the ledger yet"
+          ]
+        },
+        "delta": "Every requirement resolves to Matched, Missing, or Unknown"
+      }
+    },
+    {
+      "id": "S09",
+      "role": "conflict",
+      "storyBeat": "insight",
+      "headline": "A hard conflict is never averaged away",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "A hard conflict is never averaged away",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ],
+      "composition": "two_column",
+      "sourceRefs": [
+        {
+          "sourceId": "brief",
+          "excerptId": "B05"
+        },
+        {
+          "sourceId": "brief",
+          "excerptId": "B06"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E08"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E16"
+        }
+      ],
+      "layout": "comparison",
+      "content": {
+        "left": {
+          "label": "Generic assistant",
+          "items": [
+            "Java 90, English 80, cloud 95, weighted together",
+            "Work visa scored 20, treated as one weak input",
+            "Blended result 82 out of 100, called a good match"
+          ]
+        },
+        "right": {
+          "label": "Japan Career Agent",
+          "items": [
+            "Cloud and Java: Matched to confirmed evidence",
+            "Work visa: Missing, and it is a hard requirement",
+            "Decision: Review, because a hard conflict is not offset"
+          ]
+        },
+        "delta": "A confirmed hard conflict is never averaged into a score"
+      }
+    },
+    {
+      "id": "S10",
+      "role": "document",
+      "storyBeat": "implementation",
+      "headline": "Only confirmed evidence becomes a document",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Only confirmed evidence becomes a document",
+          "kind": "fact",
+          "status": "verified"
+        }
+      ],
+      "composition": "sequence",
+      "sourceRefs": [
+        {
+          "sourceId": "brief",
+          "excerptId": "B07"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E15"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E06"
+        }
+      ],
+      "layout": "process",
+      "content": {
+        "steps": [
+          {
+            "id": "pool",
+            "label": "Evidence pool",
+            "detail": "Only confirmed items, with their sources"
+          },
+          {
+            "id": "model",
+            "label": "Document model",
+            "detail": "Built for one target posting"
+          },
+          {
+            "id": "gate",
+            "label": "Fidelity gate",
+            "detail": "A check that wording did not outrun the evidence"
+          },
+          {
+            "id": "render",
+            "label": "Rendered CV",
+            "detail": "Same career, a different document per target"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S11",
+      "role": "interfaces",
+      "storyBeat": "architecture",
+      "headline": "One core, one vault, many interfaces",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "One core, one vault, many interfaces",
+          "kind": "fact",
+          "status": "verified"
+        }
+      ],
+      "composition": "architecture_zones",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E11"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E12"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E20"
+        }
+      ],
+      "layout": "architecture",
+      "content": {
+        "zones": [
+          {
+            "id": "ui",
+            "label": "Interfaces",
+            "nodes": [
+              "Claude Code",
+              "Codex",
+              "CLI",
+              "Local GUI"
+            ]
+          },
+          {
+            "id": "core",
+            "label": "One Python core",
+            "nodes": [
+              "runtime",
+              "approval contract",
+              "evidence ledger"
+            ]
+          },
+          {
+            "id": "data",
+            "label": "One Career Vault",
+            "nodes": [
+              "canonical record",
+              "event ledger"
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "from": "ui:Claude Code",
+            "to": "core:runtime"
+          },
+          {
+            "from": "ui:Codex",
+            "to": "core:runtime"
+          },
+          {
+            "from": "ui:CLI",
+            "to": "core:runtime"
+          },
+          {
+            "from": "ui:Local GUI",
+            "to": "core:runtime"
+          },
+          {
+            "from": "core:approval contract",
+            "to": "data:canonical record"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S12",
+      "role": "runtime",
+      "storyBeat": "architecture",
+      "headline": "Not just prompts, a governed agent runtime",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Not just prompts, a governed agent runtime",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ],
+      "composition": "architecture_zones",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E18"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E19"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E20"
+        }
+      ],
+      "layout": "architecture",
+      "content": {
+        "zones": [
+          {
+            "id": "entry",
+            "label": "Entry",
+            "nodes": [
+              "npx / uvx / pipx",
+              "installed CLI",
+              "Claude and Codex plugins"
+            ]
+          },
+          {
+            "id": "cmd",
+            "label": "Command line",
+            "nodes": [
+              "command_line.py",
+              "dispatch.py"
+            ]
+          },
+          {
+            "id": "app",
+            "label": "Application",
+            "nodes": [
+              "onboarding, approvals",
+              "sessions, guided_flow",
+              "documents, experiences"
+            ]
+          },
+          {
+            "id": "dom",
+            "label": "Domain",
+            "nodes": [
+              "models, validation, vault",
+              "routing, proposals, lifecycle",
+              "projection, document, render",
+              "execution_plans"
+            ]
+          },
+          {
+            "id": "local",
+            "label": "Local data",
+            "nodes": [
+              "Career Vault",
+              "event ledger, private store"
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "from": "entry:installed CLI",
+            "to": "cmd:command_line.py"
+          },
+          {
+            "from": "cmd:command_line.py",
+            "to": "cmd:dispatch.py"
+          },
+          {
+            "from": "cmd:dispatch.py",
+            "to": "app:onboarding, approvals"
+          },
+          {
+            "from": "app:onboarding, approvals",
+            "to": "dom:models, validation, vault"
+          },
+          {
+            "from": "dom:models, validation, vault",
+            "to": "local:Career Vault"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S13",
+      "role": "governance",
+      "storyBeat": "architecture",
+      "headline": "Agents may reason; they may not rewrite your record",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Agents may reason; they may not rewrite your record",
+          "kind": "fact",
+          "status": "verified"
+        }
+      ],
+      "composition": "sequence",
+      "sourceRefs": [
+        {
+          "sourceId": "repo",
+          "excerptId": "E17"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E21"
+        },
+        {
+          "sourceId": "brief",
+          "excerptId": "B08"
+        }
+      ],
+      "layout": "process",
+      "content": {
+        "steps": [
+          {
+            "id": "intent",
+            "label": "Intent",
+            "detail": "What the user actually asked for"
+          },
+          {
+            "id": "plan",
+            "label": "Bounded plan",
+            "detail": "A fixed, inspectable set of steps"
+          },
+          {
+            "id": "skill",
+            "label": "Skill run",
+            "detail": "skill-open, execute, skill-report"
+          },
+          {
+            "id": "checks",
+            "label": "Checks",
+            "detail": "Verify the artifact, factcheck claims"
+          },
+          {
+            "id": "approve",
+            "label": "Your approval",
+            "detail": "You confirm, or nothing proceeds"
+          },
+          {
+            "id": "canon",
+            "label": "Canonical record",
+            "detail": "Reached only through approval"
+          }
+        ]
+      }
+    },
+    {
+      "id": "S14",
+      "role": "closing",
+      "storyBeat": "closing",
+      "headline": "Own your career memory",
+      "headlineAlignment": "left",
+      "claims": [
+        {
+          "text": "Own your career memory",
+          "kind": "interpretation",
+          "status": "verified"
+        }
+      ],
+      "composition": "hero_evidence",
+      "sourceRefs": [
+        {
+          "sourceId": "brief",
+          "excerptId": "B09"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E02"
+        },
+        {
+          "sourceId": "repo",
+          "excerptId": "E10"
+        }
+      ],
+      "layout": "statement",
+      "content": {
+        "body": "The system prepares the evidence and the draft; you keep the record and the decision.",
+        "proofs": [
+          "Local-first: the record stays on your machine",
+          "Approval-gated: nothing becomes a fact without you",
+          "Agent-native: one core from Claude, Codex, CLI or GUI"
+        ]
+      }
+    }
+  ]
+}
