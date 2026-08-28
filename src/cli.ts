@@ -6,6 +6,9 @@ import { renderDeck } from "./renderer";
 import { contentModelSchema, contractSchema, deckSchema, type ContentModel } from "./schema";
 import { mergeFindings, mergeQa, ooxmlQa, runPowerPointQa, structuralQa, verifySourceRefs } from "./qa";
 import { loadReferenceIndex, previewPathsFor, queryFromContract, retrieveReferences } from "./reference";
+import { buildDeckContext, renderVisual } from "./visual";
+import { visualQa } from "./visual-qa";
+import { applyRepair, buildRepairContext, recordRepairAttempt } from "./repair";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -70,12 +73,85 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "visual") {
+    const specPath = option(args, "--spec");
+    const pptxPath = option(args, "--pptx");
+    const runDir = option(args, "--run-dir");
+    const slidesRaw = optionalOption(args, "--slides");
+    const deck = deckSchema.parse(readJson(specPath));
+    const slideIds = slidesRaw ? slidesRaw.split(",").map((id) => id.trim()) : undefined;
+    const index = await renderVisual(deck, pptxPath, runDir, slideIds);
+    const deckContext = buildDeckContext(deck, index.map((entry) => entry.slideId));
+    fs.writeFileSync(path.join(path.resolve(runDir), "visual", "deck-context.json"), JSON.stringify(deckContext, null, 2));
+    print({ status: "pass", index });
+    return;
+  }
+
+  if (command === "visual-qa") {
+    const specPath = option(args, "--spec");
+    const runDir = option(args, "--run-dir");
+    const findingsPath = option(args, "--findings");
+    const deck = deckSchema.parse(readJson(specPath));
+    const findings = readJson(findingsPath);
+    const report = visualQa(deck, findings);
+    fs.writeFileSync(path.join(path.resolve(runDir), "visual-qa.json"), JSON.stringify(report, null, 2));
+    print(report);
+    if (report.status !== "pass") process.exitCode = 2;
+    return;
+  }
+
+  if (command === "repair-context") {
+    const specPath = option(args, "--spec");
+    const runDir = option(args, "--run-dir");
+    const slideId = option(args, "--slide");
+    const deck = deckSchema.parse(readJson(specPath));
+    const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
+    const contentModel = loadContentModelIfExists(contentModelPath);
+    const visualQaPath = path.join(path.resolve(runDir), "visual-qa.json");
+    const visualQaReport = fs.existsSync(visualQaPath) ? (readJson(visualQaPath) as { findings: Array<{ severity: string; code: string; slideId?: string; message: string }> }) : undefined;
+    const referenceSelectionPath = path.join(path.resolve(runDir), "reference-selection.json");
+    const referenceSelection = fs.existsSync(referenceSelectionPath) ? (readJson(referenceSelectionPath) as Array<Record<string, unknown>>) : undefined;
+    const indexPath = path.join(path.resolve(runDir), "visual", "index.json");
+    const index = fs.existsSync(indexPath) ? (readJson(indexPath) as Array<{ slideId: string; path: string }>) : [];
+    const imagePath = index.find((entry) => entry.slideId === slideId)?.path ?? "";
+    const context = buildRepairContext(deck, slideId, contentModel, visualQaReport, referenceSelection, imagePath);
+    const outDir = path.join(path.resolve(runDir), "repair", slideId);
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, "context.json"), JSON.stringify(context, null, 2));
+    print(context);
+    return;
+  }
+
+  if (command === "repair-apply") {
+    const specPath = option(args, "--spec");
+    const runDir = option(args, "--run-dir");
+    const slideId = option(args, "--slide");
+    const replacementPath = option(args, "--replacement");
+    const outPath = option(args, "--out");
+    const deck = deckSchema.parse(readJson(specPath));
+    const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
+    const contentModel = loadContentModelIfExists(contentModelPath);
+    const replacement = readJson(replacementPath);
+    const { deck: repairedDeck, regressionScope } = applyRepair(deck, slideId, replacement, contentModel);
+    fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+    fs.writeFileSync(path.resolve(outPath), JSON.stringify(repairedDeck, null, 2));
+    const visualQaPath = path.join(path.resolve(runDir), "visual-qa.json");
+    const priorFindings = fs.existsSync(visualQaPath) ? (readJson(visualQaPath) as { findings: Array<{ code: string; slideId?: string }> }).findings : [];
+    const lastFindings = priorFindings.filter((finding) => !finding.slideId || finding.slideId === slideId).map((finding) => finding.code);
+    const statePath = path.join(path.resolve(runDir), "repair-state.json");
+    const state = recordRepairAttempt(statePath, slideId, lastFindings, "in_progress");
+    print({ status: "pass", outputPath: path.resolve(outPath), regressionScope, repairState: state });
+    return;
+  }
+
   if (command === "release") {
     const qaPath = option(args, "--qa");
     const judgmentPath = option(args, "--judgment");
     const repairStatePath = option(args, "--repair-state");
     const pptxPath = option(args, "--pptx");
     const outPath = option(args, "--out");
+    const visualQaPath = optionalOption(args, "--visual-qa");
+    const acceptRisk = hasFlag(args, "--accept-risk");
     const qa = readJson(qaPath) as { status?: string; attempts?: number };
     const judgment = fs.readFileSync(path.resolve(judgmentPath), "utf8");
     const repairState = readJson(repairStatePath) as { attempts?: unknown };
@@ -87,9 +163,19 @@ async function main(): Promise<void> {
       throw new Error("Release blocked: repair-state.json must record integer attempts from 0 to 2.");
     }
     if (!fs.existsSync(path.resolve(pptxPath))) throw new Error(`Release blocked: PPTX does not exist: ${pptxPath}`);
+    let releaseStatus: "pass" | "pass_with_warning" = "pass";
+    if (visualQaPath) {
+      const visualQaJson = readJson(path.resolve(visualQaPath)) as { status?: string; findings?: Array<{ severity: string }> };
+      if (visualQaJson.status === "fail") throw new Error("Release blocked: visual-qa.json contains an unresolved hard finding.");
+      const hasRisk = (visualQaJson.findings ?? []).some((finding) => finding.severity === "risk");
+      if (hasRisk) {
+        if (!acceptRisk) throw new Error("Release blocked: visual-qa.json contains unresolved risk findings. Pass --accept-risk to release with warnings.");
+        releaseStatus = "pass_with_warning";
+      }
+    }
     fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
     fs.copyFileSync(path.resolve(pptxPath), path.resolve(outPath));
-    print({ status: "pass", outputPath: path.resolve(outPath), attempts: repairState.attempts });
+    print({ status: releaseStatus, outputPath: path.resolve(outPath), attempts: repairState.attempts });
     return;
   }
 
