@@ -65,6 +65,41 @@ function emitReport(report: { status: string; findings: Array<{ severity: string
     : { status: report.status, outputPath, findings: report.findings });
 }
 
+/**
+ * Applies an authored replacement slide and closes the repair phase.
+ *
+ * The `markPhase` call is in a `finally` on purpose: `repair-context` already opened the repair
+ * phase, and the turns spent authoring the replacement only fall inside the measurement window if
+ * this closing boundary is recorded. If `applyRepair` (schema parse, invariant checks) or the
+ * subsequent write / state update throws, skipping the mark would close the window back at
+ * `repair-context` and drop the entire cost of the attempt from `tokens.json`. A failed repair
+ * still cost tokens; the window has to span it.
+ */
+export async function repairApply(args: string[]): Promise<void> {
+  const specPath = option(args, "--spec");
+  const runDir = option(args, "--run-dir");
+  const slideId = option(args, "--slide");
+  const replacementPath = option(args, "--replacement");
+  const outPath = option(args, "--out");
+  try {
+    const deck = deckSchema.parse(readJson(specPath));
+    const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
+    const contentModel = loadContentModelIfExists(contentModelPath);
+    const replacement = readJson(replacementPath);
+    const { deck: repairedDeck, regressionScope } = applyRepair(deck, slideId, replacement, contentModel);
+    fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+    fs.writeFileSync(path.resolve(outPath), JSON.stringify(repairedDeck, null, 2));
+    const visualQaPath = path.join(path.resolve(runDir), "visual-qa.json");
+    const priorFindings = fs.existsSync(visualQaPath) ? (readJson(visualQaPath) as { findings: Array<{ code: string; slideId?: string }> }).findings : [];
+    const lastFindings = priorFindings.filter((finding) => !finding.slideId || finding.slideId === slideId).map((finding) => finding.code);
+    const statePath = path.join(path.resolve(runDir), "repair-state.json");
+    const state = recordRepairAttempt(statePath, slideId, lastFindings, "in_progress");
+    print({ status: "pass", outputPath: path.resolve(outPath), regressionScope, repairState: state });
+  } finally {
+    markPhase(runDir, "repair");
+  }
+}
+
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
@@ -190,27 +225,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "repair-apply") {
-    const specPath = option(args, "--spec");
-    const runDir = option(args, "--run-dir");
-    const slideId = option(args, "--slide");
-    const replacementPath = option(args, "--replacement");
-    const outPath = option(args, "--out");
-    const deck = deckSchema.parse(readJson(specPath));
-    const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
-    const contentModel = loadContentModelIfExists(contentModelPath);
-    const replacement = readJson(replacementPath);
-    const { deck: repairedDeck, regressionScope } = applyRepair(deck, slideId, replacement, contentModel);
-    fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
-    fs.writeFileSync(path.resolve(outPath), JSON.stringify(repairedDeck, null, 2));
-    const visualQaPath = path.join(path.resolve(runDir), "visual-qa.json");
-    const priorFindings = fs.existsSync(visualQaPath) ? (readJson(visualQaPath) as { findings: Array<{ code: string; slideId?: string }> }).findings : [];
-    const lastFindings = priorFindings.filter((finding) => !finding.slideId || finding.slideId === slideId).map((finding) => finding.code);
-    const statePath = path.join(path.resolve(runDir), "repair-state.json");
-    const state = recordRepairAttempt(statePath, slideId, lastFindings, "in_progress");
-    // Closes the repair phase. The authoring turns between `repair-context` and here are the actual
-    // cost of the repair, and they only fall inside the measurement window because this mark exists.
-    markPhase(runDir, "repair");
-    print({ status: "pass", outputPath: path.resolve(outPath), regressionScope, repairState: state });
+    await repairApply(args);
     return;
   }
 
@@ -399,8 +414,11 @@ async function main(): Promise<void> {
   throw new Error(`Unknown command: ${command}`);
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
-});
+// Only run the CLI when invoked directly, not when imported (e.g. by tests exercising `repairApply`).
+if (require.main === module) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
+}
