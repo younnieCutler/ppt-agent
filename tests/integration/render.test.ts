@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterAll, describe, expect, it } from "vitest";
 import { renderDeck } from "../../src/renderer";
 import { mergeQa, runPowerPointQa, structuralQa } from "../../src/qa";
@@ -15,10 +16,25 @@ afterAll(() => {
   fs.rmSync(runDir, { recursive: true, force: true });
 });
 
-describe("editable PPTX integration", () => {
-  const windowsOnly = process.platform !== "win32";
+// These two tests drive PowerPoint COM, which needs Microsoft PowerPoint *installed* — not merely
+// Windows. Gating on the platform alone made them fail on a clean Windows CI runner, which reads as
+// a product regression when it is only a missing application.
+function powerPointAvailable(): boolean {
+  if (process.platform !== "win32") return false;
+  try {
+    const probe = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "try { $a = New-Object -ComObject PowerPoint.Application; $a.Quit(); 'yes' } catch { 'no' }"],
+      { encoding: "utf8", timeout: 30000, windowsHide: true });
+    return probe.trim() === "yes";
+  } catch {
+    return false;
+  }
+}
 
-  it.skipIf(windowsOnly)("renders every MVP semantic layout and passes PowerPoint QA", async () => {
+describe("editable PPTX integration", () => {
+  const noPowerPoint = !powerPointAvailable();
+
+  it.skipIf(noPowerPoint)("renders every MVP semantic layout and passes PowerPoint QA", async () => {
     const pptxPath = path.join(runDir, "all-layouts.pptx");
     await renderDeck(fixture, pptxPath, process.cwd(), { contentModel });
     expect(fs.statSync(pptxPath).size).toBeGreaterThan(10000);
@@ -30,7 +46,7 @@ describe("editable PPTX integration", () => {
     expect(report.findings).toEqual([]);
   }, 120000);
 
-  it.skipIf(windowsOnly)("fails portable delivery when no font embedding exists", async () => {
+  it.skipIf(noPowerPoint)("fails portable delivery when no font embedding exists", async () => {
     const pptxPath = path.join(runDir, "portable-fonts.pptx");
     const portable = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, fontDelivery: "portable" } });
     await renderDeck(portable, pptxPath, process.cwd(), { contentModel });

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Windows only, deliberately.
+#
+# This project targets Windows and macOS: font preflight reads the Windows font registry or macOS
+# fontconfig (src/fonts.ts) and hard-fails rather than let a deck render with an unverified typeface.
+# Linux cannot satisfy that contract, so every render/OOXML/template test fails there.
+#
+# A Linux job could still typecheck and build, but it would only be re-checking what the Windows job
+# already checks, on a platform nobody runs this on. It buys no coverage — dropped rather than kept
+# as decoration.
+#
+# Tests that additionally need Microsoft PowerPoint itself probe for the COM object and skip when it
+# is absent: a CI runner has Windows but no Office, and that is a missing application, not a product
+# regression.
+jobs:
+  test:
+    name: test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

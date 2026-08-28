@@ -33,7 +33,9 @@ foreach ($key in $keys) {
     foreach ($prop in $props.PSObject.Properties) {
       if ($prop.Name -notmatch '^PS') {
         $family = ($prop.Name -replace '\\s+\\((TrueType|OpenType|PostScript)\\)$', '')
-        $rows += [PSCustomObject]@{ family = $family; source = $key }
+        foreach ($face in ($family -split '\\s*&\\s*')) {
+          if ($face) { $rows += [PSCustomObject]@{ family = $face; source = $key } }
+        }
       }
     }
   }

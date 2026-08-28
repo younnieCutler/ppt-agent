@@ -11,6 +11,8 @@ import { visualQa } from "./visual-qa";
 import { applyRepair, buildRepairContext, recordRepairAttempt } from "./repair";
 import { resolvePresentationStyle, styleContext } from "./style";
 import { writeP3Metrics } from "./metrics";
+import { markPhase, resolveTranscript, writeTokenReport } from "./tokens";
+import { recordRun, writeQualityReport } from "./score";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -45,11 +47,30 @@ function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+// Every command below already writes its artifact to the run directory, so printing the whole blob
+// puts a second copy of it into the agent's conversation for no benefit. Default to a summary and
+// let the agent read the file when it actually needs the contents; `--print` restores full output.
+let fullOutput = false;
+
+function emit(summary: unknown, full: unknown): void {
+  print(fullOutput ? full : summary);
+}
+
+/** Findings are what a failing run has to act on, so they survive the diet; a passing run gets counts. */
+function emitReport(report: { status: string; findings: Array<{ severity: string; code: string; slideId?: string; message: string }> }, outputPath: string): void {
+  if (fullOutput) return print(report);
+  const counts = report.findings.reduce<Record<string, number>>((tally, finding) => ({ ...tally, [finding.severity]: (tally[finding.severity] ?? 0) + 1 }), {});
+  print(report.status === "pass"
+    ? { status: report.status, outputPath, findings: counts }
+    : { status: report.status, outputPath, findings: report.findings });
+}
+
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
+  fullOutput = hasFlag(args, "--print");
 
   if (command === "fonts") {
     print(listInstalledFonts());
@@ -78,8 +99,9 @@ async function main(): Promise<void> {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
+      markPhase(runDir, "styleResolution");
     }
-    print(style);
+    emit({ status: "pass", themeId: style.themeId, designDirection: style.designDirection, resolvedBy: style.provenance.resolvedBy, outputPath: runDir ? path.join(path.resolve(runDir), "style-context.json") : undefined }, style);
     return;
   }
 
@@ -95,8 +117,9 @@ async function main(): Promise<void> {
     if (runDir) {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "reference-selection.json"), JSON.stringify(selected, null, 2));
+      markPhase(runDir, "referenceRetrieval");
     }
-    print(selected);
+    emit({ status: "pass", selected: selected.map((entry) => entry.id), outputPath: runDir ? path.join(path.resolve(runDir), "reference-selection.json") : undefined }, selected);
     return;
   }
 
@@ -113,7 +136,7 @@ async function main(): Promise<void> {
     const index = await renderVisual(deck, pptxPath, runDir, slideIds);
     const deckContext = buildDeckContext(deck, index.map((entry) => entry.slideId), style);
     fs.writeFileSync(path.join(path.resolve(runDir), "visual", "deck-context.json"), JSON.stringify(deckContext, null, 2));
-    print({ status: "pass", index });
+    emit({ status: "pass", rendered: index.length, montage: path.join(path.resolve(runDir), "visual", "montage.png"), deckContext: path.join(path.resolve(runDir), "visual", "deck-context.json") }, { status: "pass", index });
     return;
   }
 
@@ -127,8 +150,10 @@ async function main(): Promise<void> {
     const references = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
     const report = visualQa(deck, findings, undefined, style);
-    fs.writeFileSync(path.join(path.resolve(runDir), "visual-qa.json"), JSON.stringify(report, null, 2));
-    print(report);
+    const outputPath = path.join(path.resolve(runDir), "visual-qa.json");
+    fs.writeFileSync(outputPath, JSON.stringify(report, null, 2));
+    markPhase(runDir, "visualJudgment");
+    emitReport(report, outputPath);
     if (report.status !== "pass") process.exitCode = 2;
     return;
   }
@@ -152,8 +177,15 @@ async function main(): Promise<void> {
     const context = buildRepairContext(deck, slideId, contentModel, visualQaReport, referenceSelection, imagePath, style);
     const outDir = path.join(path.resolve(runDir), "repair", slideId);
     fs.mkdirSync(outDir, { recursive: true });
-    fs.writeFileSync(path.join(outDir, "context.json"), JSON.stringify(context, null, 2));
-    print(context);
+    const contextPath = path.join(outDir, "context.json");
+    fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
+    // Opens the repair phase. `repair-apply` marks it again when the repair actually lands, and the
+    // later mark wins — so the measurement window covers the authoring turns in between rather than
+    // closing here, before the model has written anything. Marking here at all is what keeps an
+    // abandoned repair (context built, never applied) from vanishing from the accounting entirely.
+    markPhase(runDir, "repair");
+    // The repair author needs the whole context, but it needs exactly one copy of it: read the file.
+    emit({ status: "pass", slideId, outputPath: contextPath, findings: (context as { findings?: Array<{ code: string }> }).findings?.map((finding) => finding.code) ?? [] }, context);
     return;
   }
 
@@ -175,6 +207,9 @@ async function main(): Promise<void> {
     const lastFindings = priorFindings.filter((finding) => !finding.slideId || finding.slideId === slideId).map((finding) => finding.code);
     const statePath = path.join(path.resolve(runDir), "repair-state.json");
     const state = recordRepairAttempt(statePath, slideId, lastFindings, "in_progress");
+    // Closes the repair phase. The authoring turns between `repair-context` and here are the actual
+    // cost of the repair, and they only fall inside the measurement window because this mark exists.
+    markPhase(runDir, "repair");
     print({ status: "pass", outputPath: path.resolve(outPath), regressionScope, repairState: state });
     return;
   }
@@ -220,7 +255,48 @@ async function main(): Promise<void> {
 
   if (command === "metrics") {
     const runDir = option(args, "--run-dir");
-    print(writeP3Metrics(deck, runDir));
+    const metrics = writeP3Metrics(deck, runDir);
+    emit({ status: "pass", outputPath: path.join(path.resolve(runDir), "p3-metrics.json"), themeId: metrics.themeId }, metrics);
+    return;
+  }
+
+  if (command === "tokens") {
+    const runDir = option(args, "--run-dir");
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const transcriptPath = optionalOption(args, "--transcript") ?? resolveTranscript(projectDir);
+    const report = writeTokenReport({
+      runDir,
+      transcriptPath: path.resolve(transcriptPath),
+      slides: deck.slides.length,
+      specPath,
+      benchmark: optionalOption(args, "--benchmark"),
+      since: optionalOption(args, "--since") ? Date.parse(option(args, "--since")) : undefined,
+      until: optionalOption(args, "--until") ? Date.parse(option(args, "--until")) : undefined,
+    });
+    emit({
+      status: "pass",
+      outputPath: path.join(path.resolve(runDir), "tokens.json"),
+      total: report.tokenUsage.total.total,
+      effective: report.tokenUsage.total.effective,
+      tokensPerSlide: report.tokensPerSlide,
+      repairOverhead: report.repairOverhead,
+    }, report);
+    return;
+  }
+
+  if (command === "score") {
+    const runDir = option(args, "--run-dir");
+    const report = writeQualityReport(deck, runDir, readJson(option(args, "--scores")));
+    emit({ status: report.status, outputPath: path.join(path.resolve(runDir), "quality.json"), qualityScore: report.qualityScore, hardFailures: report.hardFailures, hardFailureCodes: report.hardFailureCodes }, report);
+    if (report.status !== "pass") process.exitCode = 2;
+    return;
+  }
+
+  if (command === "record") {
+    const runDir = option(args, "--run-dir");
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const { record, historyPath } = recordRun({ deck, runDir, benchmark: option(args, "--benchmark"), version: option(args, "--version"), projectDir });
+    emit({ status: "pass", outputPath: historyPath, qualityScore: record.qualityScore, tokens: record.tokens, hardFailures: record.hardFailures }, record);
     return;
   }
 
@@ -252,9 +328,11 @@ async function main(): Promise<void> {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
+      markPhase(runDir, "styleResolution");
     }
     const result = await renderDeck(deck, outPath, projectDir, { contentModel, referenceSelection });
     fs.writeFileSync(`${path.resolve(outPath)}.geometry.json`, JSON.stringify(result.slideRects, null, 2));
+    if (runDir) markPhase(runDir, "compositionAuthoring");
     print({ status: "pass", outputPath: result.outputPath });
     return;
   }
@@ -269,7 +347,7 @@ async function main(): Promise<void> {
     const references = loadReferenceSelectionIfExists(referenceSelectionPath);
     const result = await renderDeck(deck, outPath, projectDir, { pageLimit: 1, contentModel: loadContentModelIfExists(contentModelPath), referenceSelection: references });
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
-    const canonicalDeck = { ...deck, theme: style as any };
+    const canonicalDeck = { ...deck, theme: { schemaVersion: style.schemaVersion, id: style.themeId, palette: style.palette, data: style.data } };
     const firstSlideId = canonicalDeck.slides[0].id;
     const structural = structuralQa(canonicalDeck, projectDir, contentModelPath, referenceSelectionPath);
     const ooxmlFindings = await ooxmlQa(outPath, canonicalDeck, [firstSlideId], style);
@@ -281,9 +359,10 @@ async function main(): Promise<void> {
       report = { ...report, powerpoint: { status: "skipped", findings: [], reason: "PowerPoint COM QA requires Windows; run this command there for Level 3 verification." } };
     }
     fs.mkdirSync(path.resolve(runDir), { recursive: true });
-    fs.writeFileSync(path.join(path.resolve(runDir), "first-page-qa.json"), JSON.stringify(report, null, 2));
+    const reportPath = path.join(path.resolve(runDir), "first-page-qa.json");
+    fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
     fs.writeFileSync(`${path.resolve(outPath)}.geometry.json`, JSON.stringify(result.slideRects, null, 2));
-    print(report);
+    emitReport(report, reportPath);
     if (report.status !== "pass") process.exitCode = 2;
     return;
   }
@@ -297,7 +376,7 @@ async function main(): Promise<void> {
     const referenceSelectionPath = path.join(path.resolve(runDir), "reference-selection.json");
     const references = loadReferenceSelectionIfExists(referenceSelectionPath);
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
-    const canonicalDeck = { ...deck, theme: style as any };
+    const canonicalDeck = { ...deck, theme: { schemaVersion: style.schemaVersion, id: style.themeId, palette: style.palette, data: style.data } };
     const structural = structuralQa(canonicalDeck, projectDir, contentModelPath, referenceSelectionPath);
     const ooxmlFindings = fs.existsSync(path.resolve(pptxPath))
       ? await ooxmlQa(pptxPath, canonicalDeck, undefined, style)
@@ -310,8 +389,9 @@ async function main(): Promise<void> {
       report = { ...report, powerpoint: { status: "skipped", findings: [], reason: "PowerPoint COM QA requires Windows; run this command there for Level 3 verification." } };
     }
     fs.mkdirSync(path.resolve(runDir), { recursive: true });
-    fs.writeFileSync(path.join(path.resolve(runDir), "qa.json"), JSON.stringify(report, null, 2));
-    print(report);
+    const reportPath = path.join(path.resolve(runDir), "qa.json");
+    fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+    emitReport(report, reportPath);
     if (report.status !== "pass") process.exitCode = 2;
     return;
   }
