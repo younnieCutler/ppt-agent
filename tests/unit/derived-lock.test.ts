@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { layoutNames, primaryVisualFor, requiredNativeObjectsFor, type SlideSpec } from "../../src/schema";
+import { visualFindingCodes } from "../../src/visual-qa";
 
 // executionLock used to be an LLM-authored field the schema merely cross-checked against
 // these same facts. It is gone now; this test locks the derivation itself so a future edit
@@ -51,5 +52,26 @@ describe("derived editability contract", () => {
     expect(requiredNativeObjectsFor(slideStub("title", "cover", { imagePath: "cover.png" }))).toContain("source_image");
     expect(requiredNativeObjectsFor(slideStub("title", "cover", {}))).not.toContain("source_image");
     expect(requiredNativeObjectsFor(slideStub("evidence", "evidence_panel", { assetPath: "chart.png" }))).toContain("source_image");
+  });
+
+  it("locks the closed set of visual finding codes so a new code cannot slip in without a matching repair behavior review", () => {
+    expect([...visualFindingCodes]).toEqual([
+      "TEXT_VISUALLY_OVERFLOWING",
+      "CRITICAL_VISUAL_COLLISION",
+      "OFF_CANVAS",
+      "MISSING_RENDERED_OBJECT",
+      "SEMANTIC_VISUAL_MISMATCH",
+      "CHART_UNREADABLE",
+      "WEAK_VISUAL_HIERARCHY",
+      "EXCESSIVE_INFORMATION_DENSITY",
+      "LOW_INFORMATION_DENSITY",
+      "UNBALANCED_COMPOSITION",
+      "EXCESSIVE_CARDIFICATION",
+      "MEANINGLESS_DECORATION",
+      "LOW_VISUAL_CONTRAST",
+      "LAYOUT_REPETITION",
+      "INCONSISTENT_SECTION_RHYTHM",
+      "REFERENCE_VISUAL_DRIFT",
+    ]);
   });
 });

@@ -14,10 +14,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'visual-lib.ps1')
 $findingList = New-Object 'System.Collections.Generic.List[object]'
 $observedFonts = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 $observedEastAsianFonts = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-$renderDir = Join-Path $OutputDir 'renders'
+$renderDir = Join-Path $OutputDir 'visual'
 New-Item -ItemType Directory -Force -Path $renderDir | Out-Null
 $reservedZones = New-Object 'System.Collections.Generic.List[object]'
 $requiredNativeObjects = @{}
@@ -44,42 +45,10 @@ function Add-Finding([string]$Severity, [string]$Code, [string]$Message, [string
   [void]$findingList.Add([pscustomobject]$finding)
 }
 
-function Write-JsonNoBom([string]$Path, [object]$Value) {
-  $json = $Value | ConvertTo-Json -Depth 8
-  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::WriteAllText($Path, $json, $utf8NoBom)
-}
-
 function Get-OverlapArea([object]$First, [object]$Second) {
   $overlapWidth = [Math]::Max(0, [Math]::Min($First.right, $Second.right) - [Math]::Max($First.left, $Second.left))
   $overlapHeight = [Math]::Max(0, [Math]::Min($First.bottom, $Second.bottom) - [Math]::Max($First.top, $Second.top))
   return $overlapWidth * $overlapHeight
-}
-
-function New-Montage([string]$Directory, [string]$OutputPath) {
-  Add-Type -AssemblyName System.Drawing
-  $files = @(Get-ChildItem -LiteralPath $Directory -Filter '*.png' | Sort-Object Name)
-  if ($files.Count -eq 0) { return }
-  $thumbWidth = 480
-  $thumbHeight = 270
-  $columns = [Math]::Min(3, [Math]::Max(1, $files.Count))
-  $rows = [Math]::Ceiling($files.Count / $columns)
-  $canvas = [System.Drawing.Bitmap]::new([int]($columns * $thumbWidth), [int]($rows * ($thumbHeight + 24)))
-  $graphics = [System.Drawing.Graphics]::FromImage($canvas)
-  $graphics.Clear([System.Drawing.Color]::White)
-  $font = [System.Drawing.Font]::new('Segoe UI', 10)
-  for ($index = 0; $index -lt $files.Count; $index++) {
-    $file = $files[$index]
-    $image = [System.Drawing.Image]::FromFile($file.FullName)
-    $x = ($index % $columns) * $thumbWidth
-    $y = [Math]::Floor($index / $columns) * ($thumbHeight + 24)
-    $graphics.DrawImage($image, $x, $y, $thumbWidth, $thumbHeight)
-    $graphics.DrawString($file.BaseName, $font, [System.Drawing.Brushes]::Black, $x + 4, $y + $thumbHeight + 3)
-    $image.Dispose()
-  }
-  $canvas.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
-  $graphics.Dispose()
-  $canvas.Dispose()
 }
 
 $powerPoint = $null
@@ -98,7 +67,7 @@ try {
   for ($slideIndex = 1; $slideIndex -le $presentation.Slides.Count; $slideIndex++) {
     $slide = $presentation.Slides.Item($slideIndex)
     $slideId = ('S{0:D2}' -f $slideIndex)
-    $pngPath = Join-Path $renderDir ("slide-{0:D2}.png" -f $slideIndex)
+    $pngPath = Join-Path $renderDir ("slide-{0:D3}.png" -f $slideIndex)
     $slide.Export($pngPath, 'PNG', 1600, 900)
     $shapeRecords = New-Object 'System.Collections.Generic.List[object]'
     $nativeCounts = @{ text = 0; shapes = 0; connectors = 0; table = 0; chart = 0; source_image = 0 }

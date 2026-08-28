@@ -31,6 +31,17 @@ Reads `templates/{styles,layouts}/*_index.json` from an external `ppt-master`-sh
 
 `qa` performs structural, source-grounding, and OOXML-based checks (font substitution, required native objects, full-slide rasterization, font embedding) on every platform — this is the release bar. Pass `--powerpoint` on Windows with Microsoft PowerPoint installed for additional, optional PowerPoint COM verification; its absence never blocks a pass.
 
+### Visual QA and repair
+
+```bash
+node dist/cli.js visual --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--slides S04,S07]
+node dist/cli.js visual-qa --spec <deck.json> --run-dir <run-dir> --findings <run-dir>/visual-findings.json
+node dist/cli.js repair-context --spec <deck.json> --run-dir <run-dir> --slide S04
+node dist/cli.js repair-apply --spec <deck.json> --run-dir <run-dir> --slide S04 --replacement <fragment.json> --out <deck.v2.json>
+```
+
+`visual` renders each slide to PNG plus a labeled montage (requires PowerPoint on Windows, or LibreOffice once implemented). Judging the montage against a hierarchy/density/anti-slop rubric and writing `visual-findings.json` is a skill-level (LLM) responsibility, not something the CLI does — see `SKILL.md`. `visual-qa` validates those findings against a closed code set and rolls them up; a hard finding fails. `repair-context`/`repair-apply` scope a fix to exactly one failed slide (never the whole deck), enforce that a replacement can't drift its `id`/`storyBeat`, weaken grounding, or drop a required native chart, and cap automatic repair at 2 attempts per slide via `repair-state.json`. `release` accepts `--visual-qa <path>` and `--accept-risk` to gate on visual findings in addition to Core QA.
+
 ## Development
 
 ```bash

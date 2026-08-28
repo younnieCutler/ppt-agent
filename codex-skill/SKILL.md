@@ -15,3 +15,4 @@ Use this skill as `$ppt-agent` for a new presentation. Confirm the audience, sli
 - Run `node <repo-root>/dist/cli.js qa --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir>` for Core QA (cross-platform OOXML checks — this is the release bar on macOS and Linux too).
 - Keep source excerpts in `content-model.json` (each excerpt has an `id`; `sourceRefs` reference it as `excerptId`) and record repair attempts in `repair-state.json`.
 - `--powerpoint` adds optional Level 3 PowerPoint COM verification, available only on Windows with Microsoft PowerPoint installed. Its absence never blocks release.
+- For visual defects Core QA cannot see: `node <repo-root>/dist/cli.js visual ...` renders a labeled montage, judge it against the rubric in the main `SKILL.md`, write `visual-findings.json`, then `visual-qa` to validate/roll it up. Repair one failed slide at a time with `repair-context`/`repair-apply` (max 2 attempts each) — never regenerate the whole deck.

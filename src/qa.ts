@@ -21,7 +21,7 @@ export type QaReport = {
   powerpoint?: Record<string, unknown>;
 };
 
-function rollUp(findings: QaFinding[]): Pick<QaReport, "status" | "integrity" | "slop"> {
+export function rollUp(findings: QaFinding[]): Pick<QaReport, "status" | "integrity" | "slop"> {
   const hard = findings.some((finding) => finding.severity === "hard");
   const risk = findings.some((finding) => finding.severity === "risk");
   return {
@@ -328,7 +328,7 @@ function sourceTextForRef(deck: DeckSpec, sourceId: string, projectDir: string):
   return fs.readFileSync(path.resolve(projectDir, source.path), "utf8");
 }
 
-function resolveExcerpt(contentModel: ContentModel, ref: SourceRef): { locator: string; text: string } | undefined {
+export function resolveExcerpt(contentModel: ContentModel, ref: SourceRef): { locator: string; text: string } | undefined {
   const modelSource = contentModel.sources.find((source) => source.sourceId === ref.sourceId);
   return modelSource?.excerpts.find((excerpt) => excerpt.id === ref.excerptId);
 }
