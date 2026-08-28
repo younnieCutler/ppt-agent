@@ -5,6 +5,7 @@ import { deckSchema } from "../../src/schema";
 import { structuralQa } from "../../src/qa";
 
 const fixture = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/deck.json"), "utf8"));
+const quantitativeVisuals = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/quantitative-visuals.json"), "utf8"));
 
 describe("DeckSpec schema", () => {
   it("accepts a semantic deck with a confirmed heading/body font pair", () => {
@@ -61,6 +62,28 @@ describe("DeckSpec schema", () => {
   it("rejects pipeline cycles before the renderer can create an ambiguous topology", () => {
     const malformed = { ...fixture, slides: [fixture.slides[0], fixture.slides[1], { ...fixture.slides[2], content: { ...fixture.slides[2].content, edges: [{ from: "source", to: "transform" }, { from: "transform", to: "source" }] } }] };
     expect(() => deckSchema.parse(malformed)).toThrow(/acyclic/i);
+  });
+
+  it("rejects a gauge_row metric that is not a percentage, since the gauge always scales against 0-100", () => {
+    const gaugeSlide = quantitativeVisuals.slides.find((slide: { composition: string }) => slide.composition === "gauge_row");
+    const malformed = {
+      ...quantitativeVisuals,
+      slides: quantitativeVisuals.slides.map((slide: { id: string }) => (slide.id === gaugeSlide.id
+        ? { ...gaugeSlide, content: { ...gaugeSlide.content, metrics: [{ ...gaugeSlide.content.metrics[0], unit: "ms" }, ...gaugeSlide.content.metrics.slice(1)] } }
+        : slide)),
+    };
+    expect(() => deckSchema.parse(malformed)).toThrow(/gauge_row/i);
+  });
+
+  it("rejects a sparkline_row with fewer than 2 metrics, since a single point cannot draw a connecting line", () => {
+    const sparklineSlide = quantitativeVisuals.slides.find((slide: { composition: string }) => slide.composition === "sparkline_row");
+    const malformed = {
+      ...quantitativeVisuals,
+      slides: quantitativeVisuals.slides.map((slide: { id: string }) => (slide.id === sparklineSlide.id
+        ? { ...sparklineSlide, content: { ...sparklineSlide.content, metrics: sparklineSlide.content.metrics.slice(0, 1) } }
+        : slide)),
+    };
+    expect(() => deckSchema.parse(malformed)).toThrow(/sparkline_row/i);
   });
 
   it("holds a deck for review when an element exceeds its wrapping budget", () => {

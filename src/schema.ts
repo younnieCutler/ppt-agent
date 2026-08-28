@@ -374,6 +374,20 @@ export const deckSchema = z
           message: `Composition '${slide.composition}' is not supported by layout '${slide.layout}'.`,
         });
       }
+      if (slide.layout === "quantitative" && slide.composition === "gauge_row" && slide.content.metrics.some((metric) => metric.unit !== "%")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "content", "metrics"],
+          message: "gauge_row always renders each metric against a 0-100 scale; every metric.unit must be '%'.",
+        });
+      }
+      if (slide.layout === "quantitative" && slide.composition === "sparkline_row" && slide.content.metrics.length < 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slideIndex, "content", "metrics"],
+          message: "sparkline_row requires at least 2 metrics to draw a connecting line.",
+        });
+      }
       if (!deck.contract.storyline.includes(slide.storyBeat)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
