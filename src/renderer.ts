@@ -568,15 +568,23 @@ function renderLayeredStack(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Ex
     });
     cursorY += h + gap;
   });
-  addLine(slide, pptx, railX + railW / 2, bandRects[0].y, 0, bandRects.at(-1)!.y + bandRects.at(-1)!.h - bandRects[0].y, deck.theme.palette.accent, rects, `${spec.id}-rail`, ctx, true);
+  const railCenterX = railX + railW / 2;
+  addLine(slide, pptx, railCenterX, bandRects[0].y, 0, bandRects.at(-1)!.y + bandRects.at(-1)!.h - bandRects[0].y, deck.theme.palette.accent, rects, `${spec.id}-rail`, ctx, true);
   spec.content.edges.forEach((edge, index) => {
     const from = positions.get(edge.from);
     const to = positions.get(edge.to);
     if (!from || !to) throw new Error(`Architecture edge references unknown endpoint: ${edge.from} -> ${edge.to}`);
-    const startY = from.y + from.h;
-    const endY = to.y;
-    addLine(slide, pptx, from.x + from.w / 2, startY, 0, endY - startY, deck.theme.palette.muted, rects, `${spec.id}-edge-${index}`, ctx);
-    if (edge.label) addText(slide, edge.label, { x: Math.min(from.x, to.x), y: Math.min(startY, endY), w: 1.6, h: 0.2, fontSize: 8, align: "center", allowOverlap: true }, rects, `${spec.id}-edge-label-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
+    const fromY = from.y + from.h / 2;
+    const toY = to.y + to.h / 2;
+    // A straight vertical drop at from.x only reached the target when both nodes happened to
+    // share a chip column. Routing through the dependency rail — out from the source, down (or
+    // up) the rail, back in to the target — always terminates on the actual target node,
+    // regardless of which column either one sits in, and reads as "dependencies point down"
+    // through the one shared spine instead of a tangle of point-to-point lines.
+    addLine(slide, pptx, from.x, fromY, railCenterX - from.x, 0, deck.theme.palette.muted, rects, `${spec.id}-edge-${index}-a`, ctx);
+    addLine(slide, pptx, railCenterX, fromY, 0, toY - fromY, deck.theme.palette.muted, rects, `${spec.id}-edge-${index}-b`, ctx);
+    addLine(slide, pptx, railCenterX, toY, to.x - railCenterX, 0, deck.theme.palette.muted, rects, `${spec.id}-edge-${index}-c`, ctx, true);
+    if (edge.label) addText(slide, edge.label, { x: Math.min(from.x, to.x), y: Math.min(fromY, toY) - 0.12, w: 1.6, h: 0.2, fontSize: 8, align: "center", allowOverlap: true }, rects, `${spec.id}-edge-label-${index}`, deck.theme.fonts.body, deck.theme.palette.muted, ctx);
   });
 }
 

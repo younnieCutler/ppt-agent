@@ -193,6 +193,34 @@ export const brandFileSchema = z.object({
   locks: z.object({ palette: z.array(z.string()).default([]), fonts: z.boolean().optional() }).optional(),
 });
 
+// Named countable collections a `visualProof` can point at, one per layout that has a natural
+// countable thing. Kept as a closed list — the same discipline as `visualFindingCodes` — so an
+// authored contract can't reference a collection the resolver in qa.ts doesn't know how to count.
+export const visualProofCollections = [
+  "process.members",
+  "process.steps",
+  "architecture.nodes",
+  "architecture.zones",
+  "pipeline.nodes",
+  "comparison.items",
+  "quantitative.metrics",
+  "timeline.milestones",
+  "statement.proofs",
+  "evidence.bullets",
+] as const;
+
+// A headline that names a quantity ("18 skills") can be checked against the visual two ways: a
+// generic heuristic that scans for "<number> <plural noun>" (weak — it doesn't know which count
+// the author meant, and can be fooled by phrasing), or this explicit contract, where the author
+// states exactly which collection proves exactly which number. Only a violation of the explicit
+// contract is a hard Core QA failure; the heuristic alone is `risk` (qa.ts
+// addHeadlineProofFindings).
+export const visualProofSchema = z.object({
+  kind: z.literal("count"),
+  value: z.number().int().positive(),
+  collection: z.enum(visualProofCollections),
+});
+
 const baseSlideSchema = z.object({
   id: z.string().regex(/^S\d{2,}$/),
   role: z.string().min(1),
@@ -202,6 +230,7 @@ const baseSlideSchema = z.object({
   claims: z.array(claimSchema).min(1).max(5),
   composition: z.string().min(1),
   sourceRefs: z.array(sourceRefSchema).min(1),
+  visualProof: visualProofSchema.optional(),
 });
 
 const titleSlideSchema = baseSlideSchema.extend({
@@ -532,6 +561,8 @@ export type ThemePalette = z.infer<typeof themePaletteSchema>;
 export type ThemeTokensV2 = z.infer<typeof themeV2Schema>;
 export type PresentationArchetype = z.infer<typeof presentationArchetypeSchema>;
 export type SlideSpec = z.infer<typeof slideSchema>;
+export type VisualProof = z.infer<typeof visualProofSchema>;
+export type VisualProofCollection = (typeof visualProofCollections)[number];
 export type DeckSpec = z.infer<typeof deckSchema>;
 
 export const layoutNames = [

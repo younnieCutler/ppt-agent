@@ -130,6 +130,31 @@ describe("layered_stack composition", () => {
     expect(context.x).toBeCloseTo(experience.x, 2);
     expect(experience.y).toBeGreaterThan(context.y);
   });
+
+  it("routes an edge to the actual target node even when source and target sit in different chip columns", async () => {
+    const rects = await render(
+      architectureSlide("layered_stack", {
+        zones: [
+          { id: "context", label: "Context", nodes: ["company", "university"] },
+          { id: "experience", label: "Experience", nodes: ["projects", "operations", "incidents", "mentoring"] },
+        ],
+        // "mentoring" is the last (4th) chip in its row; "company" is the first chip in a row
+        // with only 2 chips — their x-coordinates do not align. A vertical drop at the source's
+        // x would land nowhere near "company".
+        edges: [{ from: "experience:mentoring", to: "context:company" }],
+      }),
+      "layered-stack-unaligned.pptx",
+    );
+    const source = rects.find((rect) => rect.id === "S03-node-experience-3")!; // "mentoring"
+    const target = rects.find((rect) => rect.id === "S03-node-context-0")!; // "company"
+    expect(source.x).not.toBeCloseTo(target.x, 1); // confirms the columns really are misaligned
+    const finalSegment = rects.find((rect) => rect.id === "S03-edge-0-c")!;
+    expect(finalSegment).toBeDefined();
+    // The routed edge's last leg must actually reach the target node's x and y, not stop at a
+    // fixed rail offset or the source's original column.
+    expect(finalSegment.x + finalSegment.w).toBeCloseTo(target.x, 1);
+    expect(finalSegment.y).toBeCloseTo(target.y + target.h / 2, 1);
+  });
 });
 
 describe("verdict_contrast composition", () => {

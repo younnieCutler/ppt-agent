@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { architectureHubZone, compositionFamily, contentModelSchema, deckSchema, requiredNativeObjectsFor, type CompositionFamily, type ContentModel, type DeckSpec, type SlideSpec, type SourceRef } from "./schema";
+import { architectureHubZone, compositionFamily, contentModelSchema, deckSchema, requiredNativeObjectsFor, type CompositionFamily, type ContentModel, type DeckSpec, type SlideSpec, type SourceRef, type VisualProofCollection } from "./schema";
 import { readPptxOoxml, type NativeObjectCounts } from "./ooxml";
 import { displayWidth, headlineWrapProblem, kinsokuProblems } from "./typography";
 import type { ResolvedPresentationStyle } from "./style";
@@ -392,11 +392,12 @@ function addUniformCellRhythmFindings(slides: SlideSpec[], findings: QaFinding[]
   }
 }
 
-// Every layout's countable collection, used to check a headline's numeric claim against what the
-// slide actually shows. `architecture` reports the larger of zone count and total node count so
-// either a claim about layers or a claim about components can be satisfied. Layouts with no
-// natural countable collection (title, comparison's own delta, chart) are omitted deliberately —
-// there is nothing here for a headline number to be checked against.
+// Every layout's countable collection, used by the *heuristic* headline check below to compare a
+// headline's numeric claim against what the composition naturally shows. `architecture` reports
+// the larger of zone count and total node count so either a claim about layers or a claim about
+// components can be satisfied. Layouts with no natural countable collection (title, comparison's
+// own delta, chart) are omitted deliberately — there is nothing here for a headline number to be
+// checked against.
 function countableElements(slide: SlideSpec): number | undefined {
   switch (slide.layout) {
     case "process": {
@@ -424,10 +425,55 @@ function countableElements(slide: SlideSpec): number | undefined {
   }
 }
 
+// Resolvers for the named collections a `visualProof` contract can point at. Each is scoped to
+// the one layout it names — `process.members` on a `comparison` slide resolves to `undefined`,
+// which addHeadlineProofFindings treats as a malformed contract, not a silently-ignored one.
+const visualProofResolvers: Record<VisualProofCollection, (slide: SlideSpec) => number | undefined> = {
+  "process.members": (slide) => (slide.layout === "process" ? slide.content.steps.reduce((sum, step) => sum + (step.members?.length ?? 0), 0) : undefined),
+  "process.steps": (slide) => (slide.layout === "process" ? slide.content.steps.length : undefined),
+  "architecture.nodes": (slide) => (slide.layout === "architecture" ? slide.content.zones.reduce((sum, zone) => sum + zone.nodes.length, 0) : undefined),
+  "architecture.zones": (slide) => (slide.layout === "architecture" ? slide.content.zones.length : undefined),
+  "pipeline.nodes": (slide) => (slide.layout === "pipeline" ? slide.content.nodes.length : undefined),
+  "comparison.items": (slide) => (slide.layout === "comparison" ? slide.content.left.items.length + slide.content.right.items.length : undefined),
+  "quantitative.metrics": (slide) => (slide.layout === "quantitative" ? slide.content.metrics.length : undefined),
+  "timeline.milestones": (slide) => (slide.layout === "timeline" ? slide.content.milestones.length : undefined),
+  "statement.proofs": (slide) => (slide.layout === "statement" ? slide.content.proofs.length : undefined),
+  "evidence.bullets": (slide) => (slide.layout === "evidence" ? slide.content.bullets.length : undefined),
+};
+
 // S07's actual regression: "18 skills, one job each" over a visual that shows 5 stage cards. The
-// headline asserted a quantity the visual never represented. This is fully deterministic — no
-// visual judgment needed, just a count — so it belongs in Core QA, not Visual QA.
+// headline asserted a quantity the visual never represented. Two ways to catch it:
+//
+// 1. An explicit `visualProof` contract (`{ kind: "count", value: 18, collection:
+//    "process.members" }`) names exactly which collection is supposed to prove exactly which
+//    number. A violation here is unambiguous — the author declared the proof and it's wrong — so
+//    it is `hard`.
+// 2. Without a contract, a generic heuristic scans the headline for a "<number> <plural noun>"
+//    pattern and compares it against the layout's natural countable collection. This is weaker
+//    evidence — it can misfire on headline phrasing that was never meant as a countable claim —
+//    so a mismatch here is `risk`, a prompt to add an explicit contract or rephrase, not a
+//    release blocker on its own.
 function addHeadlineProofFindings(slide: SlideSpec, findings: QaFinding[]): void {
+  const proof = slide.visualProof;
+  if (proof) {
+    const actual = visualProofResolvers[proof.collection](slide);
+    if (actual === undefined) {
+      findings.push({ severity: "hard", code: "VISUAL_DOES_NOT_PROVE_HEADLINE", slideId: slide.id, message: `visualProof.collection '${proof.collection}' does not apply to layout '${slide.layout}'.` });
+      return;
+    }
+    if (proof.value > actual) {
+      findings.push({
+        severity: "hard",
+        code: "VISUAL_DOES_NOT_PROVE_HEADLINE",
+        slideId: slide.id,
+        message: `visualProof declares ${proof.value} via '${proof.collection}', but the slide's visual (${slide.layout}/${slide.composition}) shows only ${actual}. Either the visual must represent ${proof.value}, or lower the declared value.`,
+      });
+    }
+    // The contract settles the question for this slide either way — the heuristic below would
+    // only repeat or second-guess a judgment the author already made explicit.
+    return;
+  }
+
   const count = countableElements(slide);
   if (count === undefined) return;
   const matches = [...slide.headline.matchAll(/\b(\d+)\s+[A-Za-z]+s\b/g)];
@@ -439,10 +485,10 @@ function addHeadlineProofFindings(slide: SlideSpec, findings: QaFinding[]): void
     const contentText = JSON.stringify((slide as { content: unknown }).content);
     if (new RegExp(`(?<![\\d.])${claimed}(?![\\d.])`).test(contentText)) continue;
     findings.push({
-      severity: "hard",
+      severity: "risk",
       code: "VISUAL_DOES_NOT_PROVE_HEADLINE",
       slideId: slide.id,
-      message: `Headline claims "${match[0]}" but the slide's visual (${slide.layout}/${slide.composition}) shows only ${count} countable element(s). Either the visual must represent ${claimed}, or the headline must not claim more than the slide shows.`,
+      message: `Headline claims "${match[0]}" but the slide's visual (${slide.layout}/${slide.composition}) shows only ${count} countable element(s) by heuristic count. Add an explicit visualProof contract to make this a hard failure, represent ${claimed} visually, or rephrase the headline.`,
     });
   }
 }

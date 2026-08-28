@@ -102,6 +102,58 @@ export async function repairApply(args: string[]): Promise<void> {
   }
 }
 
+export async function release(args: string[]): Promise<void> {
+  const qaPath = option(args, "--qa");
+  const judgmentPath = option(args, "--judgment");
+  const repairStatePath = option(args, "--repair-state");
+  const pptxPath = option(args, "--pptx");
+  const outPath = option(args, "--out");
+  const visualQaPath = optionalOption(args, "--visual-qa");
+  const runDir = optionalOption(args, "--run-dir");
+  const acceptRisk = hasFlag(args, "--accept-risk");
+  const qa = readJson(qaPath) as { status?: string; attempts?: number };
+  const judgment = fs.readFileSync(path.resolve(judgmentPath), "utf8");
+  const repairState = readJson(repairStatePath) as { attempts?: unknown };
+  if (qa.status !== "pass") throw new Error("Release blocked: qa.json.status must be pass.");
+  if (!/Outcome:\s*good\b/i.test(judgment) || !/Release decision:\s*pass\b/i.test(judgment)) {
+    throw new Error("Release blocked: judgment.md must declare Outcome: good and Release decision: pass.");
+  }
+  if (!Number.isInteger(repairState.attempts) || (repairState.attempts as number) < 0 || (repairState.attempts as number) > 2) {
+    throw new Error("Release blocked: repair-state.json must record integer attempts from 0 to 2.");
+  }
+  if (!fs.existsSync(path.resolve(pptxPath))) throw new Error(`Release blocked: PPTX does not exist: ${pptxPath}`);
+  let releaseStatus: "pass" | "pass_with_warning" = "pass";
+  if (visualQaPath) {
+    const visualQaJson = readJson(path.resolve(visualQaPath)) as { status?: string; findings?: Array<{ severity: string }> };
+    if (visualQaJson.status === "fail") throw new Error("Release blocked: visual-qa.json contains an unresolved hard finding.");
+    const hasRisk = (visualQaJson.findings ?? []).some((finding) => finding.severity === "risk");
+    if (hasRisk) {
+      if (!acceptRisk) throw new Error("Release blocked: visual-qa.json contains unresolved risk findings. Pass --accept-risk to release with warnings.");
+      releaseStatus = "pass_with_warning";
+    }
+    // Judgment is only meaningful about the file it actually looked at. Without this, a deck
+    // can be re-rendered after visual-qa passed and released without anyone re-judging it —
+    // the exact gap that let a stale render reach the Japan Career Agent deliverable. Both the
+    // run directory and its provenance record are required here, not best-effort: a release
+    // that skips them is exactly a release nobody can prove was judged.
+    if (!runDir) {
+      throw new Error("Release blocked: --run-dir is required alongside --visual-qa so the release can be checked against visual/render-provenance.json.");
+    }
+    const provenancePath = path.join(path.resolve(runDir), "visual", "render-provenance.json");
+    if (!fs.existsSync(provenancePath)) {
+      throw new Error(`Release blocked: ${provenancePath} does not exist. Re-run \`visual\` before releasing.`);
+    }
+    const provenance = JSON.parse(fs.readFileSync(provenancePath, "utf8")) as { pptxSha256: string };
+    const releasedSha = crypto.createHash("sha256").update(fs.readFileSync(path.resolve(pptxPath))).digest("hex");
+    if (provenance.pptxSha256 !== releasedSha) {
+      throw new Error("Release blocked: the PPTX being released does not match the PPTX visual-qa judged (visual/render-provenance.json digest mismatch). Re-run `visual` and `visual-qa` against the exact file being released.");
+    }
+  }
+  fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+  fs.copyFileSync(path.resolve(pptxPath), path.resolve(outPath));
+  print({ status: releaseStatus, outputPath: path.resolve(outPath), attempts: repairState.attempts });
+}
+
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
@@ -181,13 +233,16 @@ async function main(): Promise<void> {
     const specPath = option(args, "--spec");
     const runDir = option(args, "--run-dir");
     const findingsPath = option(args, "--findings");
-    const pptxPath = optionalOption(args, "--pptx");
+    // Mandatory: judgment without the pptx that produced the render is judgment of nothing in
+    // particular. This is exactly the gap that let the Japan Career Agent deliverable diverge
+    // from what Visual QA actually looked at.
+    const pptxPath = option(args, "--pptx");
     const deck = deckSchema.parse(readJson(specPath));
     const findings = readJson(findingsPath);
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const references = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
-    const provenance: ProvenanceFinding[] = pptxPath ? verifyRenderProvenance(runDir, pptxPath, deck).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId })) : [];
+    const provenance: ProvenanceFinding[] = verifyRenderProvenance(runDir, pptxPath, deck).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId }));
     const backendPath = path.join(path.resolve(runDir), "visual", "backend.json");
     if (fs.existsSync(backendPath)) {
       const backendInfo = JSON.parse(fs.readFileSync(backendPath, "utf8")) as { substitutedFonts?: string[] | "unknown" };
@@ -241,51 +296,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "release") {
-    const qaPath = option(args, "--qa");
-    const judgmentPath = option(args, "--judgment");
-    const repairStatePath = option(args, "--repair-state");
-    const pptxPath = option(args, "--pptx");
-    const outPath = option(args, "--out");
-    const visualQaPath = optionalOption(args, "--visual-qa");
-    const runDir = optionalOption(args, "--run-dir");
-    const acceptRisk = hasFlag(args, "--accept-risk");
-    const qa = readJson(qaPath) as { status?: string; attempts?: number };
-    const judgment = fs.readFileSync(path.resolve(judgmentPath), "utf8");
-    const repairState = readJson(repairStatePath) as { attempts?: unknown };
-    if (qa.status !== "pass") throw new Error("Release blocked: qa.json.status must be pass.");
-    if (!/Outcome:\s*good\b/i.test(judgment) || !/Release decision:\s*pass\b/i.test(judgment)) {
-      throw new Error("Release blocked: judgment.md must declare Outcome: good and Release decision: pass.");
-    }
-    if (!Number.isInteger(repairState.attempts) || (repairState.attempts as number) < 0 || (repairState.attempts as number) > 2) {
-      throw new Error("Release blocked: repair-state.json must record integer attempts from 0 to 2.");
-    }
-    if (!fs.existsSync(path.resolve(pptxPath))) throw new Error(`Release blocked: PPTX does not exist: ${pptxPath}`);
-    let releaseStatus: "pass" | "pass_with_warning" = "pass";
-    if (visualQaPath) {
-      const visualQaJson = readJson(path.resolve(visualQaPath)) as { status?: string; findings?: Array<{ severity: string }> };
-      if (visualQaJson.status === "fail") throw new Error("Release blocked: visual-qa.json contains an unresolved hard finding.");
-      const hasRisk = (visualQaJson.findings ?? []).some((finding) => finding.severity === "risk");
-      if (hasRisk) {
-        if (!acceptRisk) throw new Error("Release blocked: visual-qa.json contains unresolved risk findings. Pass --accept-risk to release with warnings.");
-        releaseStatus = "pass_with_warning";
-      }
-      // Judgment is only meaningful about the file it actually looked at. Without this, a deck
-      // can be re-rendered after visual-qa passed and released without anyone re-judging it —
-      // the exact gap that let a stale render reach the Japan Career Agent deliverable.
-      if (runDir) {
-        const provenancePath = path.join(path.resolve(runDir), "visual", "render-provenance.json");
-        if (fs.existsSync(provenancePath)) {
-          const provenance = JSON.parse(fs.readFileSync(provenancePath, "utf8")) as { pptxSha256: string };
-          const releasedSha = crypto.createHash("sha256").update(fs.readFileSync(path.resolve(pptxPath))).digest("hex");
-          if (provenance.pptxSha256 !== releasedSha) {
-            throw new Error("Release blocked: the PPTX being released does not match the PPTX visual-qa judged (visual/render-provenance.json digest mismatch). Re-run `visual` and `visual-qa` against the exact file being released.");
-          }
-        }
-      }
-    }
-    fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
-    fs.copyFileSync(path.resolve(pptxPath), path.resolve(outPath));
-    print({ status: releaseStatus, outputPath: path.resolve(outPath), attempts: repairState.attempts });
+    await release(args);
     return;
   }
 
