@@ -4,11 +4,15 @@ import { execFileSync, execSync } from "node:child_process";
 import type { DeckSpec } from "./schema";
 
 export type RenderedSlide = { slideId: string; index: number; path: string };
+// The PPTX is written in deck.slides order (1-based), so this is the authoritative mapping from
+// a DeckSpec slide id to its actual position in the rendered file — backends must render exactly
+// these positions, never assume "first N slides" for a scoped subset.
+export type SlideMapEntry = { slideId: string; index: number };
 
 export type VisualRenderBackend = {
   name: "powerpoint" | "libreoffice";
   available(): boolean;
-  render(pptxPath: string, outputDir: string, slideIds: string[]): Promise<RenderedSlide[]>;
+  render(pptxPath: string, outputDir: string, slideMap: SlideMapEntry[]): Promise<RenderedSlide[]>;
 };
 
 function findOnPath(binary: string): boolean {
@@ -23,10 +27,11 @@ function findOnPath(binary: string): boolean {
 const powerpointBackend: VisualRenderBackend = {
   name: "powerpoint",
   available: () => process.platform === "win32",
-  async render(pptxPath, outputDir, slideIds) {
+  async render(pptxPath, outputDir, slideMap) {
     const scriptPath = path.resolve(__dirname, "..", "scripts", "render-slides.ps1");
     const resolvedOutputDir = path.resolve(outputDir);
     fs.mkdirSync(path.join(resolvedOutputDir, "visual"), { recursive: true });
+    const slideMapArg = slideMap.map((entry) => `${entry.index},${entry.slideId}`).join(";");
     let raw = "";
     try {
       raw = execFileSync(
@@ -42,8 +47,8 @@ const powerpointBackend: VisualRenderBackend = {
           path.resolve(pptxPath),
           "-OutputDir",
           resolvedOutputDir,
-          "-SlideId",
-          slideIds.join(","),
+          "-SlideMap",
+          slideMapArg,
         ],
         { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
       );
@@ -62,7 +67,7 @@ const powerpointBackend: VisualRenderBackend = {
 const libreOfficeBackend: VisualRenderBackend = {
   name: "libreoffice",
   available: () => findOnPath("soffice"),
-  async render() {
+  async render(): Promise<RenderedSlide[]> {
     throw new Error(
       "LibreOffice backend is detected but not implemented: `soffice --convert-to png` exports " +
         "only the first slide. A PDF intermediate + pdftoppm/poppler step is required. Install " +
@@ -79,8 +84,13 @@ export function selectBackend(): VisualRenderBackend {
 
 export async function renderVisual(deck: DeckSpec, pptxPath: string, runDir: string, slideIds?: string[]): Promise<RenderedSlide[]> {
   const ids = slideIds ?? deck.slides.map((slide) => slide.id);
+  const slideMap: SlideMapEntry[] = ids.map((slideId) => {
+    const deckIndex = deck.slides.findIndex((slide) => slide.id === slideId);
+    if (deckIndex < 0) throw new Error(`Slide '${slideId}' does not exist in this DeckSpec.`);
+    return { slideId, index: deckIndex + 1 };
+  });
   const backend = selectBackend();
-  return backend.render(pptxPath, runDir, ids);
+  return backend.render(pptxPath, runDir, slideMap);
 }
 
 // Deliberately thin: only the fields a judgment-layer rubric needs to weigh visual findings

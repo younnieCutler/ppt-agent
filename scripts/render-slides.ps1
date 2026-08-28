@@ -1,14 +1,21 @@
 param(
   [Parameter(Mandatory = $true)][string]$PptxPath,
   [Parameter(Mandatory = $true)][string]$OutputDir,
-  [string]$SlideId = ''
+  [Parameter(Mandatory = $true)][string]$SlideMap  # "index,slideId;index,slideId;..." — caller resolves index from deck order
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'visual-lib.ps1')
 $renderDir = Join-Path $OutputDir 'visual'
 New-Item -ItemType Directory -Force -Path $renderDir | Out-Null
-$slideIds = @($SlideId.Split(',', [System.StringSplitOptions]::RemoveEmptyEntries))
+
+$slideMapEntries = New-Object 'System.Collections.Generic.List[object]'
+foreach ($rawEntry in $SlideMap.Split(';', [System.StringSplitOptions]::RemoveEmptyEntries)) {
+  $parts = $rawEntry -split ',', 2
+  if ($parts.Count -ne 2) { throw "SlideMap entries must be index,slideId: $rawEntry" }
+  [void]$slideMapEntries.Add([pscustomobject]@{ index = [int]$parts[0]; slideId = $parts[1] })
+}
+if ($slideMapEntries.Count -eq 0) { throw "SlideMap must contain at least one index,slideId entry." }
 
 $powerPoint = $null
 $presentation = $null
@@ -20,12 +27,16 @@ try {
 
   $index = New-Object 'System.Collections.Generic.List[object]'
   $labels = New-Object 'System.Collections.Generic.List[string]'
-  for ($slideIndex = 1; $slideIndex -le $presentation.Slides.Count; $slideIndex++) {
-    $slideId = if ($slideIndex -le $slideIds.Count) { $slideIds[$slideIndex - 1] } else { ('S{0:D2}' -f $slideIndex) }
-    $pngPath = Join-Path $renderDir ("slide-{0:D3}.png" -f $slideIndex)
-    $presentation.Slides.Item($slideIndex).Export($pngPath, 'PNG', 1600, 900)
-    [void]$index.Add([pscustomobject]@{ slideId = $slideId; index = $slideIndex; path = $pngPath })
-    [void]$labels.Add($slideId)
+  $exportPosition = 0
+  foreach ($entry in $slideMapEntries) {
+    $exportPosition++
+    if ($entry.index -lt 1 -or $entry.index -gt $presentation.Slides.Count) {
+      throw "SlideMap entry '$($entry.slideId)' references PowerPoint slide index $($entry.index), but the presentation has $($presentation.Slides.Count) slides."
+    }
+    $pngPath = Join-Path $renderDir ("slide-{0:D3}.png" -f $exportPosition)
+    $presentation.Slides.Item($entry.index).Export($pngPath, 'PNG', 1600, 900)
+    [void]$index.Add([pscustomobject]@{ slideId = $entry.slideId; index = $entry.index; path = $pngPath })
+    [void]$labels.Add($entry.slideId)
   }
   Write-JsonNoBom (Join-Path $renderDir 'index.json') $index.ToArray()
   New-Montage $renderDir (Join-Path $renderDir 'montage.png') $labels.ToArray()

@@ -40,7 +40,7 @@ Renders `<run-dir>/visual/slide-NNN.png`, `montage.png` (slide-ID labeled), `bac
 - **Anti-slop** — flag: excessive rounded cards, decorative shapes with no semantic role, repeated 3-column layouts across many slides, unnecessary gradients, identical structure slide after slide, arbitrary icons, generic dashboard styling unrelated to content, fake infographics that encode no information.
 - **Not slop by themselves**: plain white backgrounds, tables, sparse layouts, minimal decoration, dense report-style slides, a rough utilitarian style. Quality is purpose-fit, not visual complexity.
 
-Write findings as `<run-dir>/visual-findings.json`, an array of `{ slideId?, severity: "hard"|"risk"|"warning", code, message }`. `code` must come from the closed set in `src/visual-qa.ts` (`visualFindingCodes`) — an invented code is rejected, not silently accepted.
+Write findings as `<run-dir>/visual-findings.json`, an array of `{ slideId?, code, message }`. `code` must come from the closed set in `src/visual-qa.ts` (`visualFindingCodes`) — an invented code is rejected, not silently accepted. Do not include a `severity` field: severity is derived deterministically from `code` (`findingSeverityByCode` in `src/visual-qa.ts`), so the judgment layer cannot downgrade a hard finding past the release gate by picking a softer severity.
 
 ```sh
 node dist/cli.js visual-qa --spec <deck.json> --run-dir <run-dir> --findings <run-dir>/visual-findings.json

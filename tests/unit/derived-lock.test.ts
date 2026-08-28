@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { layoutNames, primaryVisualFor, requiredNativeObjectsFor, type SlideSpec } from "../../src/schema";
-import { visualFindingCodes } from "../../src/visual-qa";
+import { findingSeverityByCode, visualFindingCodes } from "../../src/visual-qa";
 
 // executionLock used to be an LLM-authored field the schema merely cross-checked against
 // these same facts. It is gone now; this test locks the derivation itself so a future edit
@@ -73,5 +73,26 @@ describe("derived editability contract", () => {
       "INCONSISTENT_SECTION_RHYTHM",
       "REFERENCE_VISUAL_DRIFT",
     ]);
+  });
+
+  it("locks severity as a pure function of code, so a judgment-layer finding can never choose its own severity", () => {
+    expect(findingSeverityByCode).toEqual({
+      TEXT_VISUALLY_OVERFLOWING: "hard",
+      CRITICAL_VISUAL_COLLISION: "hard",
+      OFF_CANVAS: "hard",
+      MISSING_RENDERED_OBJECT: "hard",
+      SEMANTIC_VISUAL_MISMATCH: "hard",
+      CHART_UNREADABLE: "hard",
+      WEAK_VISUAL_HIERARCHY: "risk",
+      EXCESSIVE_INFORMATION_DENSITY: "risk",
+      LOW_INFORMATION_DENSITY: "risk",
+      UNBALANCED_COMPOSITION: "risk",
+      EXCESSIVE_CARDIFICATION: "risk",
+      MEANINGLESS_DECORATION: "risk",
+      LOW_VISUAL_CONTRAST: "risk",
+      LAYOUT_REPETITION: "risk",
+      INCONSISTENT_SECTION_RHYTHM: "risk",
+      REFERENCE_VISUAL_DRIFT: "risk",
+    });
   });
 });

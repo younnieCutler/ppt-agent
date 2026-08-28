@@ -55,9 +55,12 @@ describe("buildDeckContext token budget", () => {
 
 describe("applyRepair invariants", () => {
   const original = deck.slides[1];
-  const validReplacement = { ...original, headline: "Batch and streaming solve different needs, revised" };
+  // A revised headline must carry its claims[0].text along, since deckSchema requires them to
+  // match exactly — this is what a real repair replacement looks like, not just a headline edit.
+  const revisedHeadline = "Batch and streaming solve different needs, revised";
+  const validReplacement = { ...original, headline: revisedHeadline, claims: [{ ...original.claims[0], text: revisedHeadline }, ...original.claims.slice(1)] };
 
-  it("accepts a valid replacement that preserves id, storyBeat, and grounding", () => {
+  it("accepts a valid replacement that preserves id, storyBeat, claims, and grounding", () => {
     const result = applyRepair(deck, "S02", validReplacement, contentModel);
     expect(result.deck.slides[1].headline).toBe(validReplacement.headline);
     expect(result.regressionScope).toBe("slide");
@@ -86,17 +89,52 @@ describe("applyRepair invariants", () => {
     expect(codeOf(() => applyRepair(deck, "S02", { ...validReplacement, storyBeat: "design" }, contentModel))).toBe("REPAIR_NARRATIVE_ROLE_DRIFT");
   });
 
-  it("rejects a replacement that introduces an ungrounded source reference", () => {
-    const ungrounded = { ...validReplacement, sourceRefs: [{ sourceId: "prompt", excerptId: "R999" }] };
+  it("rejects a replacement that drops one of the original's source references, even though the array stays non-empty", () => {
+    // The fixture slide cites only one excerpt; simulate a multi-source original so dropping one
+    // ref doesn't also trip the base schema's sourceRefs.min(1) before reaching this invariant.
+    const originalWithTwoRefs = { ...original, sourceRefs: [...original.sourceRefs, { sourceId: "prompt", excerptId: "R002" }] };
+    const deckWithTwoRefs = { ...deck, slides: deck.slides.map((slide) => (slide.id === "S02" ? originalWithTwoRefs : slide)) };
+    const droppedOneRef = { ...validReplacement, sourceRefs: [original.sourceRefs[0]] };
+    expect(codeOf(() => applyRepair(deckWithTwoRefs, "S02", droppedOneRef, contentModel))).toBe("REPAIR_GROUNDING_WEAKENED");
+  });
+
+  it("rejects a replacement that introduces an ungrounded source reference alongside the original", () => {
+    const ungrounded = { ...validReplacement, sourceRefs: [...original.sourceRefs, { sourceId: "prompt", excerptId: "R999" }] };
     expect(codeOf(() => applyRepair(deck, "S02", ungrounded, contentModel))).toBe("REPAIR_GROUNDING_WEAKENED");
   });
 
-  it("rejects a replacement that drops a required native chart in favor of a non-chart composition", () => {
+  it("rejects a replacement that changes the primary claim's kind", () => {
+    const changedKind = { ...validReplacement, claims: [{ ...validReplacement.claims[0], kind: "fact" }, ...validReplacement.claims.slice(1)] };
+    expect(codeOf(() => applyRepair(deck, "S02", changedKind, contentModel))).toBe("REPAIR_CLAIM_DRIFT");
+  });
+
+  it("rejects a replacement that drops a claim (the fixture original has 2; this replacement keeps only the primary)", () => {
+    const originalWithTwoClaims = { ...original, claims: [...original.claims, { text: "secondary", kind: "fact" as const, status: "verified" as const }] };
+    const deckWithTwoClaims = { ...deck, slides: deck.slides.map((slide) => (slide.id === "S02" ? originalWithTwoClaims : slide)) };
+    expect(codeOf(() => applyRepair(deckWithTwoClaims, "S02", validReplacement, contentModel))).toBe("REPAIR_CLAIM_DRIFT");
+  });
+
+  it("rejects a replacement that silently rewrites a non-primary claim", () => {
+    const originalWithTwoClaims = { ...original, claims: [...original.claims, { text: "secondary", kind: "fact" as const, status: "verified" as const }] };
+    const deckWithTwoClaims = { ...deck, slides: deck.slides.map((slide) => (slide.id === "S02" ? originalWithTwoClaims : slide)) };
+    const rewrittenSecondary = { ...validReplacement, claims: [validReplacement.claims[0], { text: "rewritten secondary", kind: "fact" as const, status: "verified" as const }] };
+    expect(codeOf(() => applyRepair(deckWithTwoClaims, "S02", rewrittenSecondary, contentModel))).toBe("REPAIR_CLAIM_DRIFT");
+  });
+
+  it("rejects a replacement that drops a required native object present on the original (not just chart)", () => {
     const fullDeck = deckSchema.parse(allLayoutsFixture);
     const fullContentModel = contentModelSchema.parse(allLayoutsContentModel);
     const chartSlide = fullDeck.slides.find((slide) => slide.layout === "chart")!;
     const rasterized = { ...chartSlide, layout: "statement", composition: "hero_evidence", content: { body: "x".repeat(10), proofs: [] } };
-    expect(codeOf(() => applyRepair(fullDeck, chartSlide.id, rasterized, fullContentModel))).toBe("REPAIR_RASTERIZED_NATIVE");
+    expect(codeOf(() => applyRepair(fullDeck, chartSlide.id, rasterized, fullContentModel))).toBe("REPAIR_NATIVE_OBJECT_DROPPED");
+  });
+
+  it("rejects a replacement that drops required connectors from a pipeline slide", () => {
+    const fullDeck = deckSchema.parse(allLayoutsFixture);
+    const fullContentModel = contentModelSchema.parse(allLayoutsContentModel);
+    const pipelineSlide = fullDeck.slides.find((slide) => slide.layout === "pipeline")!;
+    const flattened = { ...pipelineSlide, layout: "statement", composition: "hero_evidence", content: { body: "x".repeat(10), proofs: [] } };
+    expect(codeOf(() => applyRepair(fullDeck, pipelineSlide.id, flattened, fullContentModel))).toBe("REPAIR_NATIVE_OBJECT_DROPPED");
   });
 });
 
