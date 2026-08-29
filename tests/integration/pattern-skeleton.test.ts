@@ -115,6 +115,26 @@ describe("applyPatternSkeleton: skeleton clone + slot injection", () => {
     void patternsArtifact;
   }, 60000);
 
+  it("hard-fails instead of falling through to the generic renderer when strategy: source_slide_pattern is declared", async () => {
+    const templatePath = await buildPatternFixture();
+    const deck = deckWithSlides([deckSlide({ id: "S01", layout: "title", headline: "NO PATTERN HEADLINE", content: { subtitle: "x" } })]);
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-pattern-hardfail-"));
+    try {
+      const scratchPath = path.join(workDir, "scratch.pptx");
+      await renderDeck(deck, scratchPath, repoRoot);
+      const outputPath = path.join(workDir, "final.pptx");
+      // Same call as the lenient case above — new Map() means no slide has a resolved pattern —
+      // but with strategy declared, this must throw instead of silently drawing S01 with the
+      // generic renderer and waiting for TEMPLATE_FIDELITY_UNPROVEN to catch it after the fact.
+      await expect(
+        applyPatternSkeleton(templatePath, scratchPath, outputPath, deck.slides as never, new Map(), { strategy: "source_slide_pattern" }),
+      ).rejects.toThrow(/No pattern fits slide 'S01'/);
+    } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
+      fs.rmSync(path.dirname(templatePath), { recursive: true, force: true });
+    }
+  }, 60000);
+
   it("throws rather than silently rendering when a required slot has no matching content", async () => {
     const templatePath = await buildPatternFixture();
     const elements = await extractTemplateElements(templatePath);

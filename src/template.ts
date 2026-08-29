@@ -5,6 +5,7 @@ import JSZip from "jszip";
 import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
 import { pruneUnreachablePptxParts } from "./ooxml";
 import { resolveSlotAssignments, type TemplatePattern } from "./template-patterns";
+import type { TemplateStrategy } from "./template-analysis";
 
 const EMU_PER_INCH = 914400;
 const CANVAS_SIZE_TOLERANCE_IN = 0.05;
@@ -156,11 +157,17 @@ export type RenderManifestEntry = { slideId: string; mode: string };
 /**
  * For source_slide_pattern / hybrid strategies: clones each pattern-bound slide directly out of
  * the template's own package (never the renderer's scratch deck), removes its example content,
- * and injects real DeckSpec content into its slots. A slide with no resolved pattern falls
- * through to the generically-rendered scratch slide at the same position — that fallback is
- * legitimate for `hybrid` (declared per-layout in `fallbackPolicy`) but is exactly what
- * TEMPLATE_FIDELITY_UNPROVEN exists to catch for a pure `source_slide_pattern` template; this
- * function only clones and injects, it does not decide whether a silent fallback is acceptable.
+ * and injects real DeckSpec content into its slots.
+ *
+ * A slide with no resolved pattern falls through to the generically-rendered scratch slide at the
+ * same position by default — legitimate for `hybrid` (a template that genuinely mixes native-layout
+ * and source-slide-pattern slides) and for the low-level "no strategy declared" case tests exercise
+ * directly. Pass `options.strategy: "source_slide_pattern"` to turn that fallback into an immediate
+ * hard failure instead: a pure source_slide_pattern template committing to full skeleton reuse
+ * should never silently redraw a slide from scratch and wait for QA to notice after the fact — see
+ * TEMPLATE_FIDELITY_UNPROVEN's own comment for why that gap existed and how it was closed
+ * post-hoc; this is the same guarantee enforced up front, at the point the decision is actually
+ * made, not after a whole deck was already rendered around it.
  *
  * Distinct from `applyOrganizationTemplate` above on purpose: that function's `useSlideLayout`
  * binding-by-semantic-layout-name logic is untouched by this, and this function touches nothing
@@ -172,6 +179,7 @@ export async function applyPatternSkeleton(
   outputPath: string,
   slides: SlideSpec[],
   resolvedPatterns: Map<string, TemplatePattern>,
+  options: { strategy?: TemplateStrategy } = {},
 ): Promise<RenderManifestEntry[]> {
   if (!fs.existsSync(templatePath)) throw new Error(`Template not found: ${templatePath}`);
   const resolvedOutput = path.resolve(outputPath);
@@ -193,6 +201,9 @@ export async function applyPatternSkeleton(
     slides.forEach((slideSpec, index) => {
       const pattern = resolvedPatterns.get(slideSpec.id);
       if (!pattern) {
+        if (options.strategy === "source_slide_pattern") {
+          throw new Error(`No pattern fits slide '${slideSpec.id}' on a source_slide_pattern template — refusing to silently redraw it with the generic renderer. Its design lives entirely in the template's own example slide bodies; choose or label a different source slide, or split this deck across a hybrid-strategy template if a generic slide is genuinely acceptable here.`);
+        }
         presentation.addSlide("semantic-render", index + 1);
         manifest.push({ slideId: slideSpec.id, mode: "renderer" });
         return;
