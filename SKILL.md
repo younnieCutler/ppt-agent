@@ -39,13 +39,57 @@ An organisation template pack is selected with `contract.organization: { kind: "
 
 It cannot be combined with a standalone `brand.kind: "file"`, and a locked identity conflict hard-fails rather than falling back.
 
+## The run, in dependency order
+
+A DeckSpec is authored **last**, against a validated plan and a resolved shortlist — not first. Each
+step records the digest of what it produced in `<run-dir>/artifact-provenance.json`, and the next
+step re-hashes those inputs and refuses to run against a changed one, so the order below is enforced
+by the CLI rather than by discipline.
+
 ```sh
 npm run build
+
+# 1. Evidence. Every excerpt gets an id; sourceRefs cite it as excerptId.
+#    Write it wherever you like — plan-validate copies it to <run-dir>/content-model.json,
+#    which is the copy every later step re-hashes.
+
+# 2. Plan the deck before authoring any slide, and put the contract in the run directory.
+cp <contract.json> <run-dir>/contract.json
+node dist/cli.js plan-validate --plan <deck-plan.json> --content-model <content-model.json> --run-dir <run-dir> [--findings <plan-findings.json>]
+# → <run-dir>/deck-plan.json (normalized), planning-qa.json, artifact-provenance.json
+#   Hard findings here mean the plan is wrong; fix the plan, not the slides.
+#   Planning is a STRICT gate: composition-resolve requires status `pass`, so a risk finding
+#   (status `review`) blocks authoring too. Resolve it or change the plan — a risk in the plan is
+#   inherited by every slide resolved against it, which is not the same as a risk on one slide.
+
+# 3. Reference retrieval, when the contract declares referenceIds. Before style resolution:
+#    the resolved style reads the selection.
 node dist/cli.js reference --contract <contract.json> --reference-root <ppt-master-path> --run-dir <run-dir> [--top-k 3]
+
+# 4. Style resolution. After references, before composition.
+node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
+
+# 5. Composition shortlist per slide. Refuses to run if any recorded input changed.
+node dist/cli.js composition-resolve --plan <run-dir>/deck-plan.json --style-context <run-dir>/style-context.json --run-dir <run-dir>
+# → <run-dir>/composition-plan.json — a ranked shortlist per slide, not a decision.
+
+# 6. Author the DeckSpec v2 against the plan and the shortlist:
+#    version: 2, planDigest: the digest recorded as deckPlanDigest in artifact-provenance.json,
+#    one candidate chosen per slide from that slide's shortlist (any rank, with a reason).
+
 node dist/cli.js validate --spec <deck.json> --run-dir <run-dir>
 node dist/cli.js render --spec <deck.json> --out <draft.pptx> [--run-dir <run-dir>]
 node dist/cli.js qa --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--powerpoint]
 ```
+
+A DeckSpec v2 is verified against its plan on `validate`, `render`, and `qa`: `planDigest` must equal
+the digest of the current `deck-plan.json`, ids/story beats/theses must match it, every planned
+primary reference must appear with no unplanned ones, and the chosen layout/composition must be in
+that slide's shortlist. `DECK_PLAN_DIGEST_MISMATCH` means the plan moved after the deck was written —
+re-author the affected slides against the current plan rather than re-stamping the digest.
+
+A legacy (unversioned) DeckSpec still renders with `--allow-legacy` and skips the plan verification
+entirely.
 
 Use `managed_device` when recipients have the selected fonts. Core QA (font, native-object, rasterization, and font-embedding checks against the rendered PPTX's OOXML) runs on every platform and is the release bar. `--powerpoint` on Windows with Microsoft PowerPoint installed adds optional Level 3 verification (live text-overflow measurement); its absence never blocks a pass.
 

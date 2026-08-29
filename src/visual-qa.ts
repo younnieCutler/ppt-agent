@@ -42,6 +42,7 @@ export const visualFindingCodes = [
   "VISUAL_QA_STALE_RENDER",
   "VISUAL_RENDER_PROVENANCE_UNKNOWN",
   "RENDER_FONT_SUBSTITUTION",
+  "ORGANIZATION_GRAMMAR_NOT_APPLIED",
 ] as const;
 
 // Severity is derived from code, never accepted as judgment-layer input — otherwise an LLM could
@@ -81,6 +82,7 @@ export const findingSeverityByCode: Record<(typeof visualFindingCodes)[number], 
   VISUAL_QA_STALE_RENDER: "hard",
   VISUAL_RENDER_PROVENANCE_UNKNOWN: "risk",
   RENDER_FONT_SUBSTITUTION: "risk",
+  ORGANIZATION_GRAMMAR_NOT_APPLIED: "hard",
 };
 
 export const visualFindingInputSchema = z

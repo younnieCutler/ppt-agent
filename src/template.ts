@@ -3,6 +3,7 @@ import path from "node:path";
 import Automizer from "pptx-automizer";
 import JSZip from "jszip";
 import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
+import { pruneUnreachablePptxParts } from "./ooxml";
 
 const EMU_PER_INCH = 914400;
 const CANVAS_SIZE_TOLERANCE_IN = 0.05;
@@ -63,6 +64,10 @@ export async function applyOrganizationTemplate(
     });
     await presentation.write(path.basename(resolvedOutput));
     if (!fs.existsSync(resolvedOutput)) throw new Error(`Organization template adapter did not produce ${resolvedOutput}`);
+    // pptx-automizer keeps the root template's own example slides and their media in the package
+    // even after removeExistingSlides drops them from the presentation, so the delivered deck
+    // would still ship the organization's private example content inside the file.
+    await pruneUnreachablePptxParts(resolvedOutput);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }

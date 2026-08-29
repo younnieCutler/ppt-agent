@@ -3,6 +3,7 @@ import path from "node:path";
 import { parse } from "yaml";
 import { loadBrandFile } from "./brand";
 import { loadOrganizationPack, type OrganizationPack, type TemplateMap } from "./organization";
+import type { TemplateGrammar } from "./template-analysis";
 import {
   themeV2Schema,
   type GenerationContract,
@@ -52,6 +53,8 @@ export type ResolvedPresentationStyle = {
     templatePath: string;
     map: TemplateMap;
   };
+  templateGrammar?: TemplateGrammar;
+  templateGrammarDigest?: string;
   grammar: ResolvedGrammar;
   reference?: ReferenceGrammar;
   locks: { palette: string[]; fonts: boolean };
@@ -189,6 +192,17 @@ function resolveGrammar(contract: GenerationContract, archetype: PresentationArc
   };
 }
 
+function applyTemplateGrammar(grammar: ResolvedGrammar, templateGrammar: TemplateGrammar | undefined): ResolvedGrammar {
+  if (!templateGrammar) return grammar;
+  const ratio = clamp(templateGrammar.typography.titleBodyRatio / 2, 0.85, 1.6);
+  return {
+    ...grammar,
+    spacingScale: clamp(grammar.spacingScale * templateGrammar.geometry.spacingScale, 0.72, 1.55),
+    headlineScale: clamp(grammar.headlineScale * ratio, 0.85, 1.6),
+    surfaceUsage: templateGrammar.surface.usage,
+  };
+}
+
 function blend(from: string, to: string, amount: number): string {
   const channels = [0, 2, 4].map((offset) => Math.round(parseInt(from.slice(offset, offset + 2), 16) * (1 - amount) + parseInt(to.slice(offset, offset + 2), 16) * amount));
   return channels.map((channel) => channel.toString(16).padStart(2, "0")).join("").toUpperCase();
@@ -320,7 +334,9 @@ export function resolvePresentationStyle(
     logoPath: brand.logoPath,
     footer: brand.footer,
     organization: organization ? { id: organization.id, root: organization.root, templatePath: organization.templatePath, map: organization.map } : undefined,
-    grammar: resolveGrammar(contract, themeId, reference),
+    templateGrammar: organization?.templateGrammar,
+    templateGrammarDigest: organization?.templateGrammarDigest,
+    grammar: applyTemplateGrammar(resolveGrammar(contract, themeId, reference), organization?.templateGrammar),
     reference,
     locks: brand.locks,
     provenance: { requestedStyle: explicit, resolvedBy: explicit === "reference-first" ? "reference-first" : explicit === "auto" ? "auto" : "explicit" },
@@ -338,7 +354,7 @@ export function styleContext(style: ResolvedPresentationStyle): Record<string, u
   return {
     themeId: style.themeId,
     designDirection: style.designDirection,
-    organization: style.organization ? { id: style.organization.id, templatePath: style.organization.templatePath } : undefined,
+    organization: style.organization ? { id: style.organization.id, templatePath: style.organization.templatePath, grammarDigest: style.templateGrammarDigest } : undefined,
     provenance: style.provenance,
     grammar: {
       density: style.grammar.copyBudget > 1.05 ? "dense" : style.grammar.copyBudget < 0.75 ? "sparse" : "balanced",

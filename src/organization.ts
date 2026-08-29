@@ -1,8 +1,10 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { loadBrandFile } from "./brand";
 import type { BrandFile } from "./schema";
+import { elementsDigest, roleOverridesDigest, TEMPLATE_ANALYZER_VERSION, TEMPLATE_GRAMMAR_COMPILER_VERSION, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
 
 const rectSchema = z.object({ x: z.number().nonnegative(), y: z.number().nonnegative(), w: z.number().positive(), h: z.number().positive() });
 export const semanticLayouts = ["title", "statement", "comparison", "process", "pipeline", "architecture", "quantitative", "timeline", "evidence", "chart"] as const;
@@ -22,7 +24,7 @@ export const layoutBindingSchema = z.object({
   reservedRegions: z.array(rectSchema).default([]),
 });
 
-export const templateMapSchema = z.object({
+export const templateMapV1Schema = z.object({
   version: z.literal(1),
   aspectRatio: z.enum(["16:9", "4:3"]).default("16:9"),
   chromeOwnership: z.object({
@@ -36,9 +38,18 @@ export const templateMapSchema = z.object({
   requiredElements: z.array(z.object({ name: z.string().min(1), layouts: z.array(z.union([z.literal("*"), z.enum(semanticLayouts)])).min(1) })).default([]),
 });
 
+export const templateMapV2Schema = templateMapV1Schema.extend({
+  version: z.literal(2),
+  elementRoleOverrides: z.record(z.enum(["title", "subtitle", "heading", "body", "caption", "eyebrow", "label", "key_message", "metric", "metric_label", "annotation", "step", "route", "source", "logo", "footer", "surface", "divider"])).default({}),
+  elementsFile: z.literal("template-elements.json").default("template-elements.json"),
+  grammarFile: z.literal("template-grammar.json").default("template-grammar.json"),
+});
+
+export const templateMapSchema = z.union([templateMapV1Schema, templateMapV2Schema]);
+
 export type TemplateMap = z.infer<typeof templateMapSchema>;
 export type LayoutBinding = z.infer<typeof layoutBindingSchema>;
-export type OrganizationPack = { id: string; root: string; templatePath: string; map: TemplateMap; brand: BrandFile };
+export type OrganizationPack = { id: string; root: string; templatePath: string; map: TemplateMap; brand: BrandFile; templateGrammar?: TemplateGrammar; templateGrammarDigest?: string };
 
 export function loadOrganizationPack(directory: string): OrganizationPack {
   const root = path.resolve(directory);
@@ -49,9 +60,33 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
     if (!fs.existsSync(required)) throw new Error(`Organization pack is incomplete; required file is missing: ${required}`);
   }
   const map = templateMapSchema.parse(JSON.parse(fs.readFileSync(mapPath, "utf8")));
+  let templateGrammar: TemplateGrammar | undefined;
+  let templateGrammarDigest: string | undefined;
+  if (map.version === 2) {
+    const elementsPath = path.join(root, map.elementsFile);
+    const grammarPath = path.join(root, map.grammarFile);
+    if (!fs.existsSync(elementsPath) || !fs.existsSync(grammarPath)) throw new Error("Organization Pack v2 requires template-elements.json and template-grammar.json.");
+    const templateDigest = crypto.createHash("sha256").update(fs.readFileSync(templatePath)).digest("hex");
+    const elements = JSON.parse(fs.readFileSync(elementsPath, "utf8")) as TemplateElementsArtifact;
+    const grammar = JSON.parse(fs.readFileSync(grammarPath, "utf8")) as TemplateGrammar;
+    if (elements.source?.sha256 !== templateDigest || grammar.sourceDigest !== templateDigest) throw new Error("Organization Pack v2 generated artifacts are stale for template.pptx.");
+    // template.pptx is not the only analysis input: elementRoleOverrides change semantic roles and
+    // therefore the compiled grammar while the PPTX stays byte-identical.
+    const inputs = elements.analysisInputs;
+    if (!inputs) throw new Error("Organization Pack v2 generated artifacts predate analysis provenance. Re-run `template-analyze`.");
+    if (inputs.roleOverridesDigest !== roleOverridesDigest(map.elementRoleOverrides)) throw new Error("Organization Pack v2 generated artifacts are stale for template-map.json elementRoleOverrides. Re-run `template-analyze`.");
+    // Recorded and checked, not decorative: this catches an elements artifact whose own two records
+    // of its input disagree, which is what a hand-edited artifact looks like.
+    if (inputs.templateDigest !== templateDigest) throw new Error("Organization Pack v2 template-elements.json records a different template digest than template.pptx. Re-run `template-analyze`.");
+    if (inputs.analyzerVersion !== TEMPLATE_ANALYZER_VERSION) throw new Error(`Organization Pack v2 template-elements.json was produced by analyzer version ${inputs.analyzerVersion}; this build is ${TEMPLATE_ANALYZER_VERSION}. Re-run \`template-analyze\`.`);
+    if (grammar.compilerVersion !== TEMPLATE_GRAMMAR_COMPILER_VERSION) throw new Error(`Organization Pack v2 template-grammar.json was compiled by grammar compiler version ${grammar.compilerVersion}; this build is ${TEMPLATE_GRAMMAR_COMPILER_VERSION}. Re-run \`template-analyze\`.`);
+    if (grammar.elementsDigest !== elementsDigest(elements)) throw new Error("Organization Pack v2 template-grammar.json was not compiled from this template-elements.json. Re-run `template-analyze`.");
+    templateGrammar = grammar;
+    templateGrammarDigest = crypto.createHash("sha256").update(fs.readFileSync(grammarPath)).digest("hex");
+  }
   const brand = loadBrandFile(brandPath);
   validateMapGeometry(map);
-  return { id: path.basename(root), root, templatePath, map, brand };
+  return { id: path.basename(root), root, templatePath, map, brand, templateGrammar, templateGrammarDigest };
 }
 
 function validateMapGeometry(map: TemplateMap): void {

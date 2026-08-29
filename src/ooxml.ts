@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
-import { DOMParser } from "@xmldom/xmldom";
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 
 // Parsed as XML, not regex: an Organization Template Pack ships arbitrary PowerPoint parts whose
 // prefixes, attribute order, nesting (grouped shapes), and whitespace are outside our control.
@@ -195,4 +195,55 @@ export async function readPptxOoxml(pptxPath: string): Promise<PptxOoxmlFacts> {
 
   const embeddedFonts = Object.keys(zip.files).some((name) => name.startsWith("ppt/fonts/") && name.endsWith(".fntdata"));
   return { parseOk: true, slideCount: slides.length, embeddedFonts, slides };
+}
+
+function relationshipPath(source: string): string {
+  if (!source) return "_rels/.rels";
+  const dir = path.posix.dirname(source);
+  return path.posix.join(dir, "_rels", `${path.posix.basename(source)}.rels`);
+}
+
+/** Removes orphan template parts after pptx-automizer replaces example slides. */
+export async function pruneUnreachablePptxParts(pptxPath: string): Promise<void> {
+  const resolved = path.resolve(pptxPath);
+  const zip = await JSZip.loadAsync(fs.readFileSync(resolved));
+  const retained = new Set<string>(["[Content_Types].xml", "_rels/.rels"]);
+  for (const name of Object.keys(zip.files)) {
+    if (name.startsWith("docProps/") || ["ppt/presProps.xml", "ppt/viewProps.xml", "ppt/tableStyles.xml"].includes(name)) retained.add(name);
+  }
+  const queue = [""];
+  while (queue.length > 0) {
+    const source = queue.shift()!;
+    const relPath = relationshipPath(source);
+    const xml = await zip.file(relPath)?.async("string");
+    if (!xml) continue;
+    retained.add(relPath);
+    const document = parseXml(xml);
+    if (!document) throw new Error(`Invalid OOXML relationships: ${relPath}`);
+    for (const relationship of elements(document, PKG_REL_NS, "Relationship")) {
+      if (relationship.getAttribute("TargetMode") === "External") continue;
+      const target = relationship.getAttribute("Target");
+      if (!target) continue;
+      const targetPath = packagePath(source ? path.posix.dirname(source) : "", target);
+      if (!zip.file(targetPath) || retained.has(targetPath)) continue;
+      retained.add(targetPath);
+      queue.push(targetPath);
+    }
+  }
+  const removed = Object.keys(zip.files).filter((name) => !name.endsWith("/") && !retained.has(name));
+  for (const name of removed) zip.remove(name);
+  const typesXml = await zip.file("[Content_Types].xml")?.async("string");
+  const types = typesXml ? parseXml(typesXml) : undefined;
+  if (types) {
+    for (const override of elements(types, "http://schemas.openxmlformats.org/package/2006/content-types", "Override")) {
+      const partName = (override.getAttribute("PartName") ?? "").replace(/^\//, "");
+      if (removed.includes(partName)) override.parentNode?.removeChild(override);
+    }
+    // parseXml hands back the global Document typing; serializeToString wants xmldom's own node type.
+    const serializable = types as unknown as Parameters<XMLSerializer["serializeToString"]>[0];
+    zip.file("[Content_Types].xml", new XMLSerializer().serializeToString(serializable));
+  }
+  const temporary = `${resolved}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, await zip.generateAsync({ type: "nodebuffer" }));
+  fs.renameSync(temporary, resolved);
 }

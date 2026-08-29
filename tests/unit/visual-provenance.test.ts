@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { verifyRenderProvenance } from "../../src/visual";
 import { deckSchema } from "../../src/schema";
+import type { ResolvedPresentationStyle } from "../../src/style";
 
 // Regression: the Japan Career Agent deliverable PDF was produced five minutes *after* Visual QA
 // judged the montage, by a different converter with different font substitution than the render
@@ -28,7 +29,7 @@ function makeRun(name: string): { runDir: string; pptxPath: string } {
   return { runDir, pptxPath };
 }
 
-function writeProvenance(runDir: string, overrides: Partial<{ pptxSha256: string; specSha256: string }> = {}, pptxPath?: string): void {
+function writeProvenance(runDir: string, overrides: Partial<{ pptxSha256: string; specSha256: string; templateGrammarDigest: string }> = {}, pptxPath?: string): void {
   fs.writeFileSync(
     path.join(runDir, "visual", "render-provenance.json"),
     JSON.stringify({
@@ -36,9 +37,12 @@ function writeProvenance(runDir: string, overrides: Partial<{ pptxSha256: string
       specSha256: overrides.specSha256 ?? sha256(JSON.stringify(deck)),
       renderedAt: new Date().toISOString(),
       slideIds: deck.slides.map((slide) => slide.id),
+      ...(overrides.templateGrammarDigest ? { templateGrammarDigest: overrides.templateGrammarDigest } : {}),
     }),
   );
 }
+
+const organizationStyle = (templateGrammarDigest: string) => ({ templateGrammarDigest } as ResolvedPresentationStyle);
 
 describe("visual render provenance (stale-render guard)", () => {
   it("passes when the current pptx and deck match what `visual` last rendered", () => {
@@ -67,5 +71,11 @@ describe("visual render provenance (stale-render guard)", () => {
     const findings = verifyRenderProvenance(runDir, pptxPath, deck);
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({ severity: "risk", code: "VISUAL_RENDER_PROVENANCE_UNKNOWN" });
+  });
+
+  it("hard-fails when an organization grammar changed after visual render", () => {
+    const { runDir, pptxPath } = makeRun("stale-organization-grammar");
+    writeProvenance(runDir, { templateGrammarDigest: "old" }, pptxPath);
+    expect(verifyRenderProvenance(runDir, pptxPath, deck, organizationStyle("new"))).toContainEqual(expect.objectContaining({ severity: "hard", code: "ORGANIZATION_GRAMMAR_NOT_APPLIED" }));
   });
 });

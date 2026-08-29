@@ -15,6 +15,84 @@ import { resolvePresentationStyle, styleContext } from "./style";
 import { writeP3Metrics } from "./metrics";
 import { markPhase, measurementWindow, projectSlug, resolveTranscript, writeTokenReport } from "./tokens";
 import { recordRun, writeQualityReport } from "./score";
+import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
+import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
+import { writeArtifactPair } from "./artifacts";
+import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
+import { templateMapSchema } from "./organization";
+
+/**
+ * Everything downstream of the plan, and the provenance that describes it. Listed once so an added
+ * phase cannot forget to clear its own output.
+ */
+const DERIVED_ARTIFACTS = ["reference-selection.json", "resolved-style.json", "style-context.json", "template-grammar.json", "composition-plan.json"] as const;
+const DERIVED_PROVENANCE = ["referenceSelectionDigest", "referenceSelectionSource", "resolvedStyleDigest", "resolvedStyleSource", "templateGrammarDigest", "compositionPlanDigest"] as const;
+
+/**
+ * Root inputs changed, so everything derived from them is obsolete — including artifacts the new
+ * contract no longer produces at all (a deck that dropped its references, or its organization pack).
+ * Leaving those behind is what made a run unrecoverable without deleting files by hand: their
+ * provenance is gone, but `assertFresh` still sees the file. Clearing both together is the recovery
+ * path, and it is deterministic: after `plan-validate`, the run holds only what its inputs imply.
+ */
+function invalidateDerivedArtifacts(runDir: string, provenance: ArtifactProvenance): ArtifactProvenance {
+  for (const name of DERIVED_ARTIFACTS) fs.rmSync(path.join(path.resolve(runDir), name), { force: true });
+  const remaining = { ...provenance } as Record<string, unknown>;
+  for (const field of DERIVED_PROVENANCE) delete remaining[field];
+  return remaining as ArtifactProvenance;
+}
+
+/**
+ * A run directory has exactly one contract. Deriving an artifact from a different file, then storing
+ * it next to that contract, produces a run whose parts never belonged together.
+ */
+function assertRunContract(runDir: string, contractPath: string): string {
+  const runContractPath = path.join(path.resolve(runDir), "contract.json");
+  const suppliedDigest = sha256File(contractPath);
+  if (!fs.existsSync(runContractPath)) throw new Error(`Missing run contract: ${runContractPath}. Copy the contract into the run directory first.`);
+  if (sha256File(runContractPath) !== suppliedDigest) throw new Error(`--contract does not match ${runContractPath}. A run directory holds one contract; re-run the run's earlier phases if the contract changed.`);
+  return suppliedDigest;
+}
+
+/** Merges into the run directory's artifact provenance, so each phase records only its own inputs. */
+function recordProvenance(runDir: string, fields: Partial<ArtifactProvenance>): void {
+  const provenancePath = path.join(path.resolve(runDir), "artifact-provenance.json");
+  const existing = fs.existsSync(provenancePath) ? (readJson(provenancePath) as ArtifactProvenance) : ({} as ArtifactProvenance);
+  writeArtifactProvenance(runDir, { ...existing, ...fields });
+}
+
+/**
+ * Verifies the causal edges, not just per-file freshness. Every file can match its own recorded
+ * digest while the reference selection and the resolved style were derived from a contract that has
+ * since been replaced — the phases simply have to be re-run in order.
+ */
+function assertDerivedFrom(provenance: ArtifactProvenance): void {
+  const styleSource = provenance.resolvedStyleSource;
+  if (!styleSource) throw new Error("Composition resolution blocked: the resolved style records no inputs. Re-run `style --run-dir`.");
+  if (styleSource.contractDigest !== provenance.contractDigest) throw new Error("Composition resolution blocked: the resolved style was derived from a different contract than the one recorded at planning. Re-run `style --run-dir`.");
+  if ((styleSource.referenceSelectionDigest ?? undefined) !== (provenance.referenceSelectionDigest ?? undefined)) throw new Error("Composition resolution blocked: the resolved style was derived from a different reference selection. Re-run `style --run-dir`.");
+  if ((styleSource.templateGrammarDigest ?? undefined) !== (provenance.templateGrammarDigest ?? undefined)) throw new Error("Composition resolution blocked: the resolved style was derived from a different template grammar. Re-run `style --run-dir`.");
+  const referenceSource = provenance.referenceSelectionSource;
+  if (provenance.referenceSelectionDigest) {
+    if (!referenceSource) throw new Error("Composition resolution blocked: the reference selection records no inputs. Re-run `reference --run-dir`.");
+    if (referenceSource.contractDigest !== provenance.contractDigest) throw new Error("Composition resolution blocked: the reference selection was derived from a different contract than the one recorded at planning. Re-run `reference --run-dir`.");
+  }
+}
+
+function assertFresh(runDir: string, provenance: Record<string, string>, inputs: Array<[keyof ArtifactProvenance, string]>): void {
+  for (const [field, fileName] of inputs) {
+    const recorded = provenance[field];
+    const filePath = path.join(path.resolve(runDir), fileName);
+    if (!recorded) {
+      // An input that appeared after the digests were recorded was never part of what produced them,
+      // so resolving against it would silently mix two runs.
+      if (fs.existsSync(filePath)) throw new Error(`Composition resolution blocked: ${fileName} exists but is not recorded in artifact-provenance.json. Re-run the phase that produces it.`);
+      continue;
+    }
+    if (!fs.existsSync(filePath)) throw new Error(`Composition resolution blocked: ${fileName} is recorded in artifact-provenance.json but missing from the run directory.`);
+    if (sha256File(filePath) !== recorded) throw new Error(`Composition resolution blocked: ${fileName} changed after it was recorded (artifact-provenance.json digest mismatch). Re-run the phase that produces it.`);
+  }
+}
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -157,7 +235,7 @@ export async function release(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|plan-validate|composition-resolve|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
@@ -186,8 +264,24 @@ async function main(): Promise<void> {
     assertFontsInstalled(style.fonts);
     if (runDir) {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
+      const contractDigest = assertRunContract(runDir, contractPath);
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
+      // composition-resolve reads the run directory's grammar, so style writes the copy it recorded:
+      // a digest describing a file nobody put there would block every run with a v2 pack.
+      const grammarRunPath = path.join(path.resolve(runDir), "template-grammar.json");
+      if (style.templateGrammar) fs.writeFileSync(grammarRunPath, JSON.stringify(style.templateGrammar, null, 2));
+      const referencePath = path.join(path.resolve(runDir), "reference-selection.json");
+      const templateGrammarDigest = style.templateGrammar ? sha256File(grammarRunPath) : undefined;
+      recordProvenance(runDir, {
+        resolvedStyleDigest: sha256File(path.join(path.resolve(runDir), "style-context.json")),
+        templateGrammarDigest,
+        resolvedStyleSource: {
+          contractDigest,
+          referenceSelectionDigest: fs.existsSync(referencePath) ? sha256File(referencePath) : undefined,
+          templateGrammarDigest,
+        },
+      });
       markPhase(runDir, "styleResolution");
     }
     emit({ status: "pass", themeId: style.themeId, designDirection: style.designDirection, resolvedBy: style.provenance.resolvedBy, outputPath: runDir ? path.join(path.resolve(runDir), "style-context.json") : undefined }, style);
@@ -205,10 +299,107 @@ async function main(): Promise<void> {
       .map((entry) => ({ ...entry, previewPaths: previewPathsFor(referenceRoot, entry) }));
     if (runDir) {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
+      const contractDigest = assertRunContract(runDir, contractPath);
       fs.writeFileSync(path.join(path.resolve(runDir), "reference-selection.json"), JSON.stringify(selected, null, 2));
+      recordProvenance(runDir, {
+        referenceSelectionDigest: sha256File(path.join(path.resolve(runDir), "reference-selection.json")),
+        referenceSelectionSource: { contractDigest },
+      });
       markPhase(runDir, "referenceRetrieval");
     }
     emit({ status: "pass", selected: selected.map((entry) => entry.id), outputPath: runDir ? path.join(path.resolve(runDir), "reference-selection.json") : undefined }, selected);
+    return;
+  }
+
+  if (command === "template-analyze") {
+    const input = option(args, "--input");
+    const out = path.resolve(option(args, "--out"));
+    // The pack's own template-map.json is the only place a human can correct a misread role, so the
+    // analyzer reads it: overrides that never reach the classifier are a contract nobody honours.
+    const mapPath = optionalOption(args, "--map") ?? path.join(out, "template-map.json");
+    const map = fs.existsSync(mapPath) ? templateMapSchema.parse(readJson(mapPath)) : undefined;
+    const overrides = map?.version === 2 ? map.elementRoleOverrides : {};
+    const elements = await extractTemplateElements(input, overrides);
+    const grammar = compileTemplateGrammar(elements);
+    fs.mkdirSync(out, { recursive: true });
+    const outputPath = path.join(out, "template-elements.json");
+    const grammarPath = path.join(out, "template-grammar.json");
+    writeArtifactPair([{ path: outputPath, contents: JSON.stringify(elements, null, 2) }, { path: grammarPath, contents: JSON.stringify(grammar, null, 2) }]);
+    print({ status: "pass", outputPath, grammarPath, slides: elements.slides.length, roleOverrides: Object.keys(overrides).length });
+    return;
+  }
+
+  if (command === "plan-validate") {
+    const planPath = option(args, "--plan");
+    const contentModelPath = option(args, "--content-model");
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const findingsPath = optionalOption(args, "--findings");
+    const contractPath = path.join(runDir, "contract.json");
+    if (!fs.existsSync(contractPath)) throw new Error(`Missing run contract: ${contractPath}`);
+    const plan = readJson(planPath);
+    const contentModel = readJson(contentModelPath);
+    const report = validateDeckPlan(plan, readJson(contractPath), contentModel, findingsPath ? readJson(findingsPath) : []);
+    fs.mkdirSync(runDir, { recursive: true });
+    const normalizedPlanPath = path.join(runDir, "deck-plan.json");
+    fs.writeFileSync(normalizedPlanPath, JSON.stringify(report.plan, null, 2));
+    fs.writeFileSync(path.join(runDir, "content-qa.json"), JSON.stringify({ status: "pass", findings: [] }, null, 2));
+    // The run directory holds the copy every later stage re-hashes; a ContentModel that only ever
+    // existed at the caller's path cannot be checked for drift later.
+    const runContentModelPath = path.join(runDir, "content-model.json");
+    fs.writeFileSync(runContentModelPath, JSON.stringify(contentModel, null, 2));
+    const reportPath = path.join(runDir, "planning-qa.json");
+    fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+    const roots = {
+      contractDigest: sha256File(contractPath),
+      contentModelDigest: sha256File(runContentModelPath),
+      deckPlanDigest: deckPlanDigest(report.plan),
+    };
+    const provenancePath = path.join(runDir, "artifact-provenance.json");
+    const previous = fs.existsSync(provenancePath) ? (readJson(provenancePath) as ArtifactProvenance) : ({} as ArtifactProvenance);
+    const rootsChanged = previous.contractDigest !== roots.contractDigest
+      || previous.contentModelDigest !== roots.contentModelDigest
+      || previous.deckPlanDigest !== roots.deckPlanDigest;
+    writeArtifactProvenance(runDir, { ...(rootsChanged ? invalidateDerivedArtifacts(runDir, previous) : previous), ...roots });
+    emitReport({ ...report, findings: report.findings }, reportPath);
+    if (report.status !== "pass") process.exitCode = 2;
+    return;
+  }
+
+  if (command === "composition-resolve") {
+    const planPath = option(args, "--plan");
+    const styleContextPath = option(args, "--style-context");
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const planningQaPath = path.join(runDir, "planning-qa.json");
+    const provenancePath = path.join(runDir, "artifact-provenance.json");
+    // Strict planning gate: `review` (a risk finding) blocks too — see SKILL.md.
+    if (!fs.existsSync(planningQaPath) || (readJson(planningQaPath) as { status?: string }).status !== "pass") throw new Error("Composition resolution requires a passing planning-qa.json (status must be `pass`; a `review` status means an unresolved risk finding).");
+    if (!fs.existsSync(provenancePath)) throw new Error("Composition resolution requires artifact-provenance.json.");
+    const provenance = readJson(provenancePath) as ArtifactProvenance & Record<string, string>;
+    if (!provenance.contractDigest || !provenance.contentModelDigest) throw new Error("Composition resolution requires contract and ContentModel provenance.");
+    // Recording a digest and never re-checking it is not a provenance chain. Every upstream input
+    // is re-hashed here, so editing the contract, the ContentModel, or the reference selection after
+    // planning blocks resolution instead of silently resolving against a plan nobody re-validated.
+    assertFresh(runDir, provenance, [
+      ["contractDigest", "contract.json"],
+      ["contentModelDigest", "content-model.json"],
+      ["referenceSelectionDigest", "reference-selection.json"],
+      ["templateGrammarDigest", "template-grammar.json"],
+    ]);
+    // Style resolution is a prerequisite phase, and the style actually passed here is the one that
+    // must match it — checking only the run directory's copy would miss a --style-context pointing
+    // somewhere else entirely.
+    if (!provenance.resolvedStyleDigest) throw new Error("Composition resolution requires style provenance. Run `style --run-dir` first.");
+    if (sha256File(styleContextPath) !== provenance.resolvedStyleDigest) throw new Error("Composition resolution blocked: style-context.json changed after style resolution (artifact-provenance.json digest mismatch). Re-run `style`.");
+    assertDerivedFrom(provenance);
+    if (provenance.deckPlanDigest !== deckPlanDigest(readJson(planPath))) throw new Error("Composition resolution blocked: deck plan digest is stale.");
+    const styleContext = readJson(styleContextPath);
+    const grammarPath = path.join(runDir, "template-grammar.json");
+    const grammar = fs.existsSync(grammarPath) ? readJson(grammarPath) : {};
+    const compositionPlan = resolveCompositionPlan(readJson(planPath), styleContext as never, grammar as never);
+    const outputPath = path.join(runDir, "composition-plan.json");
+    fs.writeFileSync(outputPath, JSON.stringify(compositionPlan, null, 2));
+    recordProvenance(runDir, { compositionPlanDigest: sha256(JSON.stringify(compositionPlan)) });
+    emit({ status: "pass", outputPath, slides: compositionPlan.slides.length }, compositionPlan);
     return;
   }
 
@@ -222,7 +413,7 @@ async function main(): Promise<void> {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const referenceSelection = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection, legacyTheme: deck.theme });
-    const index = await renderVisual(deck, pptxPath, runDir, slideIds);
+    const index = await renderVisual(deck, pptxPath, runDir, slideIds, style);
     const deckContext = buildDeckContext(deck, index.map((entry) => entry.slideId), style);
     fs.writeFileSync(path.join(path.resolve(runDir), "visual", "deck-context.json"), JSON.stringify(deckContext, null, 2));
     emit({ status: "pass", rendered: index.length, montage: path.join(path.resolve(runDir), "visual", "montage.png"), deckContext: path.join(path.resolve(runDir), "visual", "deck-context.json") }, { status: "pass", index });
@@ -242,7 +433,7 @@ async function main(): Promise<void> {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const references = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
-    const provenance: ProvenanceFinding[] = verifyRenderProvenance(runDir, pptxPath, deck).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId }));
+    const provenance: ProvenanceFinding[] = verifyRenderProvenance(runDir, pptxPath, deck, style).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId }));
     const backendPath = path.join(path.resolve(runDir), "visual", "backend.json");
     if (fs.existsSync(backendPath)) {
       const backendInfo = JSON.parse(fs.readFileSync(backendPath, "utf8")) as { substitutedFonts?: string[] | "unknown" };
@@ -303,6 +494,20 @@ async function main(): Promise<void> {
   const specPath = option(args, "--spec");
   const rawDeck = readJson(specPath);
   const deck = deckSchema.parse(rawDeck);
+  if (["validate", "render", "qa"].includes(command)) {
+    const runDir = optionalOption(args, "--run-dir");
+    const isV2 = Boolean(rawDeck && typeof rawDeck === "object" && (rawDeck as { version?: unknown }).version === 2);
+    if (!isV2 && !hasFlag(args, "--allow-legacy")) throw new Error("Legacy DeckSpec requires --allow-legacy.");
+    if (isV2) {
+      if (!runDir) throw new Error("DeckSpec v2 requires --run-dir for DeckPlan verification.");
+      const resolvedRunDir = path.resolve(runDir);
+      const planPath = path.join(resolvedRunDir, "deck-plan.json");
+      const compositionPath = path.join(resolvedRunDir, "composition-plan.json");
+      if (!fs.existsSync(planPath) || !fs.existsSync(compositionPath)) throw new Error("DeckSpec v2 requires deck-plan.json and composition-plan.json in --run-dir.");
+      const findings = verifyDeckAgainstPlan(deck, readJson(planPath), readJson(compositionPath));
+      if (findings.length > 0) throw new Error(`DeckSpec v2 violates its DeckPlan: ${findings.map((finding) => finding.code).join(", ")}`);
+    }
+  }
 
   if (command === "metrics") {
     const runDir = option(args, "--run-dir");
