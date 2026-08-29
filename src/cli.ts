@@ -18,6 +18,44 @@ import { recordRun, writeQualityReport } from "./score";
 import { resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
+import { templateMapSchema } from "./organization";
+
+/**
+ * Two artifacts that are only valid together. A plain rename-then-rename leaves the pair mismatched
+ * if the second one fails, so the previous contents are held and restored on failure: a failed
+ * write keeps the last valid pair rather than inventing a new one.
+ */
+/**
+ * Re-hashes the run directory's copy of each recorded input. A missing file for a recorded digest is
+ * as stale as a changed one — the artifact the digest describes is no longer there to check.
+ */
+function assertFresh(runDir: string, provenance: Record<string, string>, inputs: Array<[string, string]>): void {
+  for (const [field, fileName] of inputs) {
+    const recorded = provenance[field];
+    if (!recorded) continue;
+    const filePath = path.join(path.resolve(runDir), fileName);
+    if (!fs.existsSync(filePath)) throw new Error(`Composition resolution blocked: ${fileName} is recorded in artifact-provenance.json but missing from the run directory.`);
+    if (sha256File(filePath) !== recorded) throw new Error(`Composition resolution blocked: ${fileName} changed after planning (artifact-provenance.json digest mismatch). Re-run plan-validate.`);
+  }
+}
+
+function writeArtifactPair(files: Array<{ path: string; contents: string }>): void {
+  const previous = files.map((file) => (fs.existsSync(file.path) ? fs.readFileSync(file.path) : undefined));
+  const temporaries = files.map((file) => `${file.path}.${process.pid}.tmp`);
+  try {
+    files.forEach((file, index) => fs.writeFileSync(temporaries[index], file.contents));
+    files.forEach((file, index) => fs.renameSync(temporaries[index], file.path));
+  } catch (error) {
+    files.forEach((file, index) => {
+      const restore = previous[index];
+      if (restore) fs.writeFileSync(file.path, restore);
+      else fs.rmSync(file.path, { force: true });
+    });
+    throw error;
+  } finally {
+    temporaries.forEach((temporary) => fs.rmSync(temporary, { force: true }));
+  }
+}
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -218,23 +256,18 @@ async function main(): Promise<void> {
   if (command === "template-analyze") {
     const input = option(args, "--input");
     const out = path.resolve(option(args, "--out"));
-    const elements = await extractTemplateElements(input);
+    // The pack's own template-map.json is the only place a human can correct a misread role, so the
+    // analyzer reads it: overrides that never reach the classifier are a contract nobody honours.
+    const mapPath = optionalOption(args, "--map") ?? path.join(out, "template-map.json");
+    const map = fs.existsSync(mapPath) ? templateMapSchema.parse(readJson(mapPath)) : undefined;
+    const overrides = map?.version === 2 ? map.elementRoleOverrides : {};
+    const elements = await extractTemplateElements(input, overrides);
     const grammar = compileTemplateGrammar(elements);
     fs.mkdirSync(out, { recursive: true });
     const outputPath = path.join(out, "template-elements.json");
     const grammarPath = path.join(out, "template-grammar.json");
-    const elementsTemp = `${outputPath}.${process.pid}.tmp`;
-    const grammarTemp = `${grammarPath}.${process.pid}.tmp`;
-    try {
-      fs.writeFileSync(elementsTemp, JSON.stringify(elements, null, 2));
-      fs.writeFileSync(grammarTemp, JSON.stringify(grammar, null, 2));
-      fs.renameSync(elementsTemp, outputPath);
-      fs.renameSync(grammarTemp, grammarPath);
-    } finally {
-      fs.rmSync(elementsTemp, { force: true });
-      fs.rmSync(grammarTemp, { force: true });
-    }
-    print({ status: "pass", outputPath, grammarPath, slides: elements.slides.length });
+    writeArtifactPair([{ path: outputPath, contents: JSON.stringify(elements, null, 2) }, { path: grammarPath, contents: JSON.stringify(grammar, null, 2) }]);
+    print({ status: "pass", outputPath, grammarPath, slides: elements.slides.length, roleOverrides: Object.keys(overrides).length });
     return;
   }
 
@@ -252,13 +285,17 @@ async function main(): Promise<void> {
     const normalizedPlanPath = path.join(runDir, "deck-plan.json");
     fs.writeFileSync(normalizedPlanPath, JSON.stringify(report.plan, null, 2));
     fs.writeFileSync(path.join(runDir, "content-qa.json"), JSON.stringify({ status: "pass", findings: [] }, null, 2));
+    // The run directory holds the copy every later stage re-hashes; a ContentModel that only ever
+    // existed at the caller's path cannot be checked for drift later.
+    const runContentModelPath = path.join(runDir, "content-model.json");
+    fs.writeFileSync(runContentModelPath, JSON.stringify(contentModel, null, 2));
     const reportPath = path.join(runDir, "planning-qa.json");
     fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
     const existing = fs.existsSync(path.join(runDir, "artifact-provenance.json")) ? readJson(path.join(runDir, "artifact-provenance.json")) as Record<string, string> : {};
     writeArtifactProvenance(runDir, {
       ...existing,
       contractDigest: sha256File(contractPath),
-      contentModelDigest: sha256File(contentModelPath),
+      contentModelDigest: sha256File(runContentModelPath),
       deckPlanDigest: sha256(JSON.stringify(report.plan)),
     });
     emitReport({ ...report, findings: report.findings }, reportPath);
@@ -276,6 +313,14 @@ async function main(): Promise<void> {
     if (!fs.existsSync(provenancePath)) throw new Error("Composition resolution requires artifact-provenance.json.");
     const provenance = readJson(provenancePath) as Record<string, string>;
     if (!provenance.contractDigest || !provenance.contentModelDigest) throw new Error("Composition resolution requires contract and ContentModel provenance.");
+    // Recording a digest and never re-checking it is not a provenance chain. Every upstream input
+    // is re-hashed here, so editing the contract, the ContentModel, or the reference selection after
+    // planning blocks resolution instead of silently resolving against a plan nobody re-validated.
+    assertFresh(runDir, provenance, [
+      ["contractDigest", "contract.json"],
+      ["contentModelDigest", "content-model.json"],
+      ["referenceSelectionDigest", "reference-selection.json"],
+    ]);
     if (provenance.deckPlanDigest !== sha256(JSON.stringify(readJson(planPath)))) throw new Error("Composition resolution blocked: deck plan digest is stale.");
     const styleContext = readJson(styleContextPath);
     const grammarPath = path.join(runDir, "template-grammar.json");

@@ -16,7 +16,7 @@ const EMU_PER_INCH = 914400;
 export const semanticRoles = ["title", "subtitle", "heading", "body", "caption", "eyebrow", "label", "key_message", "metric", "metric_label", "annotation", "step", "route", "source", "logo", "footer", "surface", "divider"] as const;
 export type SemanticRole = (typeof semanticRoles)[number];
 export type TemplateTextStyle = { family?: string; sizePt?: number; weight?: number; italic?: boolean; color?: string; lineHeightRatio?: number; alignment?: "left" | "center" | "right" };
-export type TemplateElement = { id: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string } };
+export type TemplateElement = { id: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
 export type TemplateElementsArtifact = { version: 1; source: { sha256: string; slideSize: { w: number; h: number } }; slides: Array<{ id: string; elements: TemplateElement[] }>; styles: Record<string, TemplateTextStyle> };
 export type TemplateGrammar = {
   version: 1;
@@ -30,15 +30,67 @@ export type TemplateGrammar = {
   compositionPatterns: Array<{ id: string; family: CompositionFamily; functions: SlideFunction[]; visualIntents: PlanVisualIntent[]; density: "low" | "medium" | "high"; confidence: number }>;
 };
 
-export function classifyTemplateElement(element: Pick<TemplateElement, "id" | "type" | "bounds" | "features">, slideSize: { w: number; h: number }, overrides: Record<string, SemanticRole> = {}): Pick<TemplateElement, "role" | "confidence"> {
+// Role precedence is deliberate: what PowerPoint itself declares (placeholder type) outranks what
+// the designer named the shape, which outranks a text token left in the body, which outranks the
+// typographic role its size implies, which outranks bare geometry. Every step down that list is a
+// weaker claim about intent, and the confidence reported with the role says so.
+const PLACEHOLDER_ROLES: Record<string, SemanticRole> = { ctrTitle: "title", title: "title", subTitle: "subtitle", ftr: "footer", sldNum: "footer", dt: "footer", body: "body" };
+const NAMED_ROLES: Array<[RegExp, SemanticRole]> = [
+  [/title|headline/, "title"],
+  [/subtitle|sub-title/, "subtitle"],
+  [/eyebrow|kicker/, "eyebrow"],
+  [/caption/, "caption"],
+  [/source|출처|出典/, "source"],
+  [/metric|kpi/, "metric"],
+  [/heading/, "heading"],
+];
+
+export type TypographyContext = { sizePt?: number; maxSizePt?: number; medianSizePt?: number };
+
+export function classifyTemplateElement(
+  element: Pick<TemplateElement, "id" | "type" | "bounds" | "features">,
+  slideSize: { w: number; h: number },
+  overrides: Record<string, SemanticRole> = {},
+  typography: TypographyContext = {},
+): Pick<TemplateElement, "role" | "confidence"> {
   if (overrides[element.id]) return { role: overrides[element.id], confidence: 1 };
-  const name = element.id.toLowerCase();
-  if (/title|headline/.test(name)) return { role: "title", confidence: 0.95 };
+
+  const placeholderRole = PLACEHOLDER_ROLES[element.features.placeholderType ?? ""];
+  if (placeholderRole) {
+    // A footer placeholder parked in the middle of the canvas is a repurposed placeholder, not chrome.
+    if (placeholderRole !== "footer" || element.bounds.y + element.bounds.h >= slideSize.h * 0.8) return { role: placeholderRole, confidence: 0.95 };
+  }
+
+  const name = `${element.id} ${element.features.altText ?? ""}`.toLowerCase();
   if (/footer/.test(name)) return element.bounds.y + element.bounds.h >= slideSize.h * 0.9 ? { role: "footer", confidence: 0.85 } : { role: "unknown", confidence: 0 };
   if (/logo/.test(name) && element.type === "image") return { role: "logo", confidence: 0.9 };
   if (/divider|line/.test(name) || element.type === "line") return { role: "divider", confidence: 0.8 };
+  const named = NAMED_ROLES.find(([pattern]) => pattern.test(name));
+  if (named) return { role: named[1], confidence: 0.9 };
+
+  const token = element.features.placeholderToken?.toLowerCase();
+  if (token) {
+    const tokenRole = NAMED_ROLES.find(([pattern]) => pattern.test(token));
+    if (tokenRole) return { role: tokenRole[1], confidence: 0.8 };
+    if (/body|text|content/.test(token)) return { role: "body", confidence: 0.8 };
+  }
+
   if (element.type === "text" && element.features.numericOnly && element.bounds.w >= slideSize.w * 0.15) return { role: "metric", confidence: 0.75 };
+
+  const { sizePt, maxSizePt, medianSizePt } = typography;
+  if (element.type === "text" && sizePt && maxSizePt && medianSizePt) {
+    if (sizePt >= maxSizePt * 0.9 && maxSizePt > medianSizePt) return { role: "title", confidence: 0.6 };
+    if (sizePt >= medianSizePt * 1.25) return { role: "heading", confidence: 0.55 };
+    if (sizePt <= medianSizePt * 0.75) return { role: "caption", confidence: 0.5 };
+    return { role: "body", confidence: 0.5 };
+  }
   return { role: "unknown", confidence: 0 };
+}
+
+function typographyContext(element: TemplateElement, siblings: TemplateElement[], styles: Record<string, TemplateTextStyle>): TypographyContext {
+  const sizes = siblings.filter((sibling) => sibling.type === "text").map((sibling) => (sibling.styleRef ? styles[sibling.styleRef]?.sizePt : undefined)).filter((size): size is number => Boolean(size)).sort((a, b) => a - b);
+  if (sizes.length === 0) return {};
+  return { sizePt: element.styleRef ? styles[element.styleRef]?.sizePt : undefined, maxSizePt: sizes[sizes.length - 1], medianSizePt: sizes[Math.floor(sizes.length / 2)] };
 }
 
 export function classifyTemplateElements(artifact: TemplateElementsArtifact, overrides: Record<string, SemanticRole> = {}): TemplateElementsArtifact {
@@ -46,7 +98,7 @@ export function classifyTemplateElements(artifact: TemplateElementsArtifact, ove
     ...artifact,
     slides: artifact.slides.map((slide) => ({
       ...slide,
-      elements: slide.elements.map((element) => ({ ...element, ...classifyTemplateElement(element, artifact.source.slideSize, overrides) })),
+      elements: slide.elements.map((element) => ({ ...element, ...classifyTemplateElement(element, artifact.source.slideSize, overrides, typographyContext(element, slide.elements, artifact.styles)) })),
     })),
   };
 }
@@ -153,9 +205,19 @@ function elementId(node: Element, slideId: string, index: number): string {
   return `${slideId}-${name.replace(/[^A-Za-z0-9_-]+/g, "-")}-${index + 1}`;
 }
 
+const PLACEHOLDER_TOKEN = /^[\[{<]{1,2}\s*([^\]}>]{1,40}?)\s*[\]}>]{1,2}$/;
+
 function feature(node: Element): TemplateElement["features"] {
   const text = all(node, A_NS, "t").map((part) => part.textContent ?? "").join("");
-  return text ? { charCount: text.length, lineCount: Math.max(1, text.split(/\r?\n/).length), numericOnly: /^\s*[\d.,%¥$]+\s*$/.test(text) || undefined } : {};
+  // A template's own declarations, not our guesses: <p:ph type> is what PowerPoint binds a shape to,
+  // and cNvPr/@descr is where a designer writes what a shape is for when the name is generic.
+  const placeholderType = first(node, P_NS, "ph")?.getAttribute("type") ?? undefined;
+  const altText = first(node, P_NS, "cNvPr")?.getAttribute("descr") || undefined;
+  const placeholderToken = text.trim().match(PLACEHOLDER_TOKEN)?.[1];
+  const base = { placeholderType, altText, placeholderToken };
+  return text
+    ? { ...base, charCount: text.length, lineCount: Math.max(1, text.split(/\r?\n/).length), numericOnly: /^\s*[\d.,%¥$]+\s*$/.test(text) || undefined }
+    : base;
 }
 
 function typeOf(node: Element): TemplateElement["type"] | undefined {
@@ -192,7 +254,7 @@ function extractSlide(xml: string, slideId: string, styles: Record<string, Templ
   return elements;
 }
 
-export async function extractTemplateElements(pptxPath: string): Promise<TemplateElementsArtifact> {
+export async function extractTemplateElements(pptxPath: string, overrides: Record<string, SemanticRole> = {}): Promise<TemplateElementsArtifact> {
   const bytes = fs.readFileSync(path.resolve(pptxPath));
   const zip = await JSZip.loadAsync(bytes);
   const presentationXml = await zip.file("ppt/presentation.xml")?.async("string");
@@ -212,5 +274,5 @@ export async function extractTemplateElements(pptxPath: string): Promise<Templat
     const id = `S${String(index + 1).padStart(2, "0")}`;
     slides.push({ id, elements: extractSlide(xml, id, styles) });
   }
-  return classifyTemplateElements({ version: 1, source: { sha256: crypto.createHash("sha256").update(bytes).digest("hex"), slideSize }, slides, styles });
+  return classifyTemplateElements({ version: 1, source: { sha256: crypto.createHash("sha256").update(bytes).digest("hex"), slideSize }, slides, styles }, overrides);
 }
