@@ -8,7 +8,7 @@ import { renderDeck } from "./renderer";
 import { contentModelSchema, contractSchema, deckSchema, type ContentModel } from "./schema";
 import { mergeFindings, mergeQa, ooxmlQa, runPowerPointQa, structuralQa, verifySourceRefs } from "./qa";
 import { loadReferenceIndex, previewPathsFor, queryFromContract, retrieveReferences } from "./reference";
-import { buildDeckContext, renderVisual, verifyRenderProvenance } from "./visual";
+import { buildDeckContext, renderTemplatePreview, renderVisual, verifyRenderProvenance } from "./visual";
 import { visualQa, type ProvenanceFinding } from "./visual-qa";
 import { applyRepair, buildRepairContext, recordRepairAttempt } from "./repair";
 import { resolvePresentationStyle, styleContext } from "./style";
@@ -19,6 +19,7 @@ import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAga
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
 import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
+import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema } from "./template-patterns";
 import { templateMapSchema } from "./organization";
 import { createRunWorkspace, removeRunWorkspace } from "./workspace";
 
@@ -281,7 +282,7 @@ export async function release(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|plan-validate|composition-resolve|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|template-preview|pattern-label|plan-validate|composition-resolve|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
@@ -375,11 +376,43 @@ async function main(): Promise<void> {
     const overrides = map?.version === 2 ? map.elementRoleOverrides : {};
     const elements = await extractTemplateElements(input, overrides);
     const grammar = compileTemplateGrammar(elements);
+    const patterns = compileTemplatePatterns(elements, grammar);
     fs.mkdirSync(out, { recursive: true });
     const outputPath = path.join(out, "template-elements.json");
     const grammarPath = path.join(out, "template-grammar.json");
-    writeArtifactPair([{ path: outputPath, contents: JSON.stringify(elements, null, 2) }, { path: grammarPath, contents: JSON.stringify(grammar, null, 2) }]);
-    print({ status: "pass", outputPath, grammarPath, slides: elements.slides.length, strategy: elements.strategy, roleOverrides: Object.keys(overrides).length });
+    const patternsPath = path.join(out, "template-patterns.json");
+    writeArtifactPair([
+      { path: outputPath, contents: JSON.stringify(elements, null, 2) },
+      { path: grammarPath, contents: JSON.stringify(grammar, null, 2) },
+      { path: patternsPath, contents: JSON.stringify(patterns, null, 2) },
+    ]);
+    print({ status: "pass", outputPath, grammarPath, patternsPath, slides: elements.slides.length, strategy: elements.strategy, patterns: patterns.patterns.length, roleOverrides: Object.keys(overrides).length });
+    return;
+  }
+
+  if (command === "template-preview") {
+    const input = option(args, "--input");
+    const runDir = option(args, "--run-dir");
+    const templateDir = path.join(path.resolve(runDir), "template");
+    const elementsPath = path.join(templateDir, "template-elements.json");
+    // Reuses template-analyze's own output when it already ran (the documented order), but does
+    // not require it — a montage is legitimately useful before deciding whether to analyze further.
+    const slideCount = fs.existsSync(elementsPath) ? (readJson(elementsPath) as { slides: unknown[] }).slides.length : (await extractTemplateElements(input)).slides.length;
+    const { rendered, montagePath } = await renderTemplatePreview(input, templateDir, slideCount);
+    print({ status: "pass", montagePath, slides: rendered.length });
+    return;
+  }
+
+  if (command === "pattern-label") {
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const labelsPath = option(args, "--labels");
+    const patternsPath = path.join(runDir, "template", "template-patterns.json");
+    if (!fs.existsSync(patternsPath)) throw new Error(`pattern-label requires ${patternsPath}. Run \`template-analyze\` first.`);
+    const labels = patternLabelSchema.parse(readJson(labelsPath));
+    const patterns = readJson(patternsPath) as Parameters<typeof applyPatternLabels>[0];
+    const labeled = applyPatternLabels(patterns, labels);
+    fs.writeFileSync(patternsPath, JSON.stringify(labeled, null, 2));
+    print({ status: "pass", outputPath: patternsPath, labeled: labels.length });
     return;
   }
 

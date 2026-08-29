@@ -132,10 +132,20 @@ export function classifyTemplateElement(
   return { role: "unknown", confidence: 0 };
 }
 
+function median(sorted: number[]): number {
+  const mid = sorted.length / 2;
+  // Standard median: for an even count this is the midpoint between the two central values, not
+  // either one of them alone — Math.floor(length/2) on its own returns the *upper* of the two
+  // central values, which for a 2-element array is simply the max again. That collapsed
+  // maxSizePt === medianSizePt on any 2-text-element slide, which failed the classifier's own
+  // `maxSizePt > medianSizePt` title check and silently misclassified the larger text as "body".
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[Math.floor(mid)];
+}
+
 function typographyContext(element: TemplateElement, siblings: TemplateElement[], styles: Record<string, TemplateTextStyle>): TypographyContext {
   const sizes = siblings.filter((sibling) => sibling.type === "text").map((sibling) => (sibling.styleRef ? styles[sibling.styleRef]?.sizePt : undefined)).filter((size): size is number => Boolean(size)).sort((a, b) => a - b);
   if (sizes.length === 0) return {};
-  return { sizePt: element.styleRef ? styles[element.styleRef]?.sizePt : undefined, maxSizePt: sizes[sizes.length - 1], medianSizePt: sizes[Math.floor(sizes.length / 2)] };
+  return { sizePt: element.styleRef ? styles[element.styleRef]?.sizePt : undefined, maxSizePt: sizes[sizes.length - 1], medianSizePt: median(sizes) };
 }
 
 function classifyElements(elements: TemplateElement[], slideSize: { w: number; h: number }, overrides: Record<string, SemanticRole>, styles: Record<string, TemplateTextStyle>): TemplateElement[] {

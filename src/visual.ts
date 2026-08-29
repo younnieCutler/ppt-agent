@@ -296,6 +296,21 @@ export function verifyRenderProvenance(runDir: string, pptxPath: string, deck: D
   return [];
 }
 
+/**
+ * Rasterizes a raw template.pptx's own slides — no DeckSpec, no render provenance, because a
+ * template preview is not a judged deliverable render. Reuses the exact backend selection, PDF
+ * pinning, and montage compositor renderVisual uses below, just without the DeckSpec-shaped
+ * bookkeeping that has nothing to inspect here.
+ */
+export async function renderTemplatePreview(pptxPath: string, outputDir: string, slideCount: number): Promise<{ rendered: RenderedSlide[]; montagePath: string }> {
+  const slideMap: SlideMapEntry[] = Array.from({ length: slideCount }, (_, index) => ({ slideId: `S${String(index + 1).padStart(2, "0")}`, index: index + 1 }));
+  const backend = selectBackend();
+  const rendered = await backend.render(pptxPath, outputDir, slideMap);
+  const renderDir = renderDirFor(outputDir);
+  await writeMontage(renderDir, rendered);
+  return { rendered, montagePath: path.join(renderDir, "montage.png") };
+}
+
 export async function renderVisual(deck: DeckSpec, pptxPath: string, runDir: string, slideIds?: string[], style?: ResolvedPresentationStyle): Promise<RenderedSlide[]> {
   const ids = slideIds ?? deck.slides.map((slide) => slide.id);
   const slideMap: SlideMapEntry[] = ids.map((slideId) => {

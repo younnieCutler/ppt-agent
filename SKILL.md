@@ -74,6 +74,27 @@ so both resolve the same way downstream:
   ```
 - **Organization Template Pack (advanced/reusable mode)** — `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`). `contract.template: { kind: "organization", path }` is equivalent; use whichever the contract already carries.
 
+When `template-analyze`'s printed `strategy` is `source_slide_pattern` (design lives in the example
+slide bodies, not the master/layout — GAO is this shape) or `hybrid`, it also writes
+`<out>/template-patterns.json`: one `TemplatePattern` per source slide, with `skeleton.replaceableSlots`
+already bound to real `SlideSpec` fields (`headline`, `content.body`, `content.left.label`, …) and
+`skeleton.preservedShapeIds`/`removableContentIds` already sanitization-classified. A pattern's
+`suitableFor.functions` starts empty — geometry alone cannot prove "this source slide is the cover" —
+so look at the template's own montage and tell it which `SlideFunction` each source slide serves:
+
+```sh
+node dist/cli.js template-preview --input <path-to>.pptx --run-dir <run-dir>
+# → <run-dir>/template/visual/montage.png (the template's own slides, labeled by source slide id).
+
+# Look at the montage, then write <run-dir>/pattern-labels.json:
+# [{ "sourceSlideId": "S01", "functions": ["cover"] }, { "sourceSlideId": "S03", "functions": ["statement"] }]
+
+node dist/cli.js pattern-label --run-dir <run-dir> --labels <run-dir>/pattern-labels.json
+# → merges into <run-dir>/template/template-patterns.json. functions/compositionFamily only —
+#   an invented SlideFunction is rejected, and there is no field here that could ever hold a
+#   coordinate or a shapeId.
+```
+
 Aspect ratio:
 
 - **default / no-organization renderer: 16:9 only** — a plain 4:3 deck is rejected.
