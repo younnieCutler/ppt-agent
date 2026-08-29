@@ -151,14 +151,18 @@ node dist/cli.js validate --spec <deck.json> --run-dir <run-dir>
 node dist/cli.js render --spec <deck.json> --out <draft.pptx> [--run-dir <run-dir>]
 node dist/cli.js qa --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--powerpoint]
 
-# 6.5. If pattern-resolve ran: clone each slide's rank-1 source-slide pattern instead of shipping
-#      the generic <draft.pptx> render. --scratch is the generic render from step 6 above; --out
-#      replaces it as the deck actually released.
+# 6.5. If pattern-resolve ran: for each slide, walk its ranked candidate shortlist and clone the
+#      first source-slide pattern that would actually carry the slide's real content and fit its
+#      required slots (patternFitsSlide, src/template-patterns.ts) — not unconditionally rank 1.
+#      --scratch is the generic render from step 6 above; --out replaces it as the deck actually
+#      released.
 node dist/cli.js render-pattern-skeleton --spec <deck.json> --scratch <draft.pptx>     --template <path-to>.pptx --out <draft.pptx> --run-dir <run-dir>
-# → clones the source slide, removes its example content, injects real DeckSpec content into its
-#   slots (never a shapeId or a coordinate — resolveSlotContent in src/template-patterns.ts),
-#   preserves everything the pattern did not touch, and writes <run-dir>/render-manifest.json:
-#   "renderer" | "pattern:<patternId>" per slide. A slide with no resolved pattern falls through
+# → clones the chosen source slide, removes its example content, injects real DeckSpec content
+#   into its slots (never a shapeId or a coordinate — resolveSlotContent in
+#   src/template-patterns.ts), preserves everything the pattern did not touch, and writes
+#   <run-dir>/render-manifest.json ("renderer" | "pattern:<patternId>" per slide) and
+#   <run-dir>/pattern-selection.json (the chosen candidate's rank and every higher-ranked candidate
+#   rejected along the way, with why). A slide with no fitting candidate at any rank falls through
 #   to the generic render at the same position — legitimate for hybrid, and exactly what
 #   TEMPLATE_FIDELITY_UNPROVEN exists to catch on a pure source_slide_pattern template.
 ```

@@ -143,6 +143,21 @@ describe("resolveSlotContent", () => {
     const result = resolveSlotContent(statement, "content.proofs[]");
     expect(Array.isArray(result) || typeof result === "string" || result === undefined).toBe(true);
   });
+
+  it("content.steps[] carries a step's detail and members, not just its label", () => {
+    const process: SlideSpec = {
+      id: "S04", role: "body", storyBeat: "implementation", headline: "Three stages", headlineAlignment: "left",
+      claims: [{ text: "Three stages" }], composition: "sequence", sourceRefs: [{ sourceId: "src1", excerptId: "ex1" }],
+      layout: "process",
+      content: { steps: [{ id: "a", label: "Design", detail: "wireframes and review", members: ["Alice", "Bob"] }, { id: "b", label: "Build" }] },
+    } as unknown as SlideSpec;
+    const result = resolveSlotContent(process, "content.steps[]") as string[];
+    expect(result[0]).toContain("Design");
+    expect(result[0]).toContain("wireframes and review");
+    expect(result[0]).toContain("Alice");
+    expect(result[0]).toContain("Bob");
+    expect(result[1]).toBe("Build");
+  });
 });
 
 describe("pattern-label host contract", () => {

@@ -223,6 +223,17 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
  * (e.g. `content.left.label` on a `statement` slide), which the caller treats as "no content for
  * this slot," not an error.
  */
+/** Flattens a process step's label, optional detail, and optional member list into one string —
+ * shared by `content.body` (process content joined into a single body-role slot) and
+ * `content.steps[]` (one slot per step) so neither drops `detail`/`members` while the other keeps
+ * them. */
+function flattenStep(step: { label: string; detail?: string; members?: string[] }): string {
+  const parts = [step.label];
+  if (step.detail) parts.push(step.detail);
+  if (step.members && step.members.length > 0) parts.push(`(${step.members.join(", ")})`);
+  return parts.join(" — ");
+}
+
 export function resolveSlotContent(slide: SlideSpec, binding: SlotBindingPath): string | string[] | undefined {
   switch (binding) {
     case "headline":
@@ -239,13 +250,13 @@ export function resolveSlotContent(slide: SlideSpec, binding: SlotBindingPath): 
       // a chart, not prose) and stay unsupported here — a pattern with only this slot is not a
       // fit for those layouts, which the Pattern Resolver's capacity/content check must reject.
       if (slide.layout === "statement") return slide.content.body;
-      if (slide.layout === "process") return slide.content.steps.map((step) => step.detail ? `${step.label}: ${step.detail}` : step.label);
+      if (slide.layout === "process") return slide.content.steps.map(flattenStep);
       if (slide.layout === "evidence") return slide.content.bullets;
       if (slide.layout === "timeline") return slide.content.milestones.map((milestone) => `${milestone.date} — ${milestone.label}`);
       if (slide.layout === "comparison") return [`${slide.content.left.label}: ${slide.content.left.items.join(", ")}`, `${slide.content.right.label}: ${slide.content.right.items.join(", ")}`];
       return undefined;
     case "content.steps[]":
-      return slide.layout === "process" ? slide.content.steps.map((step) => step.label) : undefined;
+      return slide.layout === "process" ? slide.content.steps.map(flattenStep) : undefined;
     case "content.proofs[]":
       return slide.layout === "statement" ? slide.content.proofs : undefined;
     case "content.metrics[]":
@@ -267,27 +278,36 @@ export function resolveSlotContent(slide: SlideSpec, binding: SlotBindingPath): 
   }
 }
 
+// `headline` and `source` resolve on every slide regardless of layout (every SlideSpec has a
+// headline; `sourceRefs` is required, min 1) — a pattern offering only one of these would trivially
+// pass a "did any non-headline slot resolve" test without carrying any of the slide's actual
+// layout-specific payload. Neither counts as evidence a pattern carries real content.
+const UNIVERSAL_BINDINGS = new Set<SlotBindingPath>(["headline", "source"]);
+
+export function slotCarriesRealContent(slide: SlideSpec, slot: Pick<TemplateSlot, "binding">): boolean {
+  if (UNIVERSAL_BINDINGS.has(slot.binding)) return false;
+  const content = resolveSlotContent(slide, slot.binding);
+  return content !== undefined && (!Array.isArray(content) || content.length > 0);
+}
+
 /**
  * Whether cloning `pattern` for `slide` would actually carry the slide's real payload, not just
  * its headline — and would not visibly overflow a required slot. The Pattern Resolver uses this
  * to pick the first candidate (by rank) that fits rather than always rendering rank 1, and
- * `checkTemplateSemanticContentDropped` (template-fidelity.ts) uses the same "did any non-headline
- * slot resolve real content" question to catch it after the fact if a caller renders directly
+ * `checkTemplateSemanticContentDropped` (template-fidelity.ts) uses the same
+ * `slotCarriesRealContent` question to catch it after the fact if a caller renders directly
  * against a resolved pattern without going through this gate.
  *
- * `title`/`quantitative` layouts are exempt from the "some non-headline slot resolved" test: a
- * cover's only real payload often *is* its headline/subtitle, and quantitative content already has
- * its own dedicated `content.metrics[]` binding checked like any other slot.
+ * `title` alone is exempt: a cover's only real payload often *is* its headline/subtitle. Every
+ * other layout — including `quantitative` — is checked; `architecture`/`pipeline`/`chart` have no
+ * binding for their structured payload (a graph or a chart is not prose) and so correctly never
+ * pass this test with any pattern today, which is the honest "not supported yet" outcome rather
+ * than a silent headline-only render.
  */
 export function patternFitsSlide(pattern: TemplatePattern, slide: SlideSpec): boolean {
   const slots = pattern.skeleton.replaceableSlots;
-  if (slide.layout !== "title" && slide.layout !== "quantitative") {
-    const carriesRealContent = slots.some((slot) => {
-      if (slot.binding === "headline") return false;
-      const content = resolveSlotContent(slide, slot.binding);
-      return content !== undefined && (!Array.isArray(content) || content.length > 0);
-    });
-    if (!carriesRealContent) return false;
+  if (slide.layout !== "title") {
+    if (!slots.some((slot) => slotCarriesRealContent(slide, slot))) return false;
   }
   return !slots.some((slot) => {
     if (!slot.required || slot.maxChars === undefined) return false;

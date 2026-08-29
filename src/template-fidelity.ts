@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
 import type { QaFinding } from "./qa";
 import type { DeckSpec, SlideSpec } from "./schema";
-import { resolveSlotContent, type TemplatePattern } from "./template-patterns";
+import { resolveSlotContent, slotCarriesRealContent, type TemplatePattern } from "./template-patterns";
 import type { TemplateStrategy } from "./template-analysis";
 import { displayWidth } from "./typography";
 
@@ -259,22 +259,20 @@ export function checkTemplateSlotCapacity(deck: Pick<DeckSpec, "slides">, chosen
  * pattern's editability guarantee comes from being real copied shapes, not from matching that
  * contract — see the exemption's own comment in qa.ts). That exemption must never be read as
  * covering *content* too: this is the independent, non-exempted check for whether the slide's real
- * payload — not just its headline — actually reached a slot. `title`/`quantitative` layouts are
- * skipped, matching `patternFitsSlide`'s own reasoning (a cover's payload is its headline/subtitle;
- * quantitative content has its own dedicated binding already covered by this same test on other
- * layouts and by checkTemplateSlotCapacity).
+ * payload — not just its headline — actually reached a slot. Only `title` is skipped, matching
+ * `patternFitsSlide`'s own reasoning (a cover's payload is legitimately its headline/subtitle).
+ * `quantitative` is checked like every other layout — `content.metrics[]` is its real payload and
+ * a headline-only pattern must not pass just because it also happens to carry a `source` slot
+ * (`slotCarriesRealContent` excludes `headline`/`source` from counting, since both resolve on
+ * every slide regardless of layout and prove nothing about this slide's actual content).
  */
 export function checkTemplateSemanticContentDropped(deck: Pick<DeckSpec, "slides">, chosenPatterns: Map<string, TemplatePattern>): QaFinding[] {
   const findings: QaFinding[] = [];
   for (const slide of deck.slides as SlideSpec[]) {
     const pattern = chosenPatterns.get(slide.id);
     if (!pattern) continue;
-    if (slide.layout === "title" || slide.layout === "quantitative") continue;
-    const carriesRealContent = pattern.skeleton.replaceableSlots.some((slot) => {
-      if (slot.binding === "headline") return false;
-      const content = resolveSlotContent(slide, slot.binding);
-      return content !== undefined && (!Array.isArray(content) || content.length > 0);
-    });
+    if (slide.layout === "title") continue;
+    const carriesRealContent = pattern.skeleton.replaceableSlots.some((slot) => slotCarriesRealContent(slide, slot));
     if (!carriesRealContent) {
       findings.push({
         severity: "hard",

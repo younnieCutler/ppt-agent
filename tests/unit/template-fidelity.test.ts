@@ -154,4 +154,31 @@ describe("patternFitsSlide", () => {
   it("accepts a candidate whose slot resolves the slide's real content and fits", () => {
     expect(patternFitsSlide(withBodySlot, evidenceSlide)).toBe(true);
   });
+
+  const quantitativeSlide: SlideSpec = {
+    id: "S01", role: "body", storyBeat: "evidence", headline: "42% adoption", headlineAlignment: "left",
+    claims: [{ text: "42% adoption" }], composition: "ranked_bars", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+    layout: "quantitative", content: { kind: "bar", metrics: [{ label: "Adoption", value: 42, unit: "%", period: "Q3" }] },
+  } as unknown as SlideSpec;
+
+  it("rejects a headline-only pattern for a quantitative slide — metrics is its real payload and was previously exempt from this check entirely", () => {
+    expect(patternFitsSlide(headlineOnlyPattern, quantitativeSlide)).toBe(false);
+  });
+
+  it("accepts a pattern with a content.metrics[] slot for a quantitative slide", () => {
+    const withMetricsSlot: TemplatePattern = {
+      ...headlineOnlyPattern,
+      skeleton: { ...headlineOnlyPattern.skeleton, replaceableSlots: [...headlineOnlyPattern.skeleton.replaceableSlots, { id: "slot2", role: "metric", binding: "content.metrics[]", shapeId: "Metric", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false }] },
+    };
+    expect(patternFitsSlide(withMetricsSlot, quantitativeSlide)).toBe(true);
+  });
+
+  it("does not let a `source` slot alone count as real content — every slide has sourceRefs regardless of layout, so this must not defeat the check", () => {
+    const sourceOnlyPattern: TemplatePattern = {
+      ...headlineOnlyPattern,
+      skeleton: { ...headlineOnlyPattern.skeleton, replaceableSlots: [...headlineOnlyPattern.skeleton.replaceableSlots, { id: "slot2", role: "source", binding: "source", shapeId: "Source", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false }] },
+    };
+    expect(patternFitsSlide(sourceOnlyPattern, evidenceSlide)).toBe(false);
+    expect(patternFitsSlide(sourceOnlyPattern, quantitativeSlide)).toBe(false);
+  });
 });
