@@ -64,17 +64,32 @@ Two ways to give the run a template, normalized by `resolveTemplateSourceSpec` (
 so both resolve the same way downstream:
 
 - **Raw `.pptx` (default, ChatGPT-shaped)** — `contract.template: { kind: "pptx", path: "<path-to>.pptx" }`.
-  Nothing else is required: no `brand.yaml`, no `template-map.json`. Analyze it straight into the run
-  workspace, never next to the user's own file:
-  ```sh
-  node dist/cli.js template-analyze --input <path-to>.pptx --out <run-dir>/template
-  # → <run-dir>/template/{template-elements,template-grammar}.json, printed strategy:
-  #   "native_layout" | "source_slide_pattern" | "hybrid". Deleted with the rest of the run
-  #   workspace on a successful release — nothing about a raw pptx template is ever cached.
-  ```
+  Nothing else is required: no `brand.yaml`, no `template-map.json`.
 - **Organization Template Pack (advanced/reusable mode)** — `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`). `contract.template: { kind: "organization", path }` is equivalent; use whichever the contract already carries.
 
-When `template-analyze`'s printed `strategy` is `source_slide_pattern` (design lives in the example
+**Run `template-analyze` for either kind, always, before deciding how to render — never assume**
+**an Organization Pack's own `template.pptx` is `native_layout` just because it already has a**
+**`brand.yaml`/`template-map.json`.** Brand tokens say nothing about where the pack's *design*
+lives; a real company template routinely has both a pre-built pack *and* a design that lives
+entirely in its example slide bodies (GAO is exactly this — brand.yaml + template-map.json, and
+`strategy: source_slide_pattern` with 16 real patterns). Skipping straight from an Organization
+Pack to `render` reproduces the original failure this whole workflow exists to fix: the pack's
+real slides never get reused, `render` silently redraws a generic deck in the brand's colors
+instead, and it *looks* on-brand enough to not obviously be wrong. `qa` now hard-fails this
+(`TEMPLATE_FIDELITY_UNPROVEN`, unconditional — fires even if `render-pattern-skeleton` was never
+run at all, not just when it produced a generically-rendered slide) — but analyzing first is the
+one action that avoids ever reaching that failure:
+
+```sh
+node dist/cli.js template-analyze --input <path-to>.pptx --out <run-dir>/template
+# → <run-dir>/template/{template-elements,template-grammar}.json, printed strategy:
+#   "native_layout" | "source_slide_pattern" | "hybrid". <path-to>.pptx is the raw file for
+#   contract.template, or <organization-path>/template.pptx for contract.organization. Deleted
+#   with the rest of the run workspace on a successful release either way — nothing about a
+#   template is cached outside a v2/v3 Organization Pack's own cache.
+```
+
+When the printed `strategy` is `source_slide_pattern` (design lives in the example
 slide bodies, not the master/layout — GAO is this shape) or `hybrid`, it also writes
 `<out>/template-patterns.json`: one `TemplatePattern` per source slide, with `skeleton.replaceableSlots`
 already bound to real `SlideSpec` fields (`headline`, `content.body`, `content.left.label`, …) and

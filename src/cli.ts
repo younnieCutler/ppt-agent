@@ -20,7 +20,7 @@ import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } 
 import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
 import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, selectPatternsForSlides, type TemplatePattern } from "./template-patterns";
-import { checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
+import { checkTemplateFidelityUnproven, checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
 import { applyPatternSkeleton } from "./template";
 import { templateMapSchema } from "./organization";
 import { resolveTemplateSourceSpec } from "./template-source";
@@ -822,6 +822,24 @@ async function main(): Promise<void> {
     const sourceTemplatePath = templateSource
       ? path.resolve(projectDir, templateSource.kind === "organization" ? path.join(templateSource.path, "template.pptx") : templateSource.path)
       : undefined;
+    // `render-pattern-skeleton` never even ran: no render-manifest.json exists at all. The block
+    // below (templateFidelityQa, which itself calls checkTemplateFidelityUnproven) only runs when
+    // renderManifest is truthy, so that check was entirely unreachable in exactly the case it
+    // exists to catch — going straight from an Organization Pack's brand.yaml to `render`+`qa`
+    // silently reproduces the original failure this whole feature exists to fix: a
+    // source_slide_pattern template (design lives in slide-body shapes, not the master/layout —
+    // GAO is this shape) rendered generically from scratch, passing Core QA clean. Determine
+    // strategy directly (from a cached template-elements.json if template-analyze happened to run
+    // anyway, else fresh) and treat every slide as generically-rendered, since none of them went
+    // through a pattern at all.
+    if (!renderManifest && sourceTemplatePath && fs.existsSync(sourceTemplatePath)) {
+      const elementsPathForStrategy = path.join(path.resolve(runDir), "template", "template-elements.json");
+      const strategy = fs.existsSync(elementsPathForStrategy)
+        ? (readJson(elementsPathForStrategy) as { strategy: import("./template-analysis").TemplateStrategy }).strategy
+        : (await extractTemplateElements(sourceTemplatePath)).strategy;
+      const allGenericManifest = deck.slides.map((slide) => ({ slideId: slide.id, mode: "renderer" }));
+      report = mergeFindings(report, checkTemplateFidelityUnproven(strategy, allGenericManifest));
+    }
     if (renderManifest && sourceTemplatePath && fs.existsSync(sourceTemplatePath) && fs.existsSync(path.resolve(pptxPath))) {
       const manifest = renderManifest;
       const patternsPath = path.join(path.resolve(runDir), "template", "template-patterns.json");
