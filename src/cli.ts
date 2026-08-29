@@ -794,13 +794,15 @@ async function main(): Promise<void> {
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
     const canonicalDeck = { ...deck, theme: { schemaVersion: style.schemaVersion, id: style.themeId, palette: style.palette, data: style.data } };
     const structural = structuralQa(canonicalDeck, projectDir, contentModelPath, referenceSelectionPath);
+    const renderManifestPath = path.join(path.resolve(runDir), "render-manifest.json");
+    const renderManifest = fs.existsSync(renderManifestPath) ? (readJson(renderManifestPath) as import("./template-fidelity").RenderManifestEntry[]) : undefined;
+    const patternRenderedSlideIds = new Set((renderManifest ?? []).filter((entry) => entry.mode.startsWith("pattern:")).map((entry) => entry.slideId));
     const ooxmlFindings = fs.existsSync(path.resolve(pptxPath))
-      ? await ooxmlQa(pptxPath, canonicalDeck, undefined, style)
+      ? await ooxmlQa(pptxPath, canonicalDeck, undefined, style, patternRenderedSlideIds)
       : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
     let report = mergeFindings(structural, ooxmlFindings);
-    const renderManifestPath = path.join(path.resolve(runDir), "render-manifest.json");
-    if (fs.existsSync(renderManifestPath) && style.organization?.templatePath && fs.existsSync(path.resolve(pptxPath))) {
-      const manifest = readJson(renderManifestPath) as import("./template-fidelity").RenderManifestEntry[];
+    if (renderManifest && style.organization?.templatePath && fs.existsSync(path.resolve(pptxPath))) {
+      const manifest = renderManifest;
       const patternsPath = path.join(path.resolve(runDir), "template", "template-patterns.json");
       const elementsPath = path.join(path.resolve(runDir), "template", "template-elements.json");
       if (fs.existsSync(patternsPath) && fs.existsSync(elementsPath)) {

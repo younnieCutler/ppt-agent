@@ -142,3 +142,84 @@ describe("applyPatternSkeleton: skeleton clone + slot injection", () => {
     }
   }, 60000);
 });
+
+describe("ooxmlQa: template-native exemptions for pattern-rendered slides", () => {
+  async function compiledPatterns() {
+    const templatePath = await buildPatternFixture();
+    const elements = await extractTemplateElements(templatePath);
+    const grammar = compileTemplateGrammar(elements);
+    const artifact = compileTemplatePatterns(elements, grammar);
+    return { templatePath, coverPattern: artifact.patterns[0], bodyPattern: artifact.patterns[1] };
+  }
+
+  it(
+    "REQUIRED_NATIVE_OBJECT_MISSING fires normally, but is exempted for a slide recorded as pattern-rendered",
+    async () => {
+      const { templatePath, coverPattern, bodyPattern } = await compiledPatterns();
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-ooxml-exempt-"));
+      try {
+        // A `process`/`sequence` slide needs a native connector when generically rendered; the
+        // synthetic body pattern draws none (a divider line, not a connector), the same shape as
+        // the real GAO E2E's S06 finding this exemption exists for.
+        const deck = deckWithSlides([
+          deckSlide({ id: "S01", layout: "title", headline: "Cover", content: { subtitle: "x" } }),
+          { ...deckSlide({ id: "S02", layout: "process", headline: "Process headline" }), composition: "sequence", content: { steps: [{ id: "a", label: "Step A" }, { id: "b", label: "Step B" }] } },
+        ]);
+        const scratchPath = path.join(workDir, "scratch.pptx");
+        await renderDeck(deck, scratchPath, repoRoot);
+        const outputPath = path.join(workDir, "final.pptx");
+        const resolvedPatterns = new Map<string, TemplatePattern>([["S01", coverPattern], ["S02", bodyPattern]]);
+        await applyPatternSkeleton(templatePath, scratchPath, outputPath, deck.slides as never, resolvedPatterns);
+
+        const { ooxmlQa } = await import("../../src/qa");
+        const { deckSchema } = await import("../../src/schema");
+        const parsedDeck = deckSchema.parse(deck);
+
+        const withoutExemption = await ooxmlQa(outputPath, parsedDeck);
+        expect(withoutExemption.some((finding) => finding.code === "REQUIRED_NATIVE_OBJECT_MISSING" && finding.slideId === "S02")).toBe(true);
+
+        const withExemption = await ooxmlQa(outputPath, parsedDeck, undefined, undefined, new Set(["S02"]));
+        expect(withExemption.some((finding) => finding.code === "REQUIRED_NATIVE_OBJECT_MISSING" && finding.slideId === "S02")).toBe(false);
+      } finally {
+        fs.rmSync(workDir, { recursive: true, force: true });
+        fs.rmSync(path.dirname(templatePath), { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+
+  it(
+    "a font declared only by the template's own grammar is allowed, not reported as FONT_SUBSTITUTION",
+    async () => {
+      const { templatePath, coverPattern } = await compiledPatterns();
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-ooxml-font-"));
+      try {
+        const deck = deckWithSlides([deckSlide({ id: "S01", layout: "title", headline: "Cover", content: { subtitle: "x" } })]);
+        const scratchPath = path.join(workDir, "scratch.pptx");
+        await renderDeck(deck, scratchPath, repoRoot);
+        const outputPath = path.join(workDir, "final.pptx");
+        await applyPatternSkeleton(templatePath, scratchPath, outputPath, deck.slides as never, new Map([["S01", coverPattern]]));
+
+        const { ooxmlQa } = await import("../../src/qa");
+        const { deckSchema } = await import("../../src/schema");
+        const { readPptxOoxml } = await import("../../src/ooxml");
+        const parsedDeck = deckSchema.parse({ ...deck, contract: { ...deck.contract, fonts: { heading: "Arial", body: "Arial" } } });
+
+        const facts = await readPptxOoxml(outputPath);
+        const clonedSlideTypeface = facts.slides[0].typefaces.find((typeface) => typeface !== "Arial");
+        expect(clonedSlideTypeface).toBe("Georgia"); // the cover title's own declared font, preserved by the clone
+
+        const withoutTemplateFonts = await ooxmlQa(outputPath, parsedDeck);
+        expect(withoutTemplateFonts.some((f) => f.code === "FONT_SUBSTITUTION" && f.slideId === "S01")).toBe(true);
+
+        const styleWithGrammar = { schemaVersion: 2, templateGrammar: { typography: { families: [clonedSlideTypeface] } } } as never;
+        const withTemplateFontsAllowed = await ooxmlQa(outputPath, parsedDeck, undefined, styleWithGrammar);
+        expect(withTemplateFontsAllowed.some((f) => f.code === "FONT_SUBSTITUTION" && f.slideId === "S01")).toBe(false);
+      } finally {
+        fs.rmSync(workDir, { recursive: true, force: true });
+        fs.rmSync(path.dirname(templatePath), { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+});

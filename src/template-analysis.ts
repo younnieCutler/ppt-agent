@@ -112,6 +112,20 @@ export function classifyTemplateElement(
   if (/footer/.test(name)) return element.bounds.y + element.bounds.h >= slideSize.h * 0.9 ? { role: "footer", confidence: 0.85 } : { role: "unknown", confidence: 0 };
   if (/logo/.test(name) && element.type === "image") return { role: "logo", confidence: 0.9 };
   if (/divider|line/.test(name) || element.type === "line") return { role: "divider", confidence: 0.8 };
+  // Geometry-only fallbacks for chrome that carries no name signal at all — a real template's
+  // background/divider shapes are very often auto-named ("Rectangle 1") rather than labeled, so
+  // name matching alone misses them entirely. Found via the GAO private E2E run: its cover
+  // background and section-divider rule are both plain filled rectangles named "Rectangle N".
+  if ((element.type === "shape" || element.type === "image") && element.bounds.w >= slideSize.w * 0.95 && element.bounds.h >= slideSize.h * 0.95) {
+    return { role: "surface", confidence: 0.7 };
+  }
+  if (element.type === "shape" && element.bounds.w > 0 && element.bounds.h > 0) {
+    // Extremely thin on one axis relative to the other — a divider/rule drawn as a filled
+    // rectangle. Conservative threshold (30:1) to avoid catching a genuinely thin content bar
+    // (a KPI indicator, a progress fill) that happens to be narrow rather than a rule line.
+    const aspect = Math.max(element.bounds.w / element.bounds.h, element.bounds.h / element.bounds.w);
+    if (aspect >= 30) return { role: "divider", confidence: 0.6 };
+  }
   const named = NAMED_ROLES.find(([pattern]) => pattern.test(name));
   if (named) return { role: named[1], confidence: 0.9 };
 
@@ -353,6 +367,15 @@ function extractSlide(xml: string, slideId: string, styles: Record<string, Templ
 // ponytail: no calibration corpus exists yet; revisit once PR F's GAO run and a few more real
 // templates have run through this.
 const EMPTY_LAYOUT_ELEMENT_THRESHOLD = 2;
+// A real template's "empty" layout still declares zero-sized placeholder metadata (date/footer/
+// slide-number placeholders positioned at 0,0,0,0 — PowerPoint keeps these even on a layout named
+// "Blank"). Counting every element regardless of size treated a real GAO template's genuinely
+// bodyless layout as non-empty (3 raw elements > threshold 2), misdetecting native_layout instead
+// of source_slide_pattern. Only elements with real geometry count toward "this layout has design
+// content" — a placeholder declaration with no size is metadata, not a design element.
+function hasRealGeometry(element: Pick<TemplateElement, "bounds">): boolean {
+  return element.bounds.w > 0 && element.bounds.h > 0;
+}
 const BLANK_LAYOUT_SHARE_THRESHOLD = 0.8;
 const NATIVE_LAYOUT_SHARE_THRESHOLD = 0.2;
 const MIN_MEDIAN_BODY_ELEMENTS = 3;
@@ -368,7 +391,7 @@ export function detectTemplateStrategy(artifact: Pick<TemplateElementsArtifact, 
   const totalSlides = artifact.slides.length;
   if (totalSlides === 0) return "native_layout";
   const layoutByIndex = new Map(artifact.layouts.map((layout) => [layout.index, layout]));
-  const emptyLayoutSlides = artifact.slides.filter((slide) => (layoutByIndex.get(slide.nativeLayout.index)?.elements.length ?? 0) <= EMPTY_LAYOUT_ELEMENT_THRESHOLD).length;
+  const emptyLayoutSlides = artifact.slides.filter((slide) => (layoutByIndex.get(slide.nativeLayout.index)?.elements.filter(hasRealGeometry).length ?? 0) <= EMPTY_LAYOUT_ELEMENT_THRESHOLD).length;
   const blankLayoutShare = emptyLayoutSlides / totalSlides;
   const bodyCounts = artifact.slides.map((slide) => slide.elements.length).sort((a, b) => a - b);
   const medianSlideBodyElements = bodyCounts[Math.floor(bodyCounts.length / 2)] ?? 0;

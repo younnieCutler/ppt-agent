@@ -28,7 +28,7 @@ export async function buildPatternFixture(): Promise<string> {
   // S01 — dark cover.
   const cover = pptx.addSlide();
   cover.background = { color: "111111" };
-  cover.addText(FIXTURE_STRINGS.coverTitle, { x: 0.85, y: 2.6, w: 10, h: 1.4, fontSize: 44, bold: true, color: "FFFFFF", name: "Cover Title" });
+  cover.addText(FIXTURE_STRINGS.coverTitle, { x: 0.85, y: 2.6, w: 10, h: 1.4, fontSize: 44, bold: true, color: "FFFFFF", fontFace: "Georgia", name: "Cover Title" });
   cover.addText(FIXTURE_STRINGS.coverSubtitle, { x: 0.85, y: 4.0, w: 8, h: 0.6, fontSize: 20, color: "CCCCCC", name: "Cover Subtitle" });
   cover.addShape(pptx.ShapeType.rect, { x: 0.85, y: 0.5, w: 1.5, h: 0.08, fill: { color: "E4572E" }, name: "Cover Accent Bar" });
 
