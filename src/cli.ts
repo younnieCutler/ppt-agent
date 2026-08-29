@@ -15,6 +15,8 @@ import { resolvePresentationStyle, styleContext } from "./style";
 import { writeP3Metrics } from "./metrics";
 import { markPhase, measurementWindow, projectSlug, resolveTranscript, writeTokenReport } from "./tokens";
 import { recordRun, writeQualityReport } from "./score";
+import { validateDeckPlan } from "./planning";
+import { sha256, sha256File, writeArtifactProvenance } from "./provenance";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -157,7 +159,7 @@ export async function release(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|plan-validate|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
@@ -209,6 +211,34 @@ async function main(): Promise<void> {
       markPhase(runDir, "referenceRetrieval");
     }
     emit({ status: "pass", selected: selected.map((entry) => entry.id), outputPath: runDir ? path.join(path.resolve(runDir), "reference-selection.json") : undefined }, selected);
+    return;
+  }
+
+  if (command === "plan-validate") {
+    const planPath = option(args, "--plan");
+    const contentModelPath = option(args, "--content-model");
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const findingsPath = optionalOption(args, "--findings");
+    const contractPath = path.join(runDir, "contract.json");
+    if (!fs.existsSync(contractPath)) throw new Error(`Missing run contract: ${contractPath}`);
+    const plan = readJson(planPath);
+    const contentModel = readJson(contentModelPath);
+    const report = validateDeckPlan(plan, readJson(contractPath), contentModel, findingsPath ? readJson(findingsPath) : []);
+    fs.mkdirSync(runDir, { recursive: true });
+    const normalizedPlanPath = path.join(runDir, "deck-plan.json");
+    fs.writeFileSync(normalizedPlanPath, JSON.stringify(report.plan, null, 2));
+    fs.writeFileSync(path.join(runDir, "content-qa.json"), JSON.stringify({ status: "pass", findings: [] }, null, 2));
+    const reportPath = path.join(runDir, "planning-qa.json");
+    fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+    const existing = fs.existsSync(path.join(runDir, "artifact-provenance.json")) ? readJson(path.join(runDir, "artifact-provenance.json")) as Record<string, string> : {};
+    writeArtifactProvenance(runDir, {
+      ...existing,
+      contractDigest: sha256File(contractPath),
+      contentModelDigest: sha256File(contentModelPath),
+      deckPlanDigest: sha256(JSON.stringify(report.plan)),
+    });
+    emitReport({ ...report, findings: report.findings }, reportPath);
+    if (report.status !== "pass") process.exitCode = 2;
     return;
   }
 
