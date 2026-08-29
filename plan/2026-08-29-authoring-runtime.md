@@ -176,11 +176,15 @@ Order of operations:
 1. Collect findings for every slide before deciding anything.
 2. Refuse to write on any hard finding — **no partial assembly**.
 3. Construct the DeckSpec v2 object.
-4. Parse it with `deckV2Schema.parse()` — exported from `src/schema.ts` today as
-   `z.intersection(deckSchema, deckV2ShapeSchema)`, which enforces the DeckSpec rules and the v2
-   fields (`version: 2`, a well-formed `planDigest`) in one pass. The plan-binding half of
-   `planDigest` is a *contract* check, not a schema one, and comes from `verifyDeckAgainstPlan` in
-   the next step.
+4. Parse the candidate through the canonical `deckSchema`. After parsing, assembly requires the
+   resulting DeckSpec to have `version === 2`. (`deckSchema` preprocesses rather than strips, so
+   `version` and `planDigest` survive the parse and the assertion reads the parsed object.)
+
+   The implementation PR may later export a dedicated DeckSpec v2 schema if a direct single-version
+   parser becomes useful. `src/schema.ts` does export `deckV2Schema`, but it is
+   `z.intersection(deckSchema, deckV2ShapeSchema)` rather than such a parser, and assembly does not
+   depend on it. Either way, the plan-binding half of `planDigest` is a *contract* check, not a
+   schema one, and comes from `verifyDeckAgainstPlan` in the next step.
 5. Run `verifyDeckAgainstPlan` on the assembled deck.
 6. Only then write, using `writeArtifactPair` from `src/artifacts.ts` so a failed write leaves the
    previous deck intact.
