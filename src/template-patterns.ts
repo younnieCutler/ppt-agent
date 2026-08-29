@@ -86,9 +86,20 @@ export type TemplatePatternsArtifact = {
 // in as an example, which is exactly why cloning a skeleton needs sanitization at all.
 const preservedRoles = new Set<SemanticRole>(["divider", "surface", "footer"]);
 
+// A short numeral run (a "02" section-index label, a step number, a column number) is exactly the
+// kind of thing a template author's example content puts on top of otherwise-structural chrome —
+// but it is still example content, not the chrome itself. If the geometry-based role fallbacks
+// (full-bleed → surface, extreme aspect ratio → divider) or a future heuristic ever mis-signal one
+// of these as structural, treating it as chrome would ship the literal example number in every
+// generated deck. A real divider/surface/footer shape is essentially never itself a bare 1-3 digit
+// numeral, so this is a safe defensive floor, not a behavior change for genuine chrome.
+function isBareNumericLabel(element: TemplateElement): boolean {
+  return element.type === "text" && Boolean(element.features.numericOnly) && (element.features.charCount ?? 0) <= 3;
+}
+
 export function classifyTemplateAsset(element: TemplateElement, _slideSize: { w: number; h: number }): AssetClass {
   if (element.role === "logo") return "brand";
-  if (preservedRoles.has(element.role as SemanticRole)) return "structural";
+  if (preservedRoles.has(element.role as SemanticRole) && !isBareNumericLabel(element)) return "structural";
   // A full-bleed, z-index-0 image is genuinely ambiguous: it could be template chrome (a
   // background texture) or a cover photograph the template author put in as an example — a real
   // company cover slide's sample photo satisfies this geometry test exactly as well as a texture
@@ -162,8 +173,11 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
       if (assetClass === "unknown") {
         // Structural-by-role but ambiguously named elements are simply left alone (preserved by
         // inaction is always safe); anything else ambiguous is removed defensively rather than
-        // risk a name-collision hitting the wrong shape.
-        if (reliablyNamed === false && preservedRoles.has(element.role as SemanticRole)) continue;
+        // risk a name-collision hitting the wrong shape. A bare numeral is never "left alone" by
+        // this rule even if role-classified as structural — see isBareNumericLabel's own comment;
+        // an ambiguously-named one only reaches this branch (classifyTemplateAsset is never called
+        // for it), so the guard has to be re-checked here too, not just there.
+        if (reliablyNamed === false && preservedRoles.has(element.role as SemanticRole) && !isBareNumericLabel(element)) continue;
         if (element.name) removableContentIds.push(element.name);
         continue;
       }
@@ -308,6 +322,68 @@ export function slotCarriesRealContent(slide: SlideSpec, slot: Pick<TemplateSlot
   if (UNIVERSAL_BINDINGS.has(slot.binding)) return false;
   const content = resolveSlotContent(slide, slot.binding);
   return content !== undefined && (!Array.isArray(content) || content.length > 0);
+}
+
+export type SlotAssignment = { slot: TemplateSlot; text: string } | { slot: TemplateSlot; remove: true };
+
+/**
+ * Maps a slide's resolved content onto the pattern's actual shapes — one per shape, never the same
+ * full string duplicated into every shape that happens to share a binding. A pattern with K slots
+ * bound to `content.body` (a real GAO shape) previously received the same fully-joined string in
+ * all K of them; this groups slots by binding (document order preserved) and distributes item i to
+ * slot i instead:
+ *
+ * - a list-shaped resolution (`content.metrics[]`, `content.body`'s process/evidence/timeline/
+ *   comparison branches, …) maps item i onto group slot i; leftover slots (fewer items than
+ *   slots) are removed; leftover items (more items than slots) join onto the *last* slot, same
+ *   fallback the old single-slot behavior always had.
+ * - a scalar resolution (`headline`, `subhead`, `source`) only fills the first slot in the group;
+ *   any additional slots sharing that binding are removed rather than repeating the same text.
+ * - an empty resolution empties every slot in the group; if any of them is `required`, throws
+ *   (every slot sharing a binding was compiled with the same `required` flag, so "any" and "all"
+ *   agree here).
+ */
+export function resolveSlotAssignments(pattern: TemplatePattern, slide: SlideSpec): SlotAssignment[] {
+  const groups = new Map<SlotBindingPath, TemplateSlot[]>();
+  for (const slot of pattern.skeleton.replaceableSlots) {
+    const group = groups.get(slot.binding);
+    if (group) group.push(slot);
+    else groups.set(slot.binding, [slot]);
+  }
+  const assignments: SlotAssignment[] = [];
+  for (const [binding, slots] of groups) {
+    const content = resolveSlotContent(slide, binding);
+    const isEmpty = content === undefined || (Array.isArray(content) && content.length === 0);
+    if (isEmpty) {
+      if (slots.some((slot) => slot.required)) {
+        throw new Error(`Pattern '${pattern.id}' required slot (binding '${binding}') has no content for slide '${slide.id}'.`);
+      }
+      slots.forEach((slot) => assignments.push({ slot, remove: true }));
+      continue;
+    }
+    if (!Array.isArray(content)) {
+      // Scalar content only ever fills the first slot of the group — repeating a headline or a
+      // source id into every sibling shape would be the same duplication bug, just for a binding
+      // that happens not to be list-shaped.
+      assignments.push({ slot: slots[0], text: content });
+      slots.slice(1).forEach((slot) => assignments.push({ slot, remove: true }));
+      continue;
+    }
+    if (content.length <= slots.length) {
+      content.forEach((item, index) => assignments.push({ slot: slots[index], text: item }));
+      // Fewer items than slots: the unused tail of the group is removed, not left holding stale
+      // example content or a repeat of the last item.
+      for (let index = content.length; index < slots.length; index++) assignments.push({ slot: slots[index], remove: true });
+    } else {
+      // More items than slots: fill every slot but the last one-for-one, then the last slot
+      // absorbs everything remaining, joined — same "collapse" fallback a single over-full slot
+      // always had, just now only for genuine overflow instead of every slot in the group.
+      const lastIndex = slots.length - 1;
+      for (let index = 0; index < lastIndex; index++) assignments.push({ slot: slots[index], text: content[index] });
+      assignments.push({ slot: slots[lastIndex], text: content.slice(lastIndex).join(" · ") });
+    }
+  }
+  return assignments;
 }
 
 /**

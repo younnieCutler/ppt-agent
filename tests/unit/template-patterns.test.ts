@@ -6,8 +6,10 @@ import {
   compileTemplatePatterns,
   patternLabelSchema,
   resolvePatternPlan,
+  resolveSlotAssignments,
   resolveSlotContent,
   selectPatternsForSlides,
+  type SlotBindingPath,
   type TemplatePattern,
   type TemplatePatternsArtifact,
 } from "../../src/template-patterns";
@@ -27,6 +29,15 @@ describe("classifyTemplateAsset", () => {
     expect(classifyTemplateAsset({ ...base, type: "shape", role: "divider" }, slideSize)).toBe("structural");
     expect(classifyTemplateAsset({ ...base, type: "shape", role: "surface" }, slideSize)).toBe("structural");
     expect(classifyTemplateAsset({ ...base, type: "text", role: "footer" }, slideSize)).toBe("structural");
+  });
+
+  it("never classifies a bare numeral run as structural, even if its role was geometry-classified as divider/surface/footer — a real section-number label must be removable, not shipped as chrome", () => {
+    const numericLabel = { ...base, type: "text" as const, role: "divider" as const, features: { numericOnly: true, charCount: 2 } };
+    expect(classifyTemplateAsset(numericLabel, slideSize)).not.toBe("structural");
+    expect(classifyTemplateAsset({ ...numericLabel, role: "surface" as const }, slideSize)).not.toBe("structural");
+    expect(classifyTemplateAsset({ ...numericLabel, role: "footer" as const }, slideSize)).not.toBe("structural");
+    // A genuinely long/non-numeric divider label is unaffected.
+    expect(classifyTemplateAsset({ ...base, type: "text" as const, role: "divider" as const, features: { charCount: 12 } }, slideSize)).toBe("structural");
   });
 
   it("classifies a full-bleed z-index-0 image as unknown, not assumed structural background — it could equally be a cover photo the template author left as an example", () => {
@@ -348,5 +359,75 @@ describe("selectPatternsForSlides: rank fallback", () => {
     expect(resolvedPatterns.has("S01")).toBe(false);
     expect(selectionLog[0].chosen).toBeUndefined();
     expect(selectionLog[0].rejected).toHaveLength(1);
+  });
+});
+
+describe("resolveSlotAssignments: distributes item i onto sibling slot i, never duplicates the whole payload into every slot sharing a binding", () => {
+  function slot(id: string, binding: SlotBindingPath, overrides: Partial<{ required: boolean; maxChars: number }> = {}) {
+    return { id, role: "body" as const, binding, shapeId: id, bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false, ...overrides };
+  }
+  function pattern(slots: ReturnType<typeof slot>[]): TemplatePattern {
+    return {
+      id: "p1", sourceSlideId: "S01", sourceSlideNumber: 1,
+      suitableFor: { functions: [], compositions: [], densities: ["low"], confidence: 0.5 },
+      skeleton: { sourceSlidePart: "ppt/slides/slide1.xml", preservedShapeIds: [], removableContentIds: [], assetClasses: {}, replaceableSlots: slots },
+      visualSignature: { backgroundTreatment: "plain", compositionFamily: "single_focal", surfaceUsage: "none", density: "low" },
+    };
+  }
+
+  const processSlide: SlideSpec = {
+    id: "S01", role: "body", storyBeat: "implementation", headline: "Three stages", headlineAlignment: "left",
+    claims: [{ text: "Three stages" }], composition: "sequence", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+    layout: "process", content: { steps: [{ id: "a", label: "Design" }, { id: "b", label: "Build" }, { id: "c", label: "Ship" }] },
+  } as unknown as SlideSpec;
+
+  it("maps step i onto slot i (4 slots, 3 steps) and removes the unused 4th slot — not the same joined string in all 4", () => {
+    const p = pattern([slot("Step1", "content.steps[]"), slot("Step2", "content.steps[]"), slot("Step3", "content.steps[]"), slot("Step4", "content.steps[]")]);
+    const assignments = resolveSlotAssignments(p, processSlide);
+    const byShape = new Map(assignments.map((a) => [a.slot.shapeId, a]));
+    expect((byShape.get("Step1") as { text: string }).text).toBe("Design");
+    expect((byShape.get("Step2") as { text: string }).text).toBe("Build");
+    expect((byShape.get("Step3") as { text: string }).text).toBe("Ship");
+    expect(byShape.get("Step4")).toMatchObject({ remove: true });
+    // The old bug: every slot got the same fully-joined string.
+    const texts = assignments.filter((a): a is { slot: unknown; text: string } => "text" in a).map((a) => a.text);
+    expect(new Set(texts).size).toBe(texts.length); // no two slots received identical text
+  });
+
+  it("more items than slots: fills one-for-one, the last slot absorbs the remainder joined", () => {
+    const p = pattern([slot("Step1", "content.steps[]"), slot("Step2", "content.steps[]")]);
+    const assignments = resolveSlotAssignments(p, processSlide);
+    const byShape = new Map(assignments.map((a) => [a.slot.shapeId, a]));
+    expect((byShape.get("Step1") as { text: string }).text).toBe("Design");
+    expect((byShape.get("Step2") as { text: string }).text).toBe("Build · Ship");
+  });
+
+  it("a scalar binding (headline) shared by multiple slots fills only the first and removes the rest", () => {
+    const p = pattern([slot("Title1", "headline", { required: true }), slot("Title2", "headline")]);
+    const assignments = resolveSlotAssignments(p, processSlide);
+    const byShape = new Map(assignments.map((a) => [a.slot.shapeId, a]));
+    expect((byShape.get("Title1") as { text: string }).text).toBe("Three stages");
+    expect(byShape.get("Title2")).toMatchObject({ remove: true });
+  });
+
+  it("distributes comparison left/right item groups independently, one item per slot", () => {
+    const comparisonSlide: SlideSpec = {
+      id: "S02", role: "body", storyBeat: "design", headline: "Compare", headlineAlignment: "left",
+      claims: [{ text: "Compare" }], composition: "two_column", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+      layout: "comparison", content: { left: { label: "Before", items: ["Manual", "Slow"] }, right: { label: "After", items: ["Automated", "Fast"] } },
+    } as unknown as SlideSpec;
+    const p = pattern([slot("Left1", "content.left.items[]"), slot("Left2", "content.left.items[]"), slot("Right1", "content.right.items[]"), slot("Right2", "content.right.items[]")]);
+    const assignments = resolveSlotAssignments(p, comparisonSlide);
+    const byShape = new Map(assignments.map((a) => [a.slot.shapeId, a]));
+    expect((byShape.get("Left1") as { text: string }).text).toBe("Manual");
+    expect((byShape.get("Left2") as { text: string }).text).toBe("Slow");
+    expect((byShape.get("Right1") as { text: string }).text).toBe("Automated");
+    expect((byShape.get("Right2") as { text: string }).text).toBe("Fast");
+  });
+
+  it("throws when a required binding's group has no content, same as before grouping existed", () => {
+    // `subhead` only resolves for a `title` layout — processSlide is `process`, so it's undefined here.
+    const p = pattern([slot("Subtitle", "subhead", { required: true })]);
+    expect(() => resolveSlotAssignments(p, processSlide)).toThrow(/required slot/);
   });
 });

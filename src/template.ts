@@ -4,7 +4,7 @@ import Automizer, { ModifyTextHelper } from "pptx-automizer";
 import JSZip from "jszip";
 import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
 import { pruneUnreachablePptxParts } from "./ooxml";
-import { resolveSlotContent, type TemplatePattern } from "./template-patterns";
+import { resolveSlotAssignments, type TemplatePattern } from "./template-patterns";
 
 const EMU_PER_INCH = 914400;
 const CANVAS_SIZE_TOLERANCE_IN = 0.05;
@@ -199,19 +199,12 @@ export async function applyPatternSkeleton(
       }
       presentation.addSlide("org-source", pattern.sourceSlideNumber, (slide) => {
         for (const name of pattern.skeleton.removableContentIds) slide.removeElement(name);
-        for (const slot of pattern.skeleton.replaceableSlots) {
-          const content = resolveSlotContent(slideSpec, slot.binding);
-          const isEmpty = content === undefined || (Array.isArray(content) && content.length === 0);
-          if (isEmpty) {
-            if (slot.required) throw new Error(`Pattern '${pattern.id}' required slot '${slot.id}' (binding '${slot.binding}') has no content for slide '${slideSpec.id}'.`);
-            slide.removeElement(slot.shapeId);
-            continue;
-          }
-          // v1: a repeatable binding's items collapse into the one shape the pattern declared for
-          // it, joined — the pattern has no per-item row group to expand into yet. Expanding into
-          // N preserved sibling rows is real future work, not silently dropped content.
-          const text = Array.isArray(content) ? content.join(" · ") : content;
-          slide.modifyElement(slot.shapeId, [ModifyTextHelper.setText(text)]);
+        // resolveSlotAssignments groups slots by binding and maps item i onto sibling slot i — a
+        // pattern with K shapes bound to the same field (a real GAO shape) gets K different pieces
+        // of content, not the same fully-joined string duplicated into all K of them.
+        for (const assignment of resolveSlotAssignments(pattern, slideSpec)) {
+          if ("remove" in assignment) slide.removeElement(assignment.slot.shapeId);
+          else slide.modifyElement(assignment.slot.shapeId, [ModifyTextHelper.setText(assignment.text)]);
         }
       });
       manifest.push({ slideId: slideSpec.id, mode: `pattern:${pattern.id}` });
