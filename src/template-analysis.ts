@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
+import type { CompositionFamily, PlanVisualIntent, SlideFunction } from "./schema";
+import type { SurfaceUsage } from "./style";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -16,6 +18,17 @@ export type SemanticRole = (typeof semanticRoles)[number];
 export type TemplateTextStyle = { family?: string; sizePt?: number; weight?: number; italic?: boolean; color?: string; lineHeightRatio?: number; alignment?: "left" | "center" | "right" };
 export type TemplateElement = { id: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string } };
 export type TemplateElementsArtifact = { version: 1; source: { sha256: string; slideSize: { w: number; h: number } }; slides: Array<{ id: string; elements: TemplateElement[] }>; styles: Record<string, TemplateTextStyle> };
+export type TemplateGrammar = {
+  version: 1;
+  compilerVersion: string;
+  sourceDigest: string;
+  slideSize: { w: number; h: number };
+  typography: { families: string[]; titleBodyRatio: number; weightContrast: number; lineHeightRatio: number };
+  geometry: { contentFrame: Rect; outerMargins: Rect; gutter: number; spacingScale: number };
+  surface: { usage: SurfaceUsage; borderUsage: number; dividerUsage: number; cornerRadius?: number };
+  branding: { primaryColors: string[]; accentColors: string[] };
+  compositionPatterns: Array<{ id: string; family: CompositionFamily; functions: SlideFunction[]; visualIntents: PlanVisualIntent[]; density: "low" | "medium" | "high"; confidence: number }>;
+};
 
 export function classifyTemplateElement(element: Pick<TemplateElement, "id" | "type" | "bounds" | "features">, slideSize: { w: number; h: number }, overrides: Record<string, SemanticRole> = {}): Pick<TemplateElement, "role" | "confidence"> {
   if (overrides[element.id]) return { role: overrides[element.id], confidence: 1 };
@@ -35,6 +48,40 @@ export function classifyTemplateElements(artifact: TemplateElementsArtifact, ove
       ...slide,
       elements: slide.elements.map((element) => ({ ...element, ...classifyTemplateElement(element, artifact.source.slideSize, overrides) })),
     })),
+  };
+}
+
+export function compileTemplateGrammar(artifact: TemplateElementsArtifact): TemplateGrammar {
+  const elements = artifact.slides.flatMap((slide) => slide.elements);
+  const styled = (role: SemanticRole) => elements.filter((element) => element.role === role).map((element) => element.styleRef ? artifact.styles[element.styleRef] : undefined).filter((style): style is TemplateTextStyle => Boolean(style));
+  const titles = styled("title");
+  const bodies = styled("body");
+  const titleSize = titles.map((style) => style.sizePt ?? 0).find(Boolean) ?? 1;
+  const bodySize = bodies.map((style) => style.sizePt ?? 0).find(Boolean) ?? titleSize;
+  const titleWeight = titles.map((style) => style.weight ?? 400).find(Boolean) ?? 400;
+  const bodyWeight = bodies.map((style) => style.weight ?? 400).find(Boolean) ?? 400;
+  const usable = elements.filter((element) => !["footer", "logo"].includes(element.role));
+  const xs = usable.map((element) => element.bounds.x);
+  const ys = usable.map((element) => element.bounds.y);
+  const rights = usable.map((element) => element.bounds.x + element.bounds.w);
+  const bottoms = usable.map((element) => element.bounds.y + element.bounds.h);
+  const minX = xs.length ? Math.min(...xs) : 0;
+  const minY = ys.length ? Math.min(...ys) : 0;
+  const contentFrame = { x: minX, y: minY, w: Math.max(...rights, minX) - minX, h: Math.max(...bottoms, minY) - minY };
+  const colors = [...new Set(Object.values(artifact.styles).map((style) => style.color).filter((color): color is string => Boolean(color)))];
+  const dividerUsage = elements.filter((element) => element.role === "divider").length / Math.max(1, artifact.slides.length);
+  const hasMetric = elements.some((element) => element.role === "metric");
+  const family: CompositionFamily = hasMetric ? "single_focal" : dividerUsage ? "split_panels" : "column_zones";
+  return {
+    version: 1,
+    compilerVersion: "1",
+    sourceDigest: artifact.source.sha256,
+    slideSize: artifact.source.slideSize,
+    typography: { families: [...new Set(Object.values(artifact.styles).map((style) => style.family).filter((family): family is string => Boolean(family)))], titleBodyRatio: titleSize / bodySize, weightContrast: Math.abs(titleWeight - bodyWeight), lineHeightRatio: 1 },
+    geometry: { contentFrame, outerMargins: { x: contentFrame.x, y: contentFrame.y, w: artifact.source.slideSize.w - contentFrame.x - contentFrame.w, h: artifact.source.slideSize.h - contentFrame.y - contentFrame.h }, gutter: 0, spacingScale: 1 },
+    surface: { usage: dividerUsage ? "sparse" : "none", borderUsage: 0, dividerUsage },
+    branding: { primaryColors: colors.slice(0, 1), accentColors: colors.slice(1, 3) },
+    compositionPatterns: [{ id: `derived-${family}`, family, functions: hasMetric ? ["quantitative"] : ["statement"], visualIntents: hasMetric ? ["single_focal"] : ["hierarchy"], density: "medium", confidence: 0.7 }],
   };
 }
 

@@ -17,7 +17,7 @@ import { markPhase, measurementWindow, projectSlug, resolveTranscript, writeToke
 import { recordRun, writeQualityReport } from "./score";
 import { resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
-import { extractTemplateElements } from "./template-analysis";
+import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -219,10 +219,22 @@ async function main(): Promise<void> {
     const input = option(args, "--input");
     const out = path.resolve(option(args, "--out"));
     const elements = await extractTemplateElements(input);
+    const grammar = compileTemplateGrammar(elements);
     fs.mkdirSync(out, { recursive: true });
     const outputPath = path.join(out, "template-elements.json");
-    fs.writeFileSync(outputPath, JSON.stringify(elements, null, 2));
-    print({ status: "pass", outputPath, slides: elements.slides.length, grammar: "not_compiled" });
+    const grammarPath = path.join(out, "template-grammar.json");
+    const elementsTemp = `${outputPath}.${process.pid}.tmp`;
+    const grammarTemp = `${grammarPath}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(elementsTemp, JSON.stringify(elements, null, 2));
+      fs.writeFileSync(grammarTemp, JSON.stringify(grammar, null, 2));
+      fs.renameSync(elementsTemp, outputPath);
+      fs.renameSync(grammarTemp, grammarPath);
+    } finally {
+      fs.rmSync(elementsTemp, { force: true });
+      fs.rmSync(grammarTemp, { force: true });
+    }
+    print({ status: "pass", outputPath, grammarPath, slides: elements.slides.length });
     return;
   }
 
