@@ -6,6 +6,18 @@ disable-model-invocation: true
 
 # `/ppt`
 
+This file is the canonical, host-neutral workflow. Other hosts (for example `codex-skill/SKILL.md`)
+carry only their invocation and setup and point back here, so the commands below have exactly one
+maintained copy.
+
+Two environment variables cover host differences; both are optional and both fall back to the
+Claude Code behaviour that existed before them:
+
+- `PPT_AGENT_PROJECT_DIR` — project root for brand, theme, and organization pack resolution
+  (falls back to `CLAUDE_PROJECT_DIR`, then the working directory).
+- `PPT_AGENT_TRANSCRIPT_DIR` — directory of host session `.jsonl` transcripts read by `tokens`
+  (falls back to Claude Code's `~/.claude/projects/<slug>`).
+
 Confirm audience, slide count, fonts, and delivery environment before rendering. Do not invent source-backed claims or substitute unavailable fonts. Commands below are cross-platform (Windows and macOS); adjust path separators for your shell.
 
 ## Interview: presentation style
@@ -185,7 +197,7 @@ node dist/cli.js score  --spec <deck.json> --run-dir <run-dir> --scores <scores.
 node dist/cli.js record --spec <deck.json> --run-dir <run-dir> --benchmark <id> --version <label>
 ```
 
-`tokens` reads the Claude Code session transcript (`~/.claude/projects/<slug>/*.jsonl`) — the only real source of `usage`, since no LLM runs inside this CLI — and writes `<run-dir>/tokens.json`. It reports `total` (everything, cache reads included) and `effective` (`input + cache_creation + output`) separately; per-slide targets are read against `effective`.
+`tokens` reads the host's session transcript — Claude Code's `~/.claude/projects/<slug>/*.jsonl` by default, or `$PPT_AGENT_TRANSCRIPT_DIR/*.jsonl` on any other host — the only real source of `usage`, since no LLM runs inside this CLI — and writes `<run-dir>/tokens.json`. It reports `total` (everything, cache reads included) and `effective` (`input + cache_creation + output`) separately; per-slide targets are read against `effective`.
 
 **The measurement window is `[run-dir creation, last phase boundary]`.** It has to close, or work you do later in the same session gets billed to this deck. `style`, `reference`, `render`, `visual-qa`, and `repair-context` each append a marker to `<run-dir>/run.jsonl` as they complete, so boundaries are *recorded* rather than guessed; artifact mtimes remain a fallback for runs made before markers existed. `tokens.json` says which was used (`phase-marker` / `mixed` / `artifact-mtime-window`) and how the window closed. Override with `--since` / `--until` when you need a different window.
 

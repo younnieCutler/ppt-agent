@@ -97,10 +97,19 @@ export function projectSlug(projectDir: string): string {
  * inside that window, and the best-covering one wins; mtime only breaks ties. Without a window
  * (a caller that hasn't computed one), the previous newest-first behavior is preserved exactly.
  */
+/**
+ * Where this host keeps its session transcripts. Claude Code's own layout is the default because
+ * it is the only one this CLI can derive on its own; any other host (Codex, a wrapper script)
+ * points at its transcript directory with PPT_AGENT_TRANSCRIPT_DIR instead of being unmeasurable.
+ */
+export function transcriptDirectory(projectDir: string, home = os.homedir()): string {
+  return process.env.PPT_AGENT_TRANSCRIPT_DIR || path.join(home, ".claude", "projects", projectSlug(projectDir));
+}
+
 export function resolveTranscript(projectDir: string, home = os.homedir(), window?: { from: number; to: number }): string {
-  const dir = path.join(home, ".claude", "projects", projectSlug(projectDir));
+  const dir = transcriptDirectory(projectDir, home);
   if (!fs.existsSync(dir)) {
-    throw new Error(`No Claude Code transcript directory for this project (${dir}). Pass --transcript <path> or --session-id <uuid> to point at the session JSONL explicitly.`);
+    throw new Error(`No session transcript directory for this project (${dir}). Set PPT_AGENT_TRANSCRIPT_DIR, or pass --transcript <path> or --session-id <uuid> to point at the session JSONL explicitly.`);
   }
   const sessions = fs
     .readdirSync(dir)

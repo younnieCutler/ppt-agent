@@ -13,7 +13,7 @@ import { visualQa, type ProvenanceFinding } from "./visual-qa";
 import { applyRepair, buildRepairContext, recordRepairAttempt } from "./repair";
 import { resolvePresentationStyle, styleContext } from "./style";
 import { writeP3Metrics } from "./metrics";
-import { markPhase, measurementWindow, projectSlug, resolveTranscript, writeTokenReport } from "./tokens";
+import { markPhase, measurementWindow, resolveTranscript, transcriptDirectory, writeTokenReport } from "./tokens";
 import { recordRun, writeQualityReport } from "./score";
 import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
@@ -92,6 +92,12 @@ function assertFresh(runDir: string, provenance: Record<string, string>, inputs:
     if (!fs.existsSync(filePath)) throw new Error(`Composition resolution blocked: ${fileName} is recorded in artifact-provenance.json but missing from the run directory.`);
     if (sha256File(filePath) !== recorded) throw new Error(`Composition resolution blocked: ${fileName} changed after it was recorded (artifact-provenance.json digest mismatch). Re-run the phase that produces it.`);
   }
+}
+
+// The CLI is host-neutral: any agent host (Claude Code, Codex, a plain shell) can point it at the
+// project root. CLAUDE_PROJECT_DIR stays as a fallback so existing Claude Code installs keep working.
+function projectDirectory(): string {
+  return process.env.PPT_AGENT_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 }
 
 function option(args: string[], name: string): string {
@@ -247,7 +253,7 @@ async function main(): Promise<void> {
   if (command === "theme") {
     const contractPath = option(args, "--contract");
     const contract = contractSchema.parse(readJson(contractPath));
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const legacyTheme = resolveTheme(contract, projectDir);
     assertFontsInstalled(legacyTheme.fonts);
     print(legacyTheme);
@@ -258,7 +264,7 @@ async function main(): Promise<void> {
     const contractPath = option(args, "--contract");
     const runDir = optionalOption(args, "--run-dir");
     const contract = contractSchema.parse(readJson(contractPath));
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const references = runDir ? loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json")) : undefined;
     const style = resolvePresentationStyle(contract, { projectDir, referenceSelection: references });
     assertFontsInstalled(style.fonts);
@@ -410,7 +416,7 @@ async function main(): Promise<void> {
     const slidesRaw = optionalOption(args, "--slides");
     const deck = deckSchema.parse(readJson(specPath));
     const slideIds = slidesRaw ? slidesRaw.split(",").map((id) => id.trim()) : undefined;
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const referenceSelection = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection, legacyTheme: deck.theme });
     const index = await renderVisual(deck, pptxPath, runDir, slideIds, style);
@@ -430,7 +436,7 @@ async function main(): Promise<void> {
     const pptxPath = option(args, "--pptx");
     const deck = deckSchema.parse(readJson(specPath));
     const findings = readJson(findingsPath);
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const references = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
     const provenance: ProvenanceFinding[] = verifyRenderProvenance(runDir, pptxPath, deck, style).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId }));
@@ -464,7 +470,7 @@ async function main(): Promise<void> {
     const indexPath = path.join(path.resolve(runDir), "visual", "index.json");
     const index = fs.existsSync(indexPath) ? (readJson(indexPath) as Array<{ slideId: string; path: string }>) : [];
     const imagePath = index.find((entry) => entry.slideId === slideId)?.path ?? "";
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: referenceSelection as Array<{ id: string; style?: { density?: string; visualWeight?: string }; layout?: { whitespace?: string; headline?: string }; traits?: string[] }> | undefined, legacyTheme: deck.theme });
     const context = buildRepairContext(deck, slideId, contentModel, visualQaReport, referenceSelection, imagePath, style);
     const outDir = path.join(path.resolve(runDir), "repair", slideId);
@@ -518,12 +524,12 @@ async function main(): Promise<void> {
 
   if (command === "tokens") {
     const runDir = option(args, "--run-dir");
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const since = optionalOption(args, "--since") ? Date.parse(option(args, "--since")) : undefined;
     const until = optionalOption(args, "--until") ? Date.parse(option(args, "--until")) : undefined;
     const sessionId = optionalOption(args, "--session-id");
     const transcriptPath = optionalOption(args, "--transcript")
-      ?? (sessionId ? path.join(os.homedir(), ".claude", "projects", projectSlug(projectDir), `${sessionId}.jsonl`) : undefined)
+      ?? (sessionId ? path.join(transcriptDirectory(projectDir), `${sessionId}.jsonl`) : undefined)
       ?? resolveTranscript(projectDir, os.homedir(), measurementWindow(runDir, specPath, since, until));
     const report = writeTokenReport({
       runDir,
@@ -559,7 +565,7 @@ async function main(): Promise<void> {
 
   if (command === "record") {
     const runDir = option(args, "--run-dir");
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const { record, historyPath } = recordRun({ deck, runDir, benchmark: option(args, "--benchmark"), version: option(args, "--version"), projectDir });
     emit({ status: "pass", outputPath: historyPath, qualityScore: record.qualityScore, tokens: record.tokens, hardFailures: record.hardFailures }, record);
     return;
@@ -568,7 +574,7 @@ async function main(): Promise<void> {
   if (command === "validate") {
     assertFontsInstalled(deck.contract.fonts);
     const runDir = optionalOption(args, "--run-dir");
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const references = runDir ? loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json")) : undefined;
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
     assertFontsInstalled(style.fonts);
@@ -585,7 +591,7 @@ async function main(): Promise<void> {
   if (command === "render") {
     const outPath = option(args, "--out");
     const runDir = optionalOption(args, "--run-dir");
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const contentModel = runDir ? loadContentModelIfExists(path.join(path.resolve(runDir), "content-model.json")) : undefined;
     const referenceSelection = runDir ? loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json")) : undefined;
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection, legacyTheme: deck.theme });
@@ -606,7 +612,7 @@ async function main(): Promise<void> {
     const outPath = option(args, "--out");
     const runDir = option(args, "--run-dir");
     const usePowerPoint = hasFlag(args, "--powerpoint");
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
     const referenceSelectionPath = path.join(path.resolve(runDir), "reference-selection.json");
     const references = loadReferenceSelectionIfExists(referenceSelectionPath);
@@ -636,7 +642,7 @@ async function main(): Promise<void> {
     const pptxPath = option(args, "--pptx");
     const runDir = option(args, "--run-dir");
     const usePowerPoint = hasFlag(args, "--powerpoint");
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = projectDirectory();
     const contentModelPath = path.join(path.resolve(runDir), "content-model.json");
     const referenceSelectionPath = path.join(path.resolve(runDir), "reference-selection.json");
     const references = loadReferenceSelectionIfExists(referenceSelectionPath);
