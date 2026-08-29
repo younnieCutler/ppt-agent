@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
 import type { QaFinding } from "./qa";
 import type { DeckSpec, SlideSpec } from "./schema";
-import { hasFullSemanticCoverage, resolveSlotContent, type TemplatePattern } from "./template-patterns";
+import { hasFullSemanticCoverage, resolveSlotAssignments, type TemplatePattern } from "./template-patterns";
 import type { TemplateStrategy } from "./template-analysis";
 import { displayWidth } from "./typography";
 
@@ -238,10 +238,15 @@ export function checkTemplateSlotCapacity(deck: Pick<DeckSpec, "slides">, chosen
   for (const slide of deck.slides as SlideSpec[]) {
     const pattern = chosenPatterns.get(slide.id);
     if (!pattern) continue;
-    for (const slot of pattern.skeleton.replaceableSlots) {
-      const content = resolveSlotContent(slide, slot.binding);
-      if (content === undefined || slot.maxChars === undefined) continue;
-      const text = Array.isArray(content) ? content.join(" · ") : content;
+    // Measures the same per-shape text the renderer will actually inject (resolveSlotAssignments),
+    // not a whole binding's full joined content against every sibling slot that shares it — a
+    // pattern with K slots bound to the same field only ever receives one item per slot (or, on
+    // genuine overflow, the tail joined onto the last slot), so checking a single slot's own text
+    // against its own maxChars is what "does this specific shape overflow" actually means.
+    for (const assignment of resolveSlotAssignments(pattern, slide)) {
+      if ("remove" in assignment) continue;
+      const { slot, text } = assignment;
+      if (slot.maxChars === undefined) continue;
       const width = displayWidth(text);
       if (width > slot.maxChars) {
         const severity = slot.required ? "hard" : "risk";
