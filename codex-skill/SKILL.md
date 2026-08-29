@@ -7,14 +7,17 @@ metadata:
 
 # PPT Agent for Codex
 
-Use this skill as `$ppt-agent` for a new presentation. Confirm the audience, slide count, fonts, and delivery environment before rendering. Do not invent source-backed claims or substitute unavailable fonts.
+This file is the Codex entry point only. **The workflow — every command, gate, and rubric — lives in
+the repository's canonical `SKILL.md`, which is host-neutral. Read it and follow it.** Keeping the
+commands in one file is deliberate: two copies drifted apart, and the copy a host read was not the
+copy that was maintained.
 
-- Resolve the repository root as the parent directory of this skill.
-- Ask for the presentation style up front — Auto (default), Corporate, Executive, Analytical, Editorial, Product, Stage, or Reference-first — write it to `contract.presentationStyle`, then run `node <repo-root>/dist/cli.js style --contract <contract.json> --run-dir <run-dir>` and author compositions against the compact `<run-dir>/style-context.json`. Never author palette HEX into the DeckSpec.
-- Run `node <repo-root>/dist/cli.js validate --spec <deck.json> --run-dir <run-dir>` before rendering.
-- Run `node <repo-root>/dist/cli.js render --spec <deck.json> --out <draft.pptx>` for editable output.
-- Run `node <repo-root>/dist/cli.js qa --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir>` for Core QA (cross-platform OOXML checks — this is the release bar on macOS and Linux too).
-- Keep source excerpts in `content-model.json` (each excerpt has an `id`; `sourceRefs` reference it as `excerptId`) and record repair attempts in `repair-state.json`.
-- `--powerpoint` adds optional Level 3 PowerPoint COM verification, available only on Windows with Microsoft PowerPoint installed. Its absence never blocks release.
-- For visual defects Core QA cannot see: `node <repo-root>/dist/cli.js visual ...` renders a labeled montage, judge it against the rubric in the main `SKILL.md`, write `visual-findings.json`, then `visual-qa` to validate/roll it up. Repair one failed slide at a time with `repair-context`/`repair-apply` (max 2 attempts each) — never regenerate the whole deck. A repair replaces one `SlideSpec` only; it cannot change the organisation pack, brand, archetype, or design direction.
-- Run `node <repo-root>/dist/cli.js metrics --spec <deck.json> --run-dir <run-dir>` at the end of a run to write `<run-dir>/p3-metrics.json` (local only, nothing is transmitted).
+- Invoke as `$ppt-agent` for a new presentation.
+- The repository root is the parent directory of this skill; the canonical workflow is `<repo-root>/SKILL.md`.
+- Export `PPT_AGENT_PROJECT_DIR=<repo-root>` so brand, theme, and organization pack paths resolve
+  from the project rather than from whatever directory Codex happened to start in.
+- Run `npm run build` in the repository root once before the first run of a session.
+- Confirm audience, slide count, fonts, and delivery environment before rendering. Do not invent
+  source-backed claims or substitute unavailable fonts.
+- Judge the rendered montage yourself against the Visual QA rubric in `<repo-root>/SKILL.md`; that
+  judgment happens in the host, never in the CLI.
