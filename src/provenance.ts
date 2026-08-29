@@ -10,6 +10,14 @@ export type ArtifactProvenance = {
   resolvedStyleDigest?: string;
   templateGrammarDigest?: string;
   compositionPlanDigest?: string;
+  /**
+   * What each derived artifact was derived *from*. File-by-file freshness cannot see a mixed run:
+   * every file can match its own digest while the reference selection and the resolved style were
+   * produced from an older contract. These record the causal edge, and composition resolution
+   * verifies them.
+   */
+  referenceSelectionSource?: { contractDigest: string };
+  resolvedStyleSource?: { contractDigest: string; referenceSelectionDigest?: string; templateGrammarDigest?: string };
 };
 
 // Removed rather than kept as decoration: organizationPackDigest, deckSpecDigest, and pptxDigest were

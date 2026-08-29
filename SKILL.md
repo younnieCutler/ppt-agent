@@ -58,6 +58,9 @@ cp <contract.json> <run-dir>/contract.json
 node dist/cli.js plan-validate --plan <deck-plan.json> --content-model <content-model.json> --run-dir <run-dir> [--findings <plan-findings.json>]
 # → <run-dir>/deck-plan.json (normalized), planning-qa.json, artifact-provenance.json
 #   Hard findings here mean the plan is wrong; fix the plan, not the slides.
+#   Planning is a STRICT gate: composition-resolve requires status `pass`, so a risk finding
+#   (status `review`) blocks authoring too. Resolve it or change the plan — a risk in the plan is
+#   inherited by every slide resolved against it, which is not the same as a risk on one slide.
 
 # 3. Reference retrieval, when the contract declares referenceIds. Before style resolution:
 #    the resolved style reads the selection.

@@ -21,11 +21,41 @@ import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
 import { templateMapSchema } from "./organization";
 
+/**
+ * A run directory has exactly one contract. Deriving an artifact from a different file, then storing
+ * it next to that contract, produces a run whose parts never belonged together.
+ */
+function assertRunContract(runDir: string, contractPath: string): string {
+  const runContractPath = path.join(path.resolve(runDir), "contract.json");
+  const suppliedDigest = sha256File(contractPath);
+  if (!fs.existsSync(runContractPath)) throw new Error(`Missing run contract: ${runContractPath}. Copy the contract into the run directory first.`);
+  if (sha256File(runContractPath) !== suppliedDigest) throw new Error(`--contract does not match ${runContractPath}. A run directory holds one contract; re-run the run's earlier phases if the contract changed.`);
+  return suppliedDigest;
+}
+
 /** Merges into the run directory's artifact provenance, so each phase records only its own inputs. */
 function recordProvenance(runDir: string, fields: Partial<ArtifactProvenance>): void {
   const provenancePath = path.join(path.resolve(runDir), "artifact-provenance.json");
   const existing = fs.existsSync(provenancePath) ? (readJson(provenancePath) as ArtifactProvenance) : ({} as ArtifactProvenance);
   writeArtifactProvenance(runDir, { ...existing, ...fields });
+}
+
+/**
+ * Verifies the causal edges, not just per-file freshness. Every file can match its own recorded
+ * digest while the reference selection and the resolved style were derived from a contract that has
+ * since been replaced — the phases simply have to be re-run in order.
+ */
+function assertDerivedFrom(provenance: ArtifactProvenance): void {
+  const styleSource = provenance.resolvedStyleSource;
+  if (!styleSource) throw new Error("Composition resolution blocked: the resolved style records no inputs. Re-run `style --run-dir`.");
+  if (styleSource.contractDigest !== provenance.contractDigest) throw new Error("Composition resolution blocked: the resolved style was derived from a different contract than the one recorded at planning. Re-run `style --run-dir`.");
+  if ((styleSource.referenceSelectionDigest ?? undefined) !== (provenance.referenceSelectionDigest ?? undefined)) throw new Error("Composition resolution blocked: the resolved style was derived from a different reference selection. Re-run `style --run-dir`.");
+  if ((styleSource.templateGrammarDigest ?? undefined) !== (provenance.templateGrammarDigest ?? undefined)) throw new Error("Composition resolution blocked: the resolved style was derived from a different template grammar. Re-run `style --run-dir`.");
+  const referenceSource = provenance.referenceSelectionSource;
+  if (provenance.referenceSelectionDigest) {
+    if (!referenceSource) throw new Error("Composition resolution blocked: the reference selection records no inputs. Re-run `reference --run-dir`.");
+    if (referenceSource.contractDigest !== provenance.contractDigest) throw new Error("Composition resolution blocked: the reference selection was derived from a different contract than the one recorded at planning. Re-run `reference --run-dir`.");
+  }
 }
 
 function assertFresh(runDir: string, provenance: Record<string, string>, inputs: Array<[keyof ArtifactProvenance, string]>): void {
@@ -184,7 +214,7 @@ export async function release(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|plan-validate|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|plan-validate|composition-resolve|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
@@ -213,15 +243,23 @@ async function main(): Promise<void> {
     assertFontsInstalled(style.fonts);
     if (runDir) {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
+      const contractDigest = assertRunContract(runDir, contractPath);
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
       // composition-resolve reads the run directory's grammar, so style writes the copy it recorded:
       // a digest describing a file nobody put there would block every run with a v2 pack.
       const grammarRunPath = path.join(path.resolve(runDir), "template-grammar.json");
       if (style.templateGrammar) fs.writeFileSync(grammarRunPath, JSON.stringify(style.templateGrammar, null, 2));
+      const referencePath = path.join(path.resolve(runDir), "reference-selection.json");
+      const templateGrammarDigest = style.templateGrammar ? sha256File(grammarRunPath) : undefined;
       recordProvenance(runDir, {
         resolvedStyleDigest: sha256File(path.join(path.resolve(runDir), "style-context.json")),
-        templateGrammarDigest: style.templateGrammar ? sha256File(grammarRunPath) : undefined,
+        templateGrammarDigest,
+        resolvedStyleSource: {
+          contractDigest,
+          referenceSelectionDigest: fs.existsSync(referencePath) ? sha256File(referencePath) : undefined,
+          templateGrammarDigest,
+        },
       });
       markPhase(runDir, "styleResolution");
     }
@@ -240,8 +278,12 @@ async function main(): Promise<void> {
       .map((entry) => ({ ...entry, previewPaths: previewPathsFor(referenceRoot, entry) }));
     if (runDir) {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
+      const contractDigest = assertRunContract(runDir, contractPath);
       fs.writeFileSync(path.join(path.resolve(runDir), "reference-selection.json"), JSON.stringify(selected, null, 2));
-      recordProvenance(runDir, { referenceSelectionDigest: sha256File(path.join(path.resolve(runDir), "reference-selection.json")) });
+      recordProvenance(runDir, {
+        referenceSelectionDigest: sha256File(path.join(path.resolve(runDir), "reference-selection.json")),
+        referenceSelectionSource: { contractDigest },
+      });
       markPhase(runDir, "referenceRetrieval");
     }
     emit({ status: "pass", selected: selected.map((entry) => entry.id), outputPath: runDir ? path.join(path.resolve(runDir), "reference-selection.json") : undefined }, selected);
@@ -302,9 +344,10 @@ async function main(): Promise<void> {
     const runDir = path.resolve(option(args, "--run-dir"));
     const planningQaPath = path.join(runDir, "planning-qa.json");
     const provenancePath = path.join(runDir, "artifact-provenance.json");
-    if (!fs.existsSync(planningQaPath) || (readJson(planningQaPath) as { status?: string }).status !== "pass") throw new Error("Composition resolution requires a passing planning-qa.json.");
+    // Strict planning gate: `review` (a risk finding) blocks too — see SKILL.md.
+    if (!fs.existsSync(planningQaPath) || (readJson(planningQaPath) as { status?: string }).status !== "pass") throw new Error("Composition resolution requires a passing planning-qa.json (status must be `pass`; a `review` status means an unresolved risk finding).");
     if (!fs.existsSync(provenancePath)) throw new Error("Composition resolution requires artifact-provenance.json.");
-    const provenance = readJson(provenancePath) as Record<string, string>;
+    const provenance = readJson(provenancePath) as ArtifactProvenance & Record<string, string>;
     if (!provenance.contractDigest || !provenance.contentModelDigest) throw new Error("Composition resolution requires contract and ContentModel provenance.");
     // Recording a digest and never re-checking it is not a provenance chain. Every upstream input
     // is re-hashed here, so editing the contract, the ContentModel, or the reference selection after
@@ -320,6 +363,7 @@ async function main(): Promise<void> {
     // somewhere else entirely.
     if (!provenance.resolvedStyleDigest) throw new Error("Composition resolution requires style provenance. Run `style --run-dir` first.");
     if (sha256File(styleContextPath) !== provenance.resolvedStyleDigest) throw new Error("Composition resolution blocked: style-context.json changed after style resolution (artifact-provenance.json digest mismatch). Re-run `style`.");
+    assertDerivedFrom(provenance);
     if (provenance.deckPlanDigest !== deckPlanDigest(readJson(planPath))) throw new Error("Composition resolution blocked: deck plan digest is stale.");
     const styleContext = readJson(styleContextPath);
     const grammarPath = path.join(runDir, "template-grammar.json");

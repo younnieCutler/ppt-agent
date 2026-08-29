@@ -71,6 +71,9 @@ export function validateDeckPlan(planInput: unknown, contractInput: unknown, con
       }
     }
   }
+  // Planning is a strict gate on purpose: `composition-resolve` requires `pass`, so a risk finding
+  // blocks authoring until it is resolved or the plan is changed. A risk here is not "ship with a
+  // caveat" — it is a plan the shortlist would be resolved against, and every slide inherits it.
   return { plan, findings, status: findings.some((item) => item.severity === "hard") ? "fail" : findings.some((item) => item.severity === "risk") ? "review" : "pass" };
 }
 

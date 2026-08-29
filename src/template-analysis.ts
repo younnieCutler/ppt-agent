@@ -17,11 +17,16 @@ export const semanticRoles = ["title", "subtitle", "heading", "body", "caption",
 export type SemanticRole = (typeof semanticRoles)[number];
 export type TemplateTextStyle = { family?: string; sizePt?: number; weight?: number; italic?: boolean; color?: string; lineHeightRatio?: number; alignment?: "left" | "center" | "right" };
 export type TemplateElement = { id: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
-export type TemplateElementsArtifact = { version: 1; source: { sha256: string; slideSize: { w: number; h: number } }; slides: Array<{ id: string; elements: TemplateElement[] }>; styles: Record<string, TemplateTextStyle> };
+export const ANALYZER_VERSION = "1";
+/** Everything the analysis consumed, so a pack can prove its artifacts describe its current inputs. */
+export type AnalysisInputs = { templateDigest: string; roleOverridesDigest: string; analyzerVersion: string };
+export type TemplateElementsArtifact = { version: 1; source: { sha256: string; slideSize: { w: number; h: number } }; analysisInputs: AnalysisInputs; slides: Array<{ id: string; elements: TemplateElement[] }>; styles: Record<string, TemplateTextStyle> };
 export type TemplateGrammar = {
   version: 1;
   compilerVersion: string;
   sourceDigest: string;
+  /** Binds this grammar to the exact elements artifact it was compiled from. */
+  elementsDigest: string;
   slideSize: { w: number; h: number };
   typography: { families: string[]; titleBodyRatio: number; weightContrast: number; lineHeightRatio: number };
   geometry: { contentFrame: Rect; outerMargins: Rect; gutter: number; spacingScale: number };
@@ -46,6 +51,16 @@ const NAMED_ROLES: Array<[RegExp, SemanticRole]> = [
 ];
 
 export type TypographyContext = { sizePt?: number; maxSizePt?: number; medianSizePt?: number };
+
+/** Digest of the role overrides as the analyzer consumed them — order-independent, values only. */
+export function roleOverridesDigest(overrides: Record<string, SemanticRole> = {}): string {
+  const canonical = Object.keys(overrides).sort().map((key) => [key, overrides[key]]);
+  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+export function elementsDigest(artifact: TemplateElementsArtifact): string {
+  return crypto.createHash("sha256").update(JSON.stringify(artifact)).digest("hex");
+}
 
 export function classifyTemplateElement(
   element: Pick<TemplateElement, "id" | "type" | "bounds" | "features">,
@@ -135,8 +150,9 @@ export function compileTemplateGrammar(artifact: TemplateElementsArtifact): Temp
   const family: CompositionFamily = hasMetric ? "single_focal" : dividerUsage ? "split_panels" : "column_zones";
   return {
     version: 1,
-    compilerVersion: "1",
+    compilerVersion: ANALYZER_VERSION,
     sourceDigest: artifact.source.sha256,
+    elementsDigest: elementsDigest(artifact),
     slideSize: artifact.source.slideSize,
     typography: { families: [...new Set(Object.values(artifact.styles).map((style) => style.family).filter((family): family is string => Boolean(family)))], titleBodyRatio: titleSize / bodySize, weightContrast: Math.abs(titleWeight - bodyWeight), lineHeightRatio: 1 },
     geometry: { contentFrame, outerMargins: { x: contentFrame.x, y: contentFrame.y, w: artifact.source.slideSize.w - contentFrame.x - contentFrame.w, h: artifact.source.slideSize.h - contentFrame.y - contentFrame.h }, gutter: 0, spacingScale: 1 },
@@ -283,5 +299,12 @@ export async function extractTemplateElements(pptxPath: string, overrides: Recor
     const id = `S${String(index + 1).padStart(2, "0")}`;
     slides.push({ id, elements: extractSlide(xml, id, styles) });
   }
-  return classifyTemplateElements({ version: 1, source: { sha256: crypto.createHash("sha256").update(bytes).digest("hex"), slideSize }, slides, styles }, overrides);
+  const templateDigest = crypto.createHash("sha256").update(bytes).digest("hex");
+  return classifyTemplateElements({
+    version: 1,
+    source: { sha256: templateDigest, slideSize },
+    analysisInputs: { templateDigest, roleOverridesDigest: roleOverridesDigest(overrides), analyzerVersion: ANALYZER_VERSION },
+    slides,
+    styles,
+  }, overrides);
 }

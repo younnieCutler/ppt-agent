@@ -53,4 +53,12 @@ describe("DeckPlan quality gate", () => {
     expect(codes(report)).toContain("MULTIPLE_DOMINANT_CLAIMS");
     expect(report.findings.find((finding) => finding.code === "MULTIPLE_DOMINANT_CLAIMS")?.severity).toBe("hard");
   });
+
+  it("treats a risk finding as a blocking review, not a caveat", () => {
+    // Documented contract: composition-resolve requires `pass`, so `review` blocks authoring.
+    const report = validateDeckPlan(plan, contract, contentModel, [{ code: "REPEATED_VISUAL_INTENT", message: "Three slides in a row read the same way." }]);
+    expect(report.findings.some((item) => item.severity === "risk")).toBe(true);
+    expect(report.findings.some((item) => item.severity === "hard")).toBe(false);
+    expect(report.status).toBe("review");
+  });
 });

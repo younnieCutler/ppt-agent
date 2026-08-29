@@ -4,7 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import { loadBrandFile } from "./brand";
 import type { BrandFile } from "./schema";
-import type { TemplateGrammar } from "./template-analysis";
+import { ANALYZER_VERSION, elementsDigest, roleOverridesDigest, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
 
 const rectSchema = z.object({ x: z.number().nonnegative(), y: z.number().nonnegative(), w: z.number().positive(), h: z.number().positive() });
 export const semanticLayouts = ["title", "statement", "comparison", "process", "pipeline", "architecture", "quantitative", "timeline", "evidence", "chart"] as const;
@@ -67,9 +67,16 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
     const grammarPath = path.join(root, map.grammarFile);
     if (!fs.existsSync(elementsPath) || !fs.existsSync(grammarPath)) throw new Error("Organization Pack v2 requires template-elements.json and template-grammar.json.");
     const templateDigest = crypto.createHash("sha256").update(fs.readFileSync(templatePath)).digest("hex");
-    const elements = JSON.parse(fs.readFileSync(elementsPath, "utf8")) as { source?: { sha256?: string } };
+    const elements = JSON.parse(fs.readFileSync(elementsPath, "utf8")) as TemplateElementsArtifact;
     const grammar = JSON.parse(fs.readFileSync(grammarPath, "utf8")) as TemplateGrammar;
     if (elements.source?.sha256 !== templateDigest || grammar.sourceDigest !== templateDigest) throw new Error("Organization Pack v2 generated artifacts are stale for template.pptx.");
+    // template.pptx is not the only analysis input: elementRoleOverrides change semantic roles and
+    // therefore the compiled grammar while the PPTX stays byte-identical.
+    const inputs = elements.analysisInputs;
+    if (!inputs) throw new Error("Organization Pack v2 generated artifacts predate analysis provenance. Re-run `template-analyze`.");
+    if (inputs.roleOverridesDigest !== roleOverridesDigest(map.elementRoleOverrides)) throw new Error("Organization Pack v2 generated artifacts are stale for template-map.json elementRoleOverrides. Re-run `template-analyze`.");
+    if (inputs.analyzerVersion !== ANALYZER_VERSION) throw new Error(`Organization Pack v2 generated artifacts were produced by analyzer version ${inputs.analyzerVersion}; this build is ${ANALYZER_VERSION}. Re-run \`template-analyze\`.`);
+    if (grammar.elementsDigest !== elementsDigest(elements)) throw new Error("Organization Pack v2 template-grammar.json was not compiled from this template-elements.json. Re-run `template-analyze`.");
     templateGrammar = grammar;
     templateGrammarDigest = crypto.createHash("sha256").update(fs.readFileSync(grammarPath)).digest("hex");
   }
