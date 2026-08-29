@@ -19,8 +19,8 @@ import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAga
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
 import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
-import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, type TemplatePattern } from "./template-patterns";
-import { checkTemplatePatternNotFound, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
+import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, selectPatternsForSlides, type TemplatePattern } from "./template-patterns";
+import { checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
 import { applyPatternSkeleton } from "./template";
 import { templateMapSchema } from "./organization";
 import { resolveTemplateSourceSpec } from "./template-source";
@@ -539,16 +539,19 @@ async function main(): Promise<void> {
     if (!fs.existsSync(patternsPath)) throw new Error(`Skeleton render requires ${patternsPath}. Run \`template-analyze\` first.`);
     const patternPlan = readJson(patternPlanPath) as { slides: Array<{ id: string; candidates: Array<{ patternId: string; rank: number }> }> };
     const patternsById = new Map<string, TemplatePattern>((readJson(patternsPath) as { patterns: TemplatePattern[] }).patterns.map((pattern) => [pattern.id, pattern]));
-    // The rank-1 candidate is the default choice: a DeckSpec has no field yet to record "the host
-    // picked candidate #2" (a real future refinement), so absent that, rank-1 — the same one
-    // `pattern-resolve` itself ranked highest — is what gets rendered.
-    const resolvedPatterns = new Map<string, TemplatePattern>();
-    for (const slide of patternPlan.slides) {
-      const topCandidate = slide.candidates.find((candidate) => candidate.rank === 1);
-      const pattern = topCandidate && patternsById.get(topCandidate.patternId);
-      if (pattern) resolvedPatterns.set(slide.id, pattern);
-    }
+    // Walk each slide's shortlist in rank order and take the first candidate that would actually
+    // carry the slide's real content and fit its required slots — not unconditionally rank 1. A
+    // rank-1 pattern that would silently drop a process's steps, or overflow its headline slot, is
+    // exactly the candidate rank 2/3 exist to fall back from. If no candidate fits, the slide gets
+    // no resolved pattern at all and falls through to the generic renderer (recorded as such in
+    // render-manifest.json) rather than clone a pattern that loses content.
+    const deckSlidesById = new Map(deck.slides.map((slide) => [slide.id, slide]));
+    const { resolvedPatterns, selectionLog } = selectPatternsForSlides(patternPlan, patternsById, deckSlidesById);
     const manifest = await applyPatternSkeleton(templatePath, scratchPath, outPath, deck.slides, resolvedPatterns);
+    // The record of which candidate was actually chosen (and why the ones ranked above it were
+    // skipped) — render-manifest.json's mode already names the chosen pattern per slide, but not
+    // its rank or what was rejected along the way.
+    fs.writeFileSync(path.join(runDir, "pattern-selection.json"), JSON.stringify(selectionLog, null, 2));
     const manifestPath = path.join(runDir, "render-manifest.json");
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     emit({ status: "pass", outputPath: path.resolve(outPath), manifestPath, slides: manifest.length }, manifest);
@@ -834,7 +837,11 @@ async function main(): Promise<void> {
             .filter((tuple): tuple is [string, (typeof patterns)[number]] => Boolean(tuple[1])),
         );
         const capacityFindings = checkTemplateSlotCapacity(canonicalDeck, chosenPatterns);
-        report = mergeFindings(report, [...fidelityFindings, ...capacityFindings]);
+        // Independent of, and never covered by, the REQUIRED_NATIVE_OBJECT_MISSING exemption for
+        // pattern-rendered slides above (that exemption is about connector/shape geometry; this is
+        // about whether the slide's actual grounded content reached a slot at all).
+        const semanticContentFindings = checkTemplateSemanticContentDropped(canonicalDeck, chosenPatterns);
+        report = mergeFindings(report, [...fidelityFindings, ...capacityFindings, ...semanticContentFindings]);
       }
     }
     if (usePowerPoint && process.platform === "win32") {

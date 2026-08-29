@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkTemplateFidelityUnproven, checkTemplatePatternNotFound, checkTemplateSlotCapacity } from "../../src/template-fidelity";
+import { checkTemplateFidelityUnproven, checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity } from "../../src/template-fidelity";
+import { patternFitsSlide } from "../../src/template-patterns";
 import type { TemplatePattern } from "../../src/template-patterns";
 import type { SlideSpec } from "../../src/schema";
 
@@ -71,5 +72,86 @@ describe("checkTemplateSlotCapacity", () => {
 
   it("reports nothing for a slide with no chosen pattern", () => {
     expect(checkTemplateSlotCapacity({ slides: [slide] }, new Map())).toHaveLength(0);
+  });
+});
+
+describe("checkTemplateSemanticContentDropped: pattern-specific semantic contract, independent of the REQUIRED_NATIVE_OBJECT_MISSING exemption", () => {
+  const headlineOnlyPattern: TemplatePattern = {
+    id: "p-headline-only", sourceSlideId: "S01", sourceSlideNumber: 1,
+    suitableFor: { functions: [], compositions: [], densities: ["low"], confidence: 0.5 },
+    skeleton: {
+      sourceSlidePart: "ppt/slides/slide1.xml", preservedShapeIds: [], removableContentIds: [], assetClasses: {},
+      replaceableSlots: [{ id: "slot1", role: "title", binding: "headline", shapeId: "Title", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: true }],
+    },
+    visualSignature: { backgroundTreatment: "plain", compositionFamily: "single_focal", surfaceUsage: "none", density: "low" },
+  };
+  const withBodySlot: TemplatePattern = {
+    ...headlineOnlyPattern,
+    id: "p-with-body",
+    skeleton: {
+      ...headlineOnlyPattern.skeleton,
+      replaceableSlots: [...headlineOnlyPattern.skeleton.replaceableSlots, { id: "slot2", role: "body", binding: "content.body", shapeId: "Body", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false }],
+    },
+  };
+
+  const processSlide: SlideSpec = {
+    id: "S01", role: "body", storyBeat: "implementation", headline: "Ship it in three stages", headlineAlignment: "left",
+    claims: [{ text: "x" }], composition: "sequence", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+    layout: "process", content: { steps: [{ id: "a", label: "Design" }, { id: "b", label: "Build" }] },
+  } as unknown as SlideSpec;
+
+  it("fires hard when the chosen pattern has no slot for the slide's real (non-headline) payload", () => {
+    const findings = checkTemplateSemanticContentDropped({ slides: [processSlide] }, new Map([["S01", headlineOnlyPattern]]));
+    expect(findings).toEqual([expect.objectContaining({ severity: "hard", code: "TEMPLATE_SEMANTIC_CONTENT_DROPPED", slideId: "S01" })]);
+  });
+
+  it("does not fire once a slot resolves the layout's real content (content.body generalizes to process.steps)", () => {
+    expect(checkTemplateSemanticContentDropped({ slides: [processSlide] }, new Map([["S01", withBodySlot]]))).toHaveLength(0);
+  });
+
+  it("does not fire for title/quantitative layouts — a cover's payload is legitimately just its headline/subtitle", () => {
+    const cover: SlideSpec = {
+      id: "S01", role: "opener", storyBeat: "opening", headline: "Cover", headlineAlignment: "left",
+      claims: [{ text: "Cover" }], composition: "cover", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+      layout: "title", content: {},
+    } as unknown as SlideSpec;
+    expect(checkTemplateSemanticContentDropped({ slides: [cover] }, new Map([["S01", headlineOnlyPattern]]))).toHaveLength(0);
+  });
+
+  it("reports nothing for a slide with no chosen pattern", () => {
+    expect(checkTemplateSemanticContentDropped({ slides: [processSlide] }, new Map())).toHaveLength(0);
+  });
+});
+
+describe("patternFitsSlide", () => {
+  const headlineOnlyPattern: TemplatePattern = {
+    id: "p-headline-only", sourceSlideId: "S01", sourceSlideNumber: 1,
+    suitableFor: { functions: [], compositions: [], densities: ["low"], confidence: 0.5 },
+    skeleton: {
+      sourceSlidePart: "ppt/slides/slide1.xml", preservedShapeIds: [], removableContentIds: [], assetClasses: {},
+      replaceableSlots: [{ id: "slot1", role: "title", binding: "headline", shapeId: "Title", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: true }],
+    },
+    visualSignature: { backgroundTreatment: "plain", compositionFamily: "single_focal", surfaceUsage: "none", density: "low" },
+  };
+  const withBodySlot: TemplatePattern = {
+    ...headlineOnlyPattern,
+    id: "p-with-body",
+    skeleton: {
+      ...headlineOnlyPattern.skeleton,
+      replaceableSlots: [...headlineOnlyPattern.skeleton.replaceableSlots, { id: "slot2", role: "body", binding: "content.body", shapeId: "Body", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false }],
+    },
+  };
+  const evidenceSlide: SlideSpec = {
+    id: "S01", role: "body", storyBeat: "evidence", headline: "Three findings", headlineAlignment: "left",
+    claims: [{ text: "Three findings" }], composition: "evidence_list", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+    layout: "evidence", content: { bullets: ["First", "Second", "Third"] },
+  } as unknown as SlideSpec;
+
+  it("rejects a candidate that would drop the slide's real content — this is what the Pattern Resolver's rank fallback selects away from", () => {
+    expect(patternFitsSlide(headlineOnlyPattern, evidenceSlide)).toBe(false);
+  });
+
+  it("accepts a candidate whose slot resolves the slide's real content and fits", () => {
+    expect(patternFitsSlide(withBodySlot, evidenceSlide)).toBe(true);
   });
 });

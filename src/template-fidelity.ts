@@ -252,3 +252,37 @@ export function checkTemplateSlotCapacity(deck: Pick<DeckSpec, "slides">, chosen
   }
   return findings;
 }
+
+/**
+ * A pattern-rendered slide is exempt from `REQUIRED_NATIVE_OBJECT_MISSING` (a promise about
+ * connector/shape *geometry* the generic renderer's own composition contract makes, and a
+ * pattern's editability guarantee comes from being real copied shapes, not from matching that
+ * contract — see the exemption's own comment in qa.ts). That exemption must never be read as
+ * covering *content* too: this is the independent, non-exempted check for whether the slide's real
+ * payload — not just its headline — actually reached a slot. `title`/`quantitative` layouts are
+ * skipped, matching `patternFitsSlide`'s own reasoning (a cover's payload is its headline/subtitle;
+ * quantitative content has its own dedicated binding already covered by this same test on other
+ * layouts and by checkTemplateSlotCapacity).
+ */
+export function checkTemplateSemanticContentDropped(deck: Pick<DeckSpec, "slides">, chosenPatterns: Map<string, TemplatePattern>): QaFinding[] {
+  const findings: QaFinding[] = [];
+  for (const slide of deck.slides as SlideSpec[]) {
+    const pattern = chosenPatterns.get(slide.id);
+    if (!pattern) continue;
+    if (slide.layout === "title" || slide.layout === "quantitative") continue;
+    const carriesRealContent = pattern.skeleton.replaceableSlots.some((slot) => {
+      if (slot.binding === "headline") return false;
+      const content = resolveSlotContent(slide, slot.binding);
+      return content !== undefined && (!Array.isArray(content) || content.length > 0);
+    });
+    if (!carriesRealContent) {
+      findings.push({
+        severity: "hard",
+        code: "TEMPLATE_SEMANTIC_CONTENT_DROPPED",
+        slideId: slide.id,
+        message: `Pattern '${pattern.id}' has no slot bound to slide '${slide.id}''s non-headline content (layout '${slide.layout}'). Cloning this pattern would render only the headline; the composition's real payload has nowhere to go and would be silently dropped.`,
+      });
+    }
+  }
+  return findings;
+}

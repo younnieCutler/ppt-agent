@@ -7,6 +7,8 @@ import {
   patternLabelSchema,
   resolvePatternPlan,
   resolveSlotContent,
+  selectPatternsForSlides,
+  type TemplatePattern,
   type TemplatePatternsArtifact,
 } from "../../src/template-patterns";
 import type { CompositionPlan } from "../../src/planning";
@@ -120,10 +122,14 @@ describe("resolveSlotContent", () => {
     expect(resolveSlotContent(comparison, "headline")).toBe("Compare");
   });
 
-  it("resolves content.body and content.proofs[] only for statement", () => {
+  it("resolves content.proofs[] only for statement, and content.body per-layout (never dropping a layout's real payload)", () => {
     expect(resolveSlotContent(statement, "content.body")).toBe("The statement body.");
     expect(resolveSlotContent(statement, "content.proofs[]")).toEqual(["proof one", "proof two"]);
-    expect(resolveSlotContent(comparison, "content.body")).toBeUndefined();
+    // A "body"-role slot is most templates' only general-purpose text container — content.body
+    // degrades into it for every layout whose payload can be flattened to text, so cloning a
+    // pattern for a comparison/process/evidence/timeline slide doesn't silently drop that slide's
+    // real content just because the slot's binding predates those layouts.
+    expect(resolveSlotContent(comparison, "content.body")).toEqual(["Left: a, b", "Right: c"]);
   });
 
   it("resolves content.left.* and content.right.* only for comparison", () => {
@@ -227,5 +233,69 @@ describe("resolvePatternPlan", () => {
   it("returns a shortlist capped at 3 candidates per slide", () => {
     const plan = resolvePatternPlan(deckPlan, compositionPlan, patterns);
     plan.slides.forEach((slide) => expect(slide.candidates.length).toBeLessThanOrEqual(3));
+  });
+});
+
+describe("selectPatternsForSlides: rank fallback", () => {
+  const headlineOnlyPattern: TemplatePattern = {
+    id: "pattern-rank1", sourceSlideId: "S01", sourceSlideNumber: 1,
+    suitableFor: { functions: [], compositions: [], densities: ["low"], confidence: 0.5 },
+    skeleton: {
+      sourceSlidePart: "ppt/slides/slide1.xml", preservedShapeIds: [], removableContentIds: [], assetClasses: {},
+      replaceableSlots: [{ id: "slot1", role: "title", binding: "headline", shapeId: "Title", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: true }],
+    },
+    visualSignature: { backgroundTreatment: "plain", compositionFamily: "single_focal", surfaceUsage: "none", density: "low" },
+  };
+  const withBodySlot: TemplatePattern = {
+    ...headlineOnlyPattern,
+    id: "pattern-rank2",
+    skeleton: {
+      ...headlineOnlyPattern.skeleton,
+      replaceableSlots: [...headlineOnlyPattern.skeleton.replaceableSlots, { id: "slot2", role: "body", binding: "content.body", shapeId: "Body", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false }],
+    },
+  };
+  const evidenceSlide: SlideSpec = {
+    id: "S01", role: "body", storyBeat: "evidence", headline: "Three findings", headlineAlignment: "left",
+    claims: [{ text: "Three findings" }], composition: "evidence_list", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+    layout: "evidence", content: { bullets: ["First", "Second", "Third"] },
+  } as unknown as SlideSpec;
+
+  it("falls back past a higher-ranked candidate that would drop content, to one that carries it", () => {
+    const patternsById = new Map([[headlineOnlyPattern.id, headlineOnlyPattern], [withBodySlot.id, withBodySlot]]);
+    const slidesById = new Map([[evidenceSlide.id, evidenceSlide]]);
+    const patternPlan = { slides: [{ id: "S01", candidates: [{ patternId: headlineOnlyPattern.id, rank: 1 }, { patternId: withBodySlot.id, rank: 2 }] }] };
+
+    const { resolvedPatterns, selectionLog } = selectPatternsForSlides(patternPlan, patternsById, slidesById);
+
+    expect(resolvedPatterns.get("S01")?.id).toBe(withBodySlot.id);
+    expect(selectionLog).toEqual([{
+      slideId: "S01",
+      chosen: { patternId: withBodySlot.id, rank: 2 },
+      rejected: [{ patternId: headlineOnlyPattern.id, rank: 1, reason: expect.any(String) }],
+    }]);
+  });
+
+  it("still picks rank 1 when it actually fits — the fallback only activates on a real mismatch", () => {
+    const patternsById = new Map([[headlineOnlyPattern.id, headlineOnlyPattern], [withBodySlot.id, withBodySlot]]);
+    const slidesById = new Map([[evidenceSlide.id, evidenceSlide]]);
+    const patternPlan = { slides: [{ id: "S01", candidates: [{ patternId: withBodySlot.id, rank: 1 }, { patternId: headlineOnlyPattern.id, rank: 2 }] }] };
+
+    const { resolvedPatterns, selectionLog } = selectPatternsForSlides(patternPlan, patternsById, slidesById);
+
+    expect(resolvedPatterns.get("S01")?.id).toBe(withBodySlot.id);
+    expect(selectionLog[0].chosen).toEqual({ patternId: withBodySlot.id, rank: 1 });
+    expect(selectionLog[0].rejected).toHaveLength(0);
+  });
+
+  it("resolves nothing when every candidate would drop content — the slide falls through to the generic renderer", () => {
+    const patternsById = new Map([[headlineOnlyPattern.id, headlineOnlyPattern]]);
+    const slidesById = new Map([[evidenceSlide.id, evidenceSlide]]);
+    const patternPlan = { slides: [{ id: "S01", candidates: [{ patternId: headlineOnlyPattern.id, rank: 1 }] }] };
+
+    const { resolvedPatterns, selectionLog } = selectPatternsForSlides(patternPlan, patternsById, slidesById);
+
+    expect(resolvedPatterns.has("S01")).toBe(false);
+    expect(selectionLog[0].chosen).toBeUndefined();
+    expect(selectionLog[0].rejected).toHaveLength(1);
   });
 });

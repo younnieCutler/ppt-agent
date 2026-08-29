@@ -2,6 +2,7 @@ import { z } from "zod";
 import { slideFunctionSchema, type CompositionFamily, type DeckPlan, type SlideFunction, type SlideSpec } from "./schema";
 import type { CompositionPlan } from "./planning";
 import { elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
+import { displayWidth } from "./typography";
 
 /**
  * The closed set of `SlideSpec` field paths a template slot can be bound to. The host authors
@@ -13,6 +14,7 @@ export const slotBindingPaths = [
   "headline",
   "subhead",
   "content.body",
+  "content.steps[]",
   "content.proofs[]",
   "content.metrics[]",
   "content.left.label",
@@ -109,6 +111,7 @@ const ROLE_TO_BINDING: Partial<Record<SemanticRole, SlotBindingPath>> = {
   body: "content.body",
   key_message: "content.body",
   metric: "content.metrics[]",
+  step: "content.steps[]",
   source: "source",
 };
 
@@ -227,7 +230,22 @@ export function resolveSlotContent(slide: SlideSpec, binding: SlotBindingPath): 
     case "subhead":
       return slide.layout === "title" ? slide.content.subtitle : undefined;
     case "content.body":
-      return slide.layout === "statement" ? slide.content.body : undefined;
+      // A "body"/"key_message"-role slot is the one general-purpose text container most real
+      // templates have, and it is the only slot most patterns offer beyond the headline — so
+      // rather than binding it to `statement.body` alone (leaving process/evidence/timeline/
+      // comparison content with nowhere to go but silently removed), every layout whose real
+      // payload can be flattened into readable text degrades into this slot instead of being
+      // dropped. `architecture`/`pipeline`/`chart` genuinely cannot (their payload is a graph or
+      // a chart, not prose) and stay unsupported here — a pattern with only this slot is not a
+      // fit for those layouts, which the Pattern Resolver's capacity/content check must reject.
+      if (slide.layout === "statement") return slide.content.body;
+      if (slide.layout === "process") return slide.content.steps.map((step) => step.detail ? `${step.label}: ${step.detail}` : step.label);
+      if (slide.layout === "evidence") return slide.content.bullets;
+      if (slide.layout === "timeline") return slide.content.milestones.map((milestone) => `${milestone.date} — ${milestone.label}`);
+      if (slide.layout === "comparison") return [`${slide.content.left.label}: ${slide.content.left.items.join(", ")}`, `${slide.content.right.label}: ${slide.content.right.items.join(", ")}`];
+      return undefined;
+    case "content.steps[]":
+      return slide.layout === "process" ? slide.content.steps.map((step) => step.label) : undefined;
     case "content.proofs[]":
       return slide.layout === "statement" ? slide.content.proofs : undefined;
     case "content.metrics[]":
@@ -247,6 +265,74 @@ export function resolveSlotContent(slide: SlideSpec, binding: SlotBindingPath): 
     default:
       return undefined;
   }
+}
+
+/**
+ * Whether cloning `pattern` for `slide` would actually carry the slide's real payload, not just
+ * its headline — and would not visibly overflow a required slot. The Pattern Resolver uses this
+ * to pick the first candidate (by rank) that fits rather than always rendering rank 1, and
+ * `checkTemplateSemanticContentDropped` (template-fidelity.ts) uses the same "did any non-headline
+ * slot resolve real content" question to catch it after the fact if a caller renders directly
+ * against a resolved pattern without going through this gate.
+ *
+ * `title`/`quantitative` layouts are exempt from the "some non-headline slot resolved" test: a
+ * cover's only real payload often *is* its headline/subtitle, and quantitative content already has
+ * its own dedicated `content.metrics[]` binding checked like any other slot.
+ */
+export function patternFitsSlide(pattern: TemplatePattern, slide: SlideSpec): boolean {
+  const slots = pattern.skeleton.replaceableSlots;
+  if (slide.layout !== "title" && slide.layout !== "quantitative") {
+    const carriesRealContent = slots.some((slot) => {
+      if (slot.binding === "headline") return false;
+      const content = resolveSlotContent(slide, slot.binding);
+      return content !== undefined && (!Array.isArray(content) || content.length > 0);
+    });
+    if (!carriesRealContent) return false;
+  }
+  return !slots.some((slot) => {
+    if (!slot.required || slot.maxChars === undefined) return false;
+    const content = resolveSlotContent(slide, slot.binding);
+    if (content === undefined) return false;
+    const text = Array.isArray(content) ? content.join(" · ") : content;
+    return displayWidth(text) > slot.maxChars;
+  });
+}
+
+export type PatternSelectionEntry = {
+  slideId: string;
+  chosen?: { patternId: string; rank: number };
+  rejected: Array<{ patternId: string; rank: number; reason: string }>;
+};
+
+/**
+ * Walks each slide's ranked candidate shortlist and picks the first one `patternFitsSlide` accepts
+ * — never unconditionally rank 1. A slide with no fitting candidate at all gets no resolved
+ * pattern (the caller falls through to the generic renderer for it); this never throws.
+ */
+export function selectPatternsForSlides(
+  patternPlan: { slides: Array<{ id: string; candidates: Array<{ patternId: string; rank: number }> }> },
+  patternsById: Map<string, TemplatePattern>,
+  slidesById: Map<string, SlideSpec>,
+): { resolvedPatterns: Map<string, TemplatePattern>; selectionLog: PatternSelectionEntry[] } {
+  const resolvedPatterns = new Map<string, TemplatePattern>();
+  const selectionLog: PatternSelectionEntry[] = [];
+  for (const slide of patternPlan.slides) {
+    const slideSpec = slidesById.get(slide.id);
+    const rejected: PatternSelectionEntry["rejected"] = [];
+    let chosen: PatternSelectionEntry["chosen"];
+    for (const candidate of [...slide.candidates].sort((a, b) => a.rank - b.rank)) {
+      const pattern = patternsById.get(candidate.patternId);
+      if (!pattern || !slideSpec) continue;
+      if (patternFitsSlide(pattern, slideSpec)) {
+        resolvedPatterns.set(slide.id, pattern);
+        chosen = { patternId: candidate.patternId, rank: candidate.rank };
+        break;
+      }
+      rejected.push({ patternId: candidate.patternId, rank: candidate.rank, reason: "content would be dropped or a required slot would overflow" });
+    }
+    selectionLog.push({ slideId: slide.id, chosen, rejected });
+  }
+  return { resolvedPatterns, selectionLog };
 }
 
 // ---------------------------------------------------------------------------------------------
