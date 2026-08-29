@@ -67,6 +67,42 @@ export const storyBeatSchema = z.enum([
   "closing",
 ]);
 
+export const slideFunctionSchema = z.enum([
+  "cover", "statement", "comparison", "process", "architecture",
+  "quantitative", "timeline", "evidence", "action",
+]);
+
+export const planVisualIntentSchema = z.enum([
+  "single_focal", "contrast", "flow", "hierarchy", "trend", "network", "timeline",
+]);
+
+export type SlideFunction = z.infer<typeof slideFunctionSchema>;
+export type PlanVisualIntent = z.infer<typeof planVisualIntentSchema>;
+
+export const slideIntentSchema = z.object({
+  id: z.string().regex(/^S\d{2,}$/),
+  storyBeat: storyBeatSchema,
+  thesis: z.string().min(1),
+  function: slideFunctionSchema,
+  primaryEvidence: z.array(sourceRefSchema).min(1),
+  secondaryEvidence: z.array(sourceRefSchema).default([]),
+  visualIntent: planVisualIntentSchema,
+  density: z.enum(["low", "medium", "high"]),
+  takeaway: z.string().min(1),
+});
+
+export const deckPlanSchema = z.object({
+  version: z.literal(1),
+  title: z.string().min(1),
+  narrativeThesis: z.string().min(1),
+  slides: z.array(slideIntentSchema).min(3).max(30),
+}).superRefine((plan, ctx) => {
+  const ids = plan.slides.map((slide) => slide.id);
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slides"], message: "DeckPlan slide ids must be unique." });
+  }
+});
+
 export const sourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("prompt"), id: z.string().min(1), text: z.string().min(1) }),
   z.object({
@@ -463,6 +499,11 @@ const deckShapeSchema = z.object({
   slides: z.array(slideSchema).min(3).max(30),
 });
 
+const deckV2ShapeSchema = deckShapeSchema.extend({
+  version: z.literal(2),
+  planDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
 export const deckSchema = z
   .preprocess((input, ctx) => {
     const forbidden = new Set(["x", "y", "w", "h", "width", "height"]);
@@ -479,7 +520,7 @@ export const deckSchema = z
     };
     visit(input, "deck");
     return input;
-  }, deckShapeSchema)
+  }, z.union([deckV2ShapeSchema, deckShapeSchema]))
   .superRefine((deck, ctx) => {
     if (deck.contract.slideCount !== deck.slides.length) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["contract", "slideCount"], message: "contract.slideCount must equal slides.length." });
@@ -549,6 +590,8 @@ export const deckSchema = z
     });
   });
 
+export const deckV2Schema = z.intersection(deckSchema, deckV2ShapeSchema);
+
 export type SourceRef = z.infer<typeof sourceRefSchema>;
 export type ContentModel = z.infer<typeof contentModelSchema>;
 export type Claim = z.infer<typeof claimSchema>;
@@ -564,6 +607,7 @@ export type SlideSpec = z.infer<typeof slideSchema>;
 export type VisualProof = z.infer<typeof visualProofSchema>;
 export type VisualProofCollection = (typeof visualProofCollections)[number];
 export type DeckSpec = z.infer<typeof deckSchema>;
+export type DeckPlan = z.infer<typeof deckPlanSchema>;
 
 export const layoutNames = [
   "title",
