@@ -547,7 +547,15 @@ async function main(): Promise<void> {
     // render-manifest.json) rather than clone a pattern that loses content.
     const deckSlidesById = new Map(deck.slides.map((slide) => [slide.id, slide]));
     const { resolvedPatterns, selectionLog } = selectPatternsForSlides(patternPlan, patternsById, deckSlidesById);
-    const manifest = await applyPatternSkeleton(templatePath, scratchPath, outPath, deck.slides, resolvedPatterns);
+    // Reading the strategy this run's own template-analyze already recorded is what turns a
+    // no-fitting-candidate slide into an immediate hard failure instead of a silent generic
+    // redraw — see applyPatternSkeleton's own comment. Absent (template-analyze never wrote it
+    // for some reason) falls back to the lenient default rather than guessing.
+    const elementsPathForRender = path.join(runDir, "template", "template-elements.json");
+    const renderStrategy = fs.existsSync(elementsPathForRender)
+      ? (readJson(elementsPathForRender) as { strategy: import("./template-analysis").TemplateStrategy }).strategy
+      : undefined;
+    const manifest = await applyPatternSkeleton(templatePath, scratchPath, outPath, deck.slides, resolvedPatterns, { strategy: renderStrategy });
     // The record of which candidate was actually chosen (and why the ones ranked above it were
     // skipped) — render-manifest.json's mode already names the chosen pattern per slide, but not
     // its rank or what was rejected along the way.
