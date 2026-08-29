@@ -250,6 +250,39 @@ Core QA now hard-fails two data-encoding defects, before any render or judgment:
 
 Text budgets are measured in **display columns**, not codepoints, so a Japanese glyph counts as two. Japanese decks (`contract.language` starting `ja`) additionally get `JAPANESE_ORPHAN_PUNCTUATION` and `JAPANESE_AWKWARD_LINE_BREAK` from a kinsoku wrap simulation, and every deck gets `HEADLINE_BAD_WRAP`. These are `risk`, not `hard`: they run against an estimated column budget rather than real font metrics, so live measurement is still `qa --powerpoint`.
 
+## Template fidelity gates
+
+`qa` runs these automatically whenever `<run-dir>/render-manifest.json` exists (i.e. after
+`render-pattern-skeleton`) and the deck used an Organization Pack — no separate command. All are
+deterministic (`src/template-fidelity.ts`); none of them is a judgment call:
+
+- `TEMPLATE_EXAMPLE_CONTENT_LEAK` (hard) — verbatim source example text from a slot the pattern
+  declared replaceable or removable still present in the delivered package. Checked against
+  `template.pptx` directly at check time — the elements/patterns artifacts never persist example
+  strings, so this is the only place the actual text exists to compare against.
+- `TEMPLATE_EXAMPLE_MEDIA_LEAK` (hard) — a picture or graphic frame the pattern declared removable
+  is still present in the delivered slide.
+- `TEMPLATE_PATTERN_STRUCTURE_DRIFT` (hard) — a shape the pattern declared preserved is missing
+  from the delivered slide, by name.
+- `TEMPLATE_FIDELITY_UNPROVEN` (hard) — a `source_slide_pattern` template rendered a slide with the
+  generic renderer instead of a cloned pattern. Never fires for `hybrid`, where mixing both is
+  legitimate.
+- `TEMPLATE_PATTERN_NOT_FOUND` (hard) — `pattern-resolve` produced an empty candidate shortlist for
+  a slide on a `source_slide_pattern` template (surfaced immediately by `pattern-resolve` itself,
+  and re-checked here).
+- `TEMPLATE_SLOT_OVERFLOW` (hard) / `TEMPLATE_SLOT_TRUNCATED` (risk) — injected content exceeds a
+  slot's estimated capacity (`maxChars`, from the slot's own geometry — approximate, same caveat as
+  every other text-budget check above). Hard when the slot is `required`; risk otherwise, since a
+  non-required slot's excess content is truncated rather than blocking the deck.
+
+Three additional codes are **judgment**, not deterministic — read against a template-vs-generated
+montage comparison, same as every other visual finding: `TEMPLATE_STYLE_DRIFT`,
+`TEMPLATE_HIERARCHY_DRIFT`, `TEMPLATE_COMPOSITION_DRIFT` (all `risk` — no calibrated gold set exists
+yet to justify a hard numeric fidelity threshold). Judge cover treatment, body surface rhythm, type
+hierarchy, logo/footer behavior, section numbering, divider behavior, key-message treatment,
+composition variety, whitespace character, and visual density against the template's own render,
+the same rubric the Visual QA section above already uses for everything else.
+
 ## Run metrics
 
 ```sh

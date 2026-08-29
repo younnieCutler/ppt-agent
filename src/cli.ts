@@ -20,6 +20,7 @@ import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } 
 import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
 import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, type TemplatePattern } from "./template-patterns";
+import { checkTemplatePatternNotFound, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
 import { applyPatternSkeleton } from "./template";
 import { templateMapSchema } from "./organization";
 import { createRunWorkspace, removeRunWorkspace } from "./workspace";
@@ -516,7 +517,11 @@ async function main(): Promise<void> {
     const outputPath = path.join(runDir, "pattern-plan.json");
     fs.writeFileSync(outputPath, JSON.stringify(patternPlan, null, 2));
     recordProvenance(runDir, { templatePatternsDigest: sha256File(patternsPath), patternPlanDigest: sha256File(outputPath) });
-    emit({ status: "pass", outputPath, slides: patternPlan.slides.length }, patternPlan);
+    const elementsPath = path.join(runDir, "template", "template-elements.json");
+    const strategy = fs.existsSync(elementsPath) ? (readJson(elementsPath) as { strategy: Parameters<typeof checkTemplatePatternNotFound>[0] }).strategy : "native_layout";
+    const notFoundFindings = checkTemplatePatternNotFound(strategy, patternPlan);
+    if (notFoundFindings.length > 0) process.exitCode = 2;
+    emit({ status: notFoundFindings.length > 0 ? "fail" : "pass", outputPath, slides: patternPlan.slides.length, findings: notFoundFindings }, { ...patternPlan, findings: notFoundFindings });
     return;
   }
 
@@ -793,6 +798,25 @@ async function main(): Promise<void> {
       ? await ooxmlQa(pptxPath, canonicalDeck, undefined, style)
       : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
     let report = mergeFindings(structural, ooxmlFindings);
+    const renderManifestPath = path.join(path.resolve(runDir), "render-manifest.json");
+    if (fs.existsSync(renderManifestPath) && style.organization?.templatePath && fs.existsSync(path.resolve(pptxPath))) {
+      const manifest = readJson(renderManifestPath) as import("./template-fidelity").RenderManifestEntry[];
+      const patternsPath = path.join(path.resolve(runDir), "template", "template-patterns.json");
+      const elementsPath = path.join(path.resolve(runDir), "template", "template-elements.json");
+      if (fs.existsSync(patternsPath) && fs.existsSync(elementsPath)) {
+        const patterns = (readJson(patternsPath) as { patterns: Parameters<typeof templateFidelityQa>[4] }).patterns;
+        const strategy = (readJson(elementsPath) as { strategy: Parameters<typeof templateFidelityQa>[5] }).strategy;
+        const fidelityFindings = await templateFidelityQa(pptxPath, style.organization.templatePath, canonicalDeck, manifest, patterns, strategy);
+        const patternsById = new Map(patterns.map((pattern) => [pattern.id, pattern]));
+        const chosenPatterns = new Map(
+          manifest
+            .map((entry) => [entry.slideId, patternsById.get((entry.mode.startsWith("pattern:") ? entry.mode.slice(8) : "") as string)] as const)
+            .filter((tuple): tuple is [string, (typeof patterns)[number]] => Boolean(tuple[1])),
+        );
+        const capacityFindings = checkTemplateSlotCapacity(canonicalDeck, chosenPatterns);
+        report = mergeFindings(report, [...fidelityFindings, ...capacityFindings]);
+      }
+    }
     if (usePowerPoint && process.platform === "win32") {
       const powerpoint = runPowerPointQa(pptxPath, canonicalDeck, runDir);
       report = mergeQa(report, powerpoint);

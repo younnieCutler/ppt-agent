@@ -38,6 +38,13 @@ export const visualFindingCodes = [
   "LAYOUT_REPETITION",
   "INCONSISTENT_SECTION_RHYTHM",
   "REFERENCE_VISUAL_DRIFT",
+  // template fidelity — risk. No calibrated gold set exists yet to justify a hard gate here (see
+  // plan/2026-08-29-template-native-runtime.md); these are judgment calls from a template-vs-
+  // generated montage comparison, distinct from the deterministic hard checks in
+  // src/template-fidelity.ts (leakage, structure drift, slot overflow — those need no judgment).
+  "TEMPLATE_STYLE_DRIFT",
+  "TEMPLATE_HIERARCHY_DRIFT",
+  "TEMPLATE_COMPOSITION_DRIFT",
   // provenance layer — computed from render-provenance.json/backend.json, never guessed visually
   "VISUAL_QA_STALE_RENDER",
   "VISUAL_RENDER_PROVENANCE_UNKNOWN",
@@ -79,6 +86,9 @@ export const findingSeverityByCode: Record<(typeof visualFindingCodes)[number], 
   LAYOUT_REPETITION: "risk",
   INCONSISTENT_SECTION_RHYTHM: "risk",
   REFERENCE_VISUAL_DRIFT: "risk",
+  TEMPLATE_STYLE_DRIFT: "risk",
+  TEMPLATE_HIERARCHY_DRIFT: "risk",
+  TEMPLATE_COMPOSITION_DRIFT: "risk",
   VISUAL_QA_STALE_RENDER: "hard",
   VISUAL_RENDER_PROVENANCE_UNKNOWN: "risk",
   RENDER_FONT_SUBSTITUTION: "risk",
