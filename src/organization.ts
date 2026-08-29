@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -22,7 +23,7 @@ export const layoutBindingSchema = z.object({
   reservedRegions: z.array(rectSchema).default([]),
 });
 
-export const templateMapSchema = z.object({
+export const templateMapV1Schema = z.object({
   version: z.literal(1),
   aspectRatio: z.enum(["16:9", "4:3"]).default("16:9"),
   chromeOwnership: z.object({
@@ -35,6 +36,15 @@ export const templateMapSchema = z.object({
   layouts: z.record(z.enum(semanticLayouts), layoutBindingSchema).default({}),
   requiredElements: z.array(z.object({ name: z.string().min(1), layouts: z.array(z.union([z.literal("*"), z.enum(semanticLayouts)])).min(1) })).default([]),
 });
+
+export const templateMapV2Schema = templateMapV1Schema.extend({
+  version: z.literal(2),
+  elementRoleOverrides: z.record(z.enum(["title", "subtitle", "heading", "body", "caption", "eyebrow", "label", "key_message", "metric", "metric_label", "annotation", "step", "route", "source", "logo", "footer", "surface", "divider"])).default({}),
+  elementsFile: z.literal("template-elements.json").default("template-elements.json"),
+  grammarFile: z.literal("template-grammar.json").default("template-grammar.json"),
+});
+
+export const templateMapSchema = z.union([templateMapV1Schema, templateMapV2Schema]);
 
 export type TemplateMap = z.infer<typeof templateMapSchema>;
 export type LayoutBinding = z.infer<typeof layoutBindingSchema>;
@@ -49,6 +59,15 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
     if (!fs.existsSync(required)) throw new Error(`Organization pack is incomplete; required file is missing: ${required}`);
   }
   const map = templateMapSchema.parse(JSON.parse(fs.readFileSync(mapPath, "utf8")));
+  if (map.version === 2) {
+    const elementsPath = path.join(root, map.elementsFile);
+    const grammarPath = path.join(root, map.grammarFile);
+    if (!fs.existsSync(elementsPath) || !fs.existsSync(grammarPath)) throw new Error("Organization Pack v2 requires template-elements.json and template-grammar.json.");
+    const templateDigest = crypto.createHash("sha256").update(fs.readFileSync(templatePath)).digest("hex");
+    const elements = JSON.parse(fs.readFileSync(elementsPath, "utf8")) as { source?: { sha256?: string } };
+    const grammar = JSON.parse(fs.readFileSync(grammarPath, "utf8")) as { sourceDigest?: string };
+    if (elements.source?.sha256 !== templateDigest || grammar.sourceDigest !== templateDigest) throw new Error("Organization Pack v2 generated artifacts are stale for template.pptx.");
+  }
   const brand = loadBrandFile(brandPath);
   validateMapGeometry(map);
   return { id: path.basename(root), root, templatePath, map, brand };

@@ -17,6 +17,7 @@ import { markPhase, measurementWindow, projectSlug, resolveTranscript, writeToke
 import { recordRun, writeQualityReport } from "./score";
 import { resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
+import { extractTemplateElements } from "./template-analysis";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -159,7 +160,7 @@ export async function release(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|plan-validate|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|plan-validate|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
@@ -211,6 +212,17 @@ async function main(): Promise<void> {
       markPhase(runDir, "referenceRetrieval");
     }
     emit({ status: "pass", selected: selected.map((entry) => entry.id), outputPath: runDir ? path.join(path.resolve(runDir), "reference-selection.json") : undefined }, selected);
+    return;
+  }
+
+  if (command === "template-analyze") {
+    const input = option(args, "--input");
+    const out = path.resolve(option(args, "--out"));
+    const elements = await extractTemplateElements(input);
+    fs.mkdirSync(out, { recursive: true });
+    const outputPath = path.join(out, "template-elements.json");
+    fs.writeFileSync(outputPath, JSON.stringify(elements, null, 2));
+    print({ status: "pass", outputPath, slides: elements.slides.length, grammar: "not_compiled" });
     return;
   }
 
