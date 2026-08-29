@@ -15,8 +15,8 @@ import { resolvePresentationStyle, styleContext } from "./style";
 import { writeP3Metrics } from "./metrics";
 import { markPhase, measurementWindow, projectSlug, resolveTranscript, writeTokenReport } from "./tokens";
 import { recordRun, writeQualityReport } from "./score";
-import { validateDeckPlan } from "./planning";
-import { sha256, sha256File, writeArtifactProvenance } from "./provenance";
+import { resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
+import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -242,6 +242,28 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "composition-resolve") {
+    const planPath = option(args, "--plan");
+    const styleContextPath = option(args, "--style-context");
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const planningQaPath = path.join(runDir, "planning-qa.json");
+    const provenancePath = path.join(runDir, "artifact-provenance.json");
+    if (!fs.existsSync(planningQaPath) || (readJson(planningQaPath) as { status?: string }).status !== "pass") throw new Error("Composition resolution requires a passing planning-qa.json.");
+    if (!fs.existsSync(provenancePath)) throw new Error("Composition resolution requires artifact-provenance.json.");
+    const provenance = readJson(provenancePath) as Record<string, string>;
+    if (!provenance.contractDigest || !provenance.contentModelDigest) throw new Error("Composition resolution requires contract and ContentModel provenance.");
+    if (provenance.deckPlanDigest !== sha256(JSON.stringify(readJson(planPath)))) throw new Error("Composition resolution blocked: deck plan digest is stale.");
+    const styleContext = readJson(styleContextPath);
+    const grammarPath = path.join(runDir, "template-grammar.json");
+    const grammar = fs.existsSync(grammarPath) ? readJson(grammarPath) : {};
+    const compositionPlan = resolveCompositionPlan(readJson(planPath), styleContext as never, grammar as never);
+    const outputPath = path.join(runDir, "composition-plan.json");
+    fs.writeFileSync(outputPath, JSON.stringify(compositionPlan, null, 2));
+    writeArtifactProvenance(runDir, { ...provenance, resolvedStyleDigest: sha256File(styleContextPath), compositionPlanDigest: sha256(JSON.stringify(compositionPlan)) } as ArtifactProvenance);
+    emit({ status: "pass", outputPath, slides: compositionPlan.slides.length }, compositionPlan);
+    return;
+  }
+
   if (command === "visual") {
     const specPath = option(args, "--spec");
     const pptxPath = option(args, "--pptx");
@@ -333,6 +355,20 @@ async function main(): Promise<void> {
   const specPath = option(args, "--spec");
   const rawDeck = readJson(specPath);
   const deck = deckSchema.parse(rawDeck);
+  if (["validate", "render", "qa"].includes(command)) {
+    const runDir = optionalOption(args, "--run-dir");
+    const isV2 = Boolean(rawDeck && typeof rawDeck === "object" && (rawDeck as { version?: unknown }).version === 2);
+    if (!isV2 && !hasFlag(args, "--allow-legacy")) throw new Error("Legacy DeckSpec requires --allow-legacy.");
+    if (isV2) {
+      if (!runDir) throw new Error("DeckSpec v2 requires --run-dir for DeckPlan verification.");
+      const resolvedRunDir = path.resolve(runDir);
+      const planPath = path.join(resolvedRunDir, "deck-plan.json");
+      const compositionPath = path.join(resolvedRunDir, "composition-plan.json");
+      if (!fs.existsSync(planPath) || !fs.existsSync(compositionPath)) throw new Error("DeckSpec v2 requires deck-plan.json and composition-plan.json in --run-dir.");
+      const findings = verifyDeckAgainstPlan(deck, readJson(planPath), readJson(compositionPath));
+      if (findings.length > 0) throw new Error(`DeckSpec v2 violates its DeckPlan: ${findings.map((finding) => finding.code).join(", ")}`);
+    }
+  }
 
   if (command === "metrics") {
     const runDir = option(args, "--run-dir");

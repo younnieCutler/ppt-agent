@@ -1,4 +1,4 @@
-import { contentModelSchema, contractSchema, deckPlanSchema, deckSchema, type ContentModel, type DeckPlan, type SourceRef } from "./schema";
+import { allowedCompositions, compositionFamily, contentModelSchema, contractSchema, deckPlanSchema, deckSchema, type CompositionFamily, type ContentModel, type DeckPlan, type PlanVisualIntent, type SlideFunction, type SlideSpec, type SourceRef } from "./schema";
 import type { QaFinding } from "./qa";
 
 export const planningFindingSeverity = {
@@ -57,12 +57,12 @@ export function validateDeckPlan(planInput: unknown, contractInput: unknown, con
   return { plan, findings, status: findings.some((item) => item.severity === "hard") ? "fail" : findings.some((item) => item.severity === "risk") ? "review" : "pass" };
 }
 
-type CompositionPlan = { slides?: Array<{ id?: string; candidates?: Array<{ layout?: string; composition?: string }> }> };
+type CompositionPlanInput = { slides?: Array<{ id?: string; candidates?: Array<{ layout?: string; composition?: string }> }> };
 
 export function verifyDeckAgainstPlan(deckInput: unknown, planInput: unknown, compositionPlanInput: unknown): QaFinding[] {
   const deck = deckSchema.parse(deckInput);
   const plan = deckPlanSchema.parse(planInput);
-  const compositionPlan = compositionPlanInput as CompositionPlan;
+  const compositionPlan = compositionPlanInput as CompositionPlanInput;
   const findings: QaFinding[] = [];
   const candidatesBySlide = new Map((compositionPlan.slides ?? []).map((slide) => [slide.id, slide.candidates ?? []]));
   if (deck.slides.length !== plan.slides.length) return [finding("PLAN_SLIDE_COUNT_MISMATCH", "DeckSpec and DeckPlan slide counts differ.")];
@@ -82,4 +82,109 @@ export function verifyDeckAgainstPlan(deckInput: unknown, planInput: unknown, co
     }
   });
   return findings;
+}
+
+export const layoutsByFunction: Record<SlideFunction, SlideSpec["layout"][]> = {
+  cover: ["title"],
+  statement: ["statement"],
+  comparison: ["comparison"],
+  process: ["process", "pipeline"],
+  architecture: ["architecture", "pipeline"],
+  quantitative: ["quantitative", "chart"],
+  timeline: ["timeline"],
+  evidence: ["evidence", "chart"],
+  action: ["statement", "process", "timeline"],
+};
+
+export type CompositionCatalogEntry = {
+  layout: SlideSpec["layout"];
+  composition: string;
+  family: CompositionFamily;
+  visualIntents: PlanVisualIntent[];
+  densities: Array<"low" | "medium" | "high">;
+};
+
+const compositionProfiles: Record<string, Pick<CompositionCatalogEntry, "visualIntents" | "densities">> = {
+  cover: { visualIntents: ["single_focal"], densities: ["low", "medium"] },
+  hero_evidence: { visualIntents: ["single_focal", "hierarchy"], densities: ["low", "medium"] },
+  claim_actions: { visualIntents: ["hierarchy", "flow"], densities: ["medium"] },
+  two_column: { visualIntents: ["contrast"], densities: ["medium", "high"] },
+  diagnosis_matrix: { visualIntents: ["contrast", "hierarchy"], densities: ["medium", "high"] },
+  ownership_split: { visualIntents: ["contrast"], densities: ["medium"] },
+  verdict_contrast: { visualIntents: ["contrast"], densities: ["low", "medium"] },
+  sequence: { visualIntents: ["flow", "timeline"], densities: ["low", "medium"] },
+  stage_gate: { visualIntents: ["flow"], densities: ["medium", "high"] },
+  pipeline_lanes: { visualIntents: ["flow", "hierarchy"], densities: ["medium", "high"] },
+  architecture_zones: { visualIntents: ["hierarchy", "network"], densities: ["medium", "high"] },
+  central_hub: { visualIntents: ["network", "hierarchy"], densities: ["medium"] },
+  layered_stack: { visualIntents: ["hierarchy"], densities: ["medium", "high"] },
+  kpi_row: { visualIntents: ["single_focal", "contrast"], densities: ["low", "medium"] },
+  ranked_bars: { visualIntents: ["trend", "contrast"], densities: ["medium", "high"] },
+  metric_story: { visualIntents: ["single_focal", "hierarchy"], densities: ["low", "medium"] },
+  gauge_row: { visualIntents: ["contrast"], densities: ["low", "medium"] },
+  sparkline_row: { visualIntents: ["trend"], densities: ["medium", "high"] },
+  linear_roadmap: { visualIntents: ["timeline", "flow"], densities: ["low", "medium"] },
+  now_next_later: { visualIntents: ["timeline", "hierarchy"], densities: ["medium"] },
+  evidence_list: { visualIntents: ["hierarchy"], densities: ["medium", "high"] },
+  evidence_panel: { visualIntents: ["hierarchy", "single_focal"], densities: ["low", "medium"] },
+  native_chart: { visualIntents: ["trend", "contrast"], densities: ["medium", "high"] },
+};
+
+export const compositionCatalog: CompositionCatalogEntry[] = Object.entries(allowedCompositions).flatMap(([layout, compositions]) => compositions.map((composition) => ({
+  layout: layout as SlideSpec["layout"],
+  composition,
+  family: compositionFamily[composition],
+  ...compositionProfiles[composition],
+}))).sort((left, right) => `${left.layout}:${left.composition}`.localeCompare(`${right.layout}:${right.composition}`));
+
+export type CompositionCandidate = Pick<CompositionCatalogEntry, "layout" | "composition" | "family"> & { rank: 1 | 2 | 3; reasons: string[] };
+export type CompositionPlan = { version: 1; slides: Array<{ id: string; candidates: CompositionCandidate[] }> };
+type StyleResolverContext = { referenceCompositionPreferences?: string[]; archetypeCompositionPreferences?: string[] };
+type TemplateGrammarContext = { compositionPatterns?: Array<{ family: CompositionFamily; visualIntents: PlanVisualIntent[]; density: "low" | "medium" | "high"; confidence: number }> };
+
+function grammarConfidence(entry: CompositionCatalogEntry, intent: DeckPlan["slides"][number], grammar: TemplateGrammarContext): number {
+  return Math.max(0, ...(grammar.compositionPatterns ?? [])
+    .filter((pattern) => pattern.family === entry.family && pattern.visualIntents.includes(intent.visualIntent) && pattern.density === intent.density)
+    .map((pattern) => pattern.confidence));
+}
+
+export function resolveCompositionPlan(planInput: unknown, styleInput: StyleResolverContext, grammarInput: TemplateGrammarContext = {}): CompositionPlan {
+  const plan = deckPlanSchema.parse(planInput);
+  const style = styleInput ?? {};
+  const grammar = grammarInput ?? {};
+  const recommendedFamilies: CompositionFamily[] = [];
+  return {
+    version: 1,
+    slides: plan.slides.map((intent) => {
+      const candidates = compositionCatalog
+        .filter((entry) => layoutsByFunction[intent.function].includes(entry.layout))
+        .map((entry) => ({
+          entry,
+          organization: grammarConfidence(entry, intent, grammar),
+          reference: style.referenceCompositionPreferences?.includes(entry.composition) ? 1 : 0,
+          visual: entry.visualIntents.includes(intent.visualIntent) ? 1 : 0,
+          density: entry.densities.includes(intent.density) ? 1 : 0,
+          rhythm: recommendedFamilies.includes(entry.family) ? 0 : 1,
+          archetype: style.archetypeCompositionPreferences?.includes(entry.composition) ? 1 : 0,
+        }))
+        .sort((left, right) => right.organization - left.organization
+          || right.reference - left.reference
+          || right.visual - left.visual
+          || right.density - left.density
+          || right.rhythm - left.rhythm
+          || right.archetype - left.archetype
+          || `${left.entry.layout}:${left.entry.composition}`.localeCompare(`${right.entry.layout}:${right.entry.composition}`))
+        .slice(0, 3)
+        .map(({ entry, organization, reference, visual, density, rhythm, archetype }, index) => ({
+          layout: entry.layout,
+          composition: entry.composition,
+          family: entry.family,
+          rank: (index + 1) as 1 | 2 | 3,
+          reasons: [organization ? "organization grammar" : "", reference ? "reference preference" : "", visual ? "visual intent" : "", density ? "density" : "", rhythm ? "deck rhythm" : "", archetype ? "archetype preference" : ""].filter(Boolean),
+        }));
+      recommendedFamilies.push(candidates[0].family);
+      if (recommendedFamilies.length > 2) recommendedFamilies.shift();
+      return { id: intent.id, candidates };
+    }),
+  };
 }
