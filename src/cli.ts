@@ -834,9 +834,19 @@ async function main(): Promise<void> {
     // through a pattern at all.
     if (!renderManifest && sourceTemplatePath && fs.existsSync(sourceTemplatePath)) {
       const elementsPathForStrategy = path.join(path.resolve(runDir), "template", "template-elements.json");
+      // An Organization Pack's own template-map.json elementRoleOverrides change semantic roles
+      // (and therefore the detected strategy) without changing template.pptx's bytes — the same
+      // reason `template-analyze` reads them (above) before ever calling extractTemplateElements.
+      // Skipping them here would let overrides that resolve a template to native_layout still get
+      // mis-flagged source_slide_pattern (or the reverse), in exactly the "pack skipped straight to
+      // render+qa" scenario this whole check exists for.
+      const orgOverridesPath = templateSource?.kind === "organization" ? path.join(templateSource.path, "template-map.json") : undefined;
+      const orgOverrides = orgOverridesPath && fs.existsSync(orgOverridesPath)
+        ? (() => { const map = templateMapSchema.parse(readJson(orgOverridesPath)); return map.version === 2 ? map.elementRoleOverrides : {}; })()
+        : {};
       const strategy = fs.existsSync(elementsPathForStrategy)
         ? (readJson(elementsPathForStrategy) as { strategy: import("./template-analysis").TemplateStrategy }).strategy
-        : (await extractTemplateElements(sourceTemplatePath)).strategy;
+        : (await extractTemplateElements(sourceTemplatePath, orgOverrides)).strategy;
       const allGenericManifest = deck.slides.map((slide) => ({ slideId: slide.id, mode: "renderer" }));
       report = mergeFindings(report, checkTemplateFidelityUnproven(strategy, allGenericManifest));
     }
