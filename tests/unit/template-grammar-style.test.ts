@@ -5,11 +5,11 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { contractSchema } from "../../src/schema";
 import { resolvePresentationStyle } from "../../src/style";
-import { ANALYZER_VERSION, elementsDigest, roleOverridesDigest, type TemplateElementsArtifact } from "../../src/template-analysis";
+import { elementsDigest, roleOverridesDigest, TEMPLATE_ANALYZER_VERSION, TEMPLATE_GRAMMAR_COMPILER_VERSION, type TemplateElementsArtifact } from "../../src/template-analysis";
 
 const fixture = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../fixtures/contract.json"), "utf8"));
 
-type PackOptions = { template?: string; overrides?: Record<string, string>; analyzedOverrides?: Record<string, string>; pairGrammarWith?: TemplateElementsArtifact };
+type PackOptions = { template?: string; overrides?: Record<string, string>; analyzedOverrides?: Record<string, string>; pairGrammarWith?: TemplateElementsArtifact; compilerVersion?: string };
 
 /** Writes a v2 pack the way `template-analyze` would, so staleness is the only thing under test. */
 function writePack(options: PackOptions = {}): string {
@@ -24,13 +24,14 @@ function writePack(options: PackOptions = {}): string {
   const elements = {
     version: 1,
     source: { sha256: templateDigest, slideSize: { w: 13.333, h: 7.5 } },
-    analysisInputs: { templateDigest, roleOverridesDigest: roleOverridesDigest(analyzedOverrides as Record<string, never>), analyzerVersion: ANALYZER_VERSION },
+    analysisInputs: { templateDigest, roleOverridesDigest: roleOverridesDigest(analyzedOverrides as Record<string, never>), analyzerVersion: TEMPLATE_ANALYZER_VERSION },
     slides: [],
     styles: {},
   } as unknown as TemplateElementsArtifact;
   fs.writeFileSync(path.join(root, "template-elements.json"), JSON.stringify(elements));
   fs.writeFileSync(path.join(root, "template-grammar.json"), JSON.stringify({
     sourceDigest: templateDigest,
+    compilerVersion: options.compilerVersion ?? TEMPLATE_GRAMMAR_COMPILER_VERSION,
     elementsDigest: elementsDigest(options.pairGrammarWith ?? elements),
     typography: { titleBodyRatio: 3 },
     geometry: { contentFrame: { x: 1, y: 1, w: 10, h: 5 }, spacingScale: 1.2 },
@@ -70,8 +71,22 @@ describe("Organization Pack v2 grammar resolution", () => {
   });
 
   it("rejects a grammar compiled from a different elements artifact", () => {
-    const otherElements = { version: 1, source: { sha256: "b".repeat(64), slideSize: { w: 13.333, h: 7.5 } }, analysisInputs: { templateDigest: "b".repeat(64), roleOverridesDigest: roleOverridesDigest({}), analyzerVersion: ANALYZER_VERSION }, slides: [], styles: {} } as unknown as TemplateElementsArtifact;
+    const otherElements = { version: 1, source: { sha256: "b".repeat(64), slideSize: { w: 13.333, h: 7.5 } }, analysisInputs: { templateDigest: "b".repeat(64), roleOverridesDigest: roleOverridesDigest({}), analyzerVersion: TEMPLATE_ANALYZER_VERSION }, slides: [], styles: {} } as unknown as TemplateElementsArtifact;
     expect(() => resolve(writePack({ pairGrammarWith: otherElements }))).toThrow(/not compiled from this template-elements\.json/);
+  });
+
+  it("rejects a grammar compiled by a different grammar compiler version", () => {
+    // Only the compiler moved: elements are current, the template is untouched.
+    expect(() => resolve(writePack({ compilerVersion: "0" }))).toThrow(/grammar compiler version/);
+  });
+
+  it("rejects an elements artifact whose recorded template digest disagrees with template.pptx", () => {
+    const root = writePack();
+    const elementsPath = path.join(root, "template-elements.json");
+    const elements = JSON.parse(fs.readFileSync(elementsPath, "utf8"));
+    elements.analysisInputs.templateDigest = "c".repeat(64);
+    fs.writeFileSync(elementsPath, JSON.stringify(elements));
+    expect(() => resolve(root)).toThrow(/records a different template digest/);
   });
 
   it("rejects artifacts produced by a different analyzer version", () => {

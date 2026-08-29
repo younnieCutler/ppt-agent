@@ -106,6 +106,82 @@ describe("template-analyze CLI", () => {
   }, 120000);
 });
 
+describe("run recovery when root inputs change", () => {
+  function writeRun(contractValue: unknown): { runDir: string; contractPath: string; planPath: string; contentModelPath: string } {
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-recovery-"));
+    const contractPath = path.join(runDir, "contract.json");
+    fs.writeFileSync(contractPath, JSON.stringify(contractValue, null, 2));
+    const contentModelPath = path.join(runDir, "source-content-model.json");
+    fs.writeFileSync(contentModelPath, JSON.stringify(contentModel, null, 2));
+    const planPath = path.join(runDir, "plan-input.json");
+    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+    return { runDir, contractPath, planPath, contentModelPath };
+  }
+
+  function resolveArgsFor(runDir: string): string[] {
+    return ["composition-resolve", "--plan", path.join(runDir, "deck-plan.json"), "--style-context", path.join(runDir, "style-context.json"), "--run-dir", runDir];
+  }
+
+  it("recovers when a deck with references becomes a deck without them", () => {
+    const withReferences = { ...contract, referenceIds: ["presentation_core"] };
+    const { runDir, contractPath, planPath, contentModelPath } = writeRun(withReferences);
+    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
+    cli(["reference", "--contract", contractPath, "--reference-root", path.join(repoRoot, "tests/fixtures/reference-root"), "--run-dir", runDir]);
+    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
+    expect(fs.existsSync(path.join(runDir, "reference-selection.json"))).toBe(true);
+
+    // The contract no longer has references at all, so the selection is not merely stale — it is
+    // an artifact this run does not produce. No manual deletion.
+    fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
+    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
+    expect(fs.existsSync(path.join(runDir, "reference-selection.json"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(runDir, "artifact-provenance.json"), "utf8")).referenceSelectionDigest).toBeUndefined();
+
+    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
+    expect(cli(resolveArgsFor(runDir))).toContain("composition-plan.json");
+  }, 180000);
+
+  it("recovers when an organization deck becomes a plain one", async () => {
+    const pack = await packWithTemplate();
+    fs.writeFileSync(path.join(pack, "brand.yaml"), ["name: Recovery Test", "palette:", '  background: "FFFFFF"', '  surface: "FFFFFF"', '  text: "111111"', '  primary: "123456"', '  accent: "654321"', '  muted: "666666"', '  border: "DDDDDD"'].join("\n"));
+    fs.writeFileSync(path.join(pack, "template-map.json"), JSON.stringify({
+      version: 2,
+      aspectRatio: "16:9",
+      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
+      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
+      layouts: {},
+      requiredElements: [],
+      elementRoleOverrides: {},
+    }));
+    cli(["template-analyze", "--input", path.join(pack, "template.pptx"), "--out", pack]);
+
+    const { runDir, contractPath, planPath, contentModelPath } = writeRun({ ...contract, organization: { kind: "directory", path: pack } });
+    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
+    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
+    expect(fs.existsSync(path.join(runDir, "template-grammar.json"))).toBe(true);
+
+    fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
+    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
+    expect(fs.existsSync(path.join(runDir, "template-grammar.json"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(runDir, "artifact-provenance.json"), "utf8")).templateGrammarDigest).toBeUndefined();
+
+    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
+    expect(cli(resolveArgsFor(runDir))).toContain("composition-plan.json");
+  }, 180000);
+
+  it("keeps a stale reference selection from reaching style resolution", () => {
+    const withReferences = { ...contract, referenceIds: ["presentation_core"] };
+    const { runDir, contractPath, planPath, contentModelPath } = writeRun(withReferences);
+    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
+    cli(["reference", "--contract", contractPath, "--reference-root", path.join(repoRoot, "tests/fixtures/reference-root"), "--run-dir", runDir]);
+    fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
+    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
+    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
+    const style = JSON.parse(fs.readFileSync(path.join(runDir, "resolved-style.json"), "utf8"));
+    expect(style.reference).toBeUndefined();
+  }, 180000);
+});
+
 describe("composition-resolve provenance chain", () => {
   function plannedRun(): { runDir: string; resolveArgs: string[] } {
     const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-provenance-"));
@@ -168,12 +244,35 @@ describe("composition-resolve provenance chain", () => {
     const contractPath = path.join(runDir, "contract.json");
     fs.writeFileSync(contractPath, JSON.stringify({ ...contract, audience: "Board" }, null, 2));
     cli(["plan-validate", "--plan", path.join(runDir, "plan-input.json"), "--content-model", path.join(runDir, "source-content-model.json"), "--run-dir", runDir]);
-    expect(cli(resolveArgs, { expectFailure: true })).toMatch(/resolved style was derived from a different contract/);
+    // The style derived from contract A is not merely flagged, it is gone: plan-validate invalidates
+    // what its changed root inputs made obsolete, so there is nothing left to resolve against.
+    expect(fs.existsSync(path.join(runDir, "style-context.json"))).toBe(false);
+    expect(cli(resolveArgs, { expectFailure: true })).toMatch(/requires style provenance/);
 
     // Re-running the dependent phase in order clears it.
     cli(["style", "--contract", contractPath, "--run-dir", runDir]);
     expect(cli(resolveArgs)).toContain("composition-plan.json");
   }, 120000);
+
+  it("blocks a style resolved before the reference selection it should have read", () => {
+    // Phase order matters: style reads the reference selection, so resolving references afterwards
+    // leaves a style that never saw them. Every file is fresh; only the causal edge is wrong.
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-order-"));
+    const contractPath = path.join(runDir, "contract.json");
+    fs.writeFileSync(contractPath, JSON.stringify({ ...contract, referenceIds: ["presentation_core"] }, null, 2));
+    const contentModelPath = path.join(runDir, "source-content-model.json");
+    fs.writeFileSync(contentModelPath, JSON.stringify(contentModel, null, 2));
+    const planPath = path.join(runDir, "plan-input.json");
+    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
+    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
+    cli(["reference", "--contract", contractPath, "--reference-root", path.join(repoRoot, "tests/fixtures/reference-root"), "--run-dir", runDir]);
+    const resolveArgs = ["composition-resolve", "--plan", path.join(runDir, "deck-plan.json"), "--style-context", path.join(runDir, "style-context.json"), "--run-dir", runDir];
+    expect(cli(resolveArgs, { expectFailure: true })).toMatch(/derived from a different reference selection/);
+
+    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
+    expect(cli(resolveArgs)).toContain("composition-plan.json");
+  }, 180000);
 
   it("refuses to derive style or references from a contract that is not the run's", () => {
     const { runDir } = plannedRun();

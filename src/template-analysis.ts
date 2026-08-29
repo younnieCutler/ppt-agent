@@ -17,7 +17,11 @@ export const semanticRoles = ["title", "subtitle", "heading", "body", "caption",
 export type SemanticRole = (typeof semanticRoles)[number];
 export type TemplateTextStyle = { family?: string; sizePt?: number; weight?: number; italic?: boolean; color?: string; lineHeightRatio?: number; alignment?: "left" | "center" | "right" };
 export type TemplateElement = { id: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
-export const ANALYZER_VERSION = "1";
+// Two independent versions: the extractor that reads a PPTX into elements, and the compiler that
+// turns elements into grammar. Either can change without the other, and a pack whose grammar was
+// compiled by an older compiler is stale even when its elements are current.
+export const TEMPLATE_ANALYZER_VERSION = "1";
+export const TEMPLATE_GRAMMAR_COMPILER_VERSION = "1";
 /** Everything the analysis consumed, so a pack can prove its artifacts describe its current inputs. */
 export type AnalysisInputs = { templateDigest: string; roleOverridesDigest: string; analyzerVersion: string };
 export type TemplateElementsArtifact = { version: 1; source: { sha256: string; slideSize: { w: number; h: number } }; analysisInputs: AnalysisInputs; slides: Array<{ id: string; elements: TemplateElement[] }>; styles: Record<string, TemplateTextStyle> };
@@ -150,7 +154,7 @@ export function compileTemplateGrammar(artifact: TemplateElementsArtifact): Temp
   const family: CompositionFamily = hasMetric ? "single_focal" : dividerUsage ? "split_panels" : "column_zones";
   return {
     version: 1,
-    compilerVersion: ANALYZER_VERSION,
+    compilerVersion: TEMPLATE_GRAMMAR_COMPILER_VERSION,
     sourceDigest: artifact.source.sha256,
     elementsDigest: elementsDigest(artifact),
     slideSize: artifact.source.slideSize,
@@ -303,7 +307,7 @@ export async function extractTemplateElements(pptxPath: string, overrides: Recor
   return classifyTemplateElements({
     version: 1,
     source: { sha256: templateDigest, slideSize },
-    analysisInputs: { templateDigest, roleOverridesDigest: roleOverridesDigest(overrides), analyzerVersion: ANALYZER_VERSION },
+    analysisInputs: { templateDigest, roleOverridesDigest: roleOverridesDigest(overrides), analyzerVersion: TEMPLATE_ANALYZER_VERSION },
     slides,
     styles,
   }, overrides);

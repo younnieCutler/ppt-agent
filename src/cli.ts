@@ -22,6 +22,27 @@ import { compileTemplateGrammar, extractTemplateElements } from "./template-anal
 import { templateMapSchema } from "./organization";
 
 /**
+ * Everything downstream of the plan, and the provenance that describes it. Listed once so an added
+ * phase cannot forget to clear its own output.
+ */
+const DERIVED_ARTIFACTS = ["reference-selection.json", "resolved-style.json", "style-context.json", "template-grammar.json", "composition-plan.json"] as const;
+const DERIVED_PROVENANCE = ["referenceSelectionDigest", "referenceSelectionSource", "resolvedStyleDigest", "resolvedStyleSource", "templateGrammarDigest", "compositionPlanDigest"] as const;
+
+/**
+ * Root inputs changed, so everything derived from them is obsolete — including artifacts the new
+ * contract no longer produces at all (a deck that dropped its references, or its organization pack).
+ * Leaving those behind is what made a run unrecoverable without deleting files by hand: their
+ * provenance is gone, but `assertFresh` still sees the file. Clearing both together is the recovery
+ * path, and it is deterministic: after `plan-validate`, the run holds only what its inputs imply.
+ */
+function invalidateDerivedArtifacts(runDir: string, provenance: ArtifactProvenance): ArtifactProvenance {
+  for (const name of DERIVED_ARTIFACTS) fs.rmSync(path.join(path.resolve(runDir), name), { force: true });
+  const remaining = { ...provenance } as Record<string, unknown>;
+  for (const field of DERIVED_PROVENANCE) delete remaining[field];
+  return remaining as ArtifactProvenance;
+}
+
+/**
  * A run directory has exactly one contract. Deriving an artifact from a different file, then storing
  * it next to that contract, produces a run whose parts never belonged together.
  */
@@ -328,11 +349,17 @@ async function main(): Promise<void> {
     fs.writeFileSync(runContentModelPath, JSON.stringify(contentModel, null, 2));
     const reportPath = path.join(runDir, "planning-qa.json");
     fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-    recordProvenance(runDir, {
+    const roots = {
       contractDigest: sha256File(contractPath),
       contentModelDigest: sha256File(runContentModelPath),
       deckPlanDigest: deckPlanDigest(report.plan),
-    });
+    };
+    const provenancePath = path.join(runDir, "artifact-provenance.json");
+    const previous = fs.existsSync(provenancePath) ? (readJson(provenancePath) as ArtifactProvenance) : ({} as ArtifactProvenance);
+    const rootsChanged = previous.contractDigest !== roots.contractDigest
+      || previous.contentModelDigest !== roots.contentModelDigest
+      || previous.deckPlanDigest !== roots.deckPlanDigest;
+    writeArtifactProvenance(runDir, { ...(rootsChanged ? invalidateDerivedArtifacts(runDir, previous) : previous), ...roots });
     emitReport({ ...report, findings: report.findings }, reportPath);
     if (report.status !== "pass") process.exitCode = 2;
     return;
