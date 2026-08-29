@@ -58,7 +58,23 @@ node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
 #   Author compositions against style-context.json; never author palette HEX into the DeckSpec.
 ```
 
-An organisation template pack is selected with `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`). Aspect ratio:
+## Template input: a raw .pptx, or an Organization Pack
+
+Two ways to give the run a template, normalized by `resolveTemplateSourceSpec` (`src/template-source.ts`)
+so both resolve the same way downstream:
+
+- **Raw `.pptx` (default, ChatGPT-shaped)** — `contract.template: { kind: "pptx", path: "<path-to>.pptx" }`.
+  Nothing else is required: no `brand.yaml`, no `template-map.json`. Analyze it straight into the run
+  workspace, never next to the user's own file:
+  ```sh
+  node dist/cli.js template-analyze --input <path-to>.pptx --out <run-dir>/template
+  # → <run-dir>/template/{template-elements,template-grammar}.json, printed strategy:
+  #   "native_layout" | "source_slide_pattern" | "hybrid". Deleted with the rest of the run
+  #   workspace on a successful release — nothing about a raw pptx template is ever cached.
+  ```
+- **Organization Template Pack (advanced/reusable mode)** — `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`). `contract.template: { kind: "organization", path }` is equivalent; use whichever the contract already carries.
+
+Aspect ratio:
 
 - **default / no-organization renderer: 16:9 only** — a plain 4:3 deck is rejected.
 - **Organization Template Pack: 16:9 or 4:3.** A 4:3 pack requires `template-map.json`'s `aspectRatio: "4:3"` **and** a real `template.pptx` sized exactly 10×7.5in.

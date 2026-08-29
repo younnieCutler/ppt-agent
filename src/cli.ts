@@ -379,7 +379,7 @@ async function main(): Promise<void> {
     const outputPath = path.join(out, "template-elements.json");
     const grammarPath = path.join(out, "template-grammar.json");
     writeArtifactPair([{ path: outputPath, contents: JSON.stringify(elements, null, 2) }, { path: grammarPath, contents: JSON.stringify(grammar, null, 2) }]);
-    print({ status: "pass", outputPath, grammarPath, slides: elements.slides.length, roleOverrides: Object.keys(overrides).length });
+    print({ status: "pass", outputPath, grammarPath, slides: elements.slides.length, strategy: elements.strategy, roleOverrides: Object.keys(overrides).length });
     return;
   }
 
