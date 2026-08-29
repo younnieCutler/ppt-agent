@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import Automizer from "pptx-automizer";
+import Automizer, { ModifyTextHelper } from "pptx-automizer";
 import JSZip from "jszip";
 import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
 import { pruneUnreachablePptxParts } from "./ooxml";
+import { resolveSlotContent, type TemplatePattern } from "./template-patterns";
 
 const EMU_PER_INCH = 914400;
 const CANVAS_SIZE_TOLERANCE_IN = 0.05;
@@ -147,4 +148,80 @@ async function validateTemplateContract(templatePath: string, map: TemplateMap, 
   });
 
   return { nameToIndex };
+}
+
+
+export type RenderManifestEntry = { slideId: string; mode: string };
+
+/**
+ * For source_slide_pattern / hybrid strategies: clones each pattern-bound slide directly out of
+ * the template's own package (never the renderer's scratch deck), removes its example content,
+ * and injects real DeckSpec content into its slots. A slide with no resolved pattern falls
+ * through to the generically-rendered scratch slide at the same position — that fallback is
+ * legitimate for `hybrid` (declared per-layout in `fallbackPolicy`) but is exactly what
+ * TEMPLATE_FIDELITY_UNPROVEN exists to catch for a pure `source_slide_pattern` template; this
+ * function only clones and injects, it does not decide whether a silent fallback is acceptable.
+ *
+ * Distinct from `applyOrganizationTemplate` above on purpose: that function's `useSlideLayout`
+ * binding-by-semantic-layout-name logic is untouched by this, and this function touches nothing
+ * that function's own tests already cover.
+ */
+export async function applyPatternSkeleton(
+  templatePath: string,
+  scratchPath: string,
+  outputPath: string,
+  slides: SlideSpec[],
+  resolvedPatterns: Map<string, TemplatePattern>,
+): Promise<RenderManifestEntry[]> {
+  if (!fs.existsSync(templatePath)) throw new Error(`Template not found: ${templatePath}`);
+  const resolvedOutput = path.resolve(outputPath);
+  const outputDir = path.dirname(resolvedOutput);
+  fs.mkdirSync(outputDir, { recursive: true });
+  const staging = fs.mkdtempSync(path.join(outputDir, `.ppt-agent-pattern-${process.pid}-`));
+  const rootName = "org-source.pptx";
+  const generatedName = "semantic-render.pptx";
+  const manifest: RenderManifestEntry[] = [];
+  try {
+    fs.copyFileSync(templatePath, path.join(staging, rootName));
+    fs.copyFileSync(path.resolve(scratchPath), path.join(staging, generatedName));
+    const automizer = new Automizer({ templateDir: staging, outputDir, removeExistingSlides: true });
+    const presentation = automizer
+      .loadRoot(rootName)
+      .load(rootName, "org-source")
+      .load(generatedName, "semantic-render");
+
+    slides.forEach((slideSpec, index) => {
+      const pattern = resolvedPatterns.get(slideSpec.id);
+      if (!pattern) {
+        presentation.addSlide("semantic-render", index + 1);
+        manifest.push({ slideId: slideSpec.id, mode: "renderer" });
+        return;
+      }
+      presentation.addSlide("org-source", pattern.sourceSlideNumber, (slide) => {
+        for (const name of pattern.skeleton.removableContentIds) slide.removeElement(name);
+        for (const slot of pattern.skeleton.replaceableSlots) {
+          const content = resolveSlotContent(slideSpec, slot.binding);
+          const isEmpty = content === undefined || (Array.isArray(content) && content.length === 0);
+          if (isEmpty) {
+            if (slot.required) throw new Error(`Pattern '${pattern.id}' required slot '${slot.id}' (binding '${slot.binding}') has no content for slide '${slideSpec.id}'.`);
+            slide.removeElement(slot.shapeId);
+            continue;
+          }
+          // v1: a repeatable binding's items collapse into the one shape the pattern declared for
+          // it, joined — the pattern has no per-item row group to expand into yet. Expanding into
+          // N preserved sibling rows is real future work, not silently dropped content.
+          const text = Array.isArray(content) ? content.join(" · ") : content;
+          slide.modifyElement(slot.shapeId, [ModifyTextHelper.setText(text)]);
+        }
+      });
+      manifest.push({ slideId: slideSpec.id, mode: `pattern:${pattern.id}` });
+    });
+
+    await presentation.write(path.basename(resolvedOutput));
+    if (!fs.existsSync(resolvedOutput)) throw new Error(`Pattern skeleton renderer did not produce ${resolvedOutput}`);
+    await pruneUnreachablePptxParts(resolvedOutput);
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+  return manifest;
 }

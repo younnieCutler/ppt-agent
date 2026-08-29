@@ -137,6 +137,12 @@ node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
 node dist/cli.js composition-resolve --plan <run-dir>/deck-plan.json --style-context <run-dir>/style-context.json --run-dir <run-dir>
 # → <run-dir>/composition-plan.json — a ranked shortlist per slide, not a decision.
 
+# 5.5. Only for a source_slide_pattern/hybrid template (design lives in the example slide bodies,
+#      not the master/layout — see "Template input" above). Skip entirely for native_layout.
+node dist/cli.js pattern-resolve --plan <run-dir>/deck-plan.json --run-dir <run-dir>
+# → <run-dir>/pattern-plan.json — a ranked shortlist per slide, same shape as composition-plan.json.
+#   Requires <run-dir>/template/template-patterns.json (template-analyze) already produced.
+
 # 6. Author the DeckSpec v2 against the plan and the shortlist:
 #    version: 2, planDigest: the digest recorded as deckPlanDigest in artifact-provenance.json,
 #    one candidate chosen per slide from that slide's shortlist (any rank, with a reason).
@@ -144,6 +150,17 @@ node dist/cli.js composition-resolve --plan <run-dir>/deck-plan.json --style-con
 node dist/cli.js validate --spec <deck.json> --run-dir <run-dir>
 node dist/cli.js render --spec <deck.json> --out <draft.pptx> [--run-dir <run-dir>]
 node dist/cli.js qa --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--powerpoint]
+
+# 6.5. If pattern-resolve ran: clone each slide's rank-1 source-slide pattern instead of shipping
+#      the generic <draft.pptx> render. --scratch is the generic render from step 6 above; --out
+#      replaces it as the deck actually released.
+node dist/cli.js render-pattern-skeleton --spec <deck.json> --scratch <draft.pptx>     --template <path-to>.pptx --out <draft.pptx> --run-dir <run-dir>
+# → clones the source slide, removes its example content, injects real DeckSpec content into its
+#   slots (never a shapeId or a coordinate — resolveSlotContent in src/template-patterns.ts),
+#   preserves everything the pattern did not touch, and writes <run-dir>/render-manifest.json:
+#   "renderer" | "pattern:<patternId>" per slide. A slide with no resolved pattern falls through
+#   to the generic render at the same position — legitimate for hybrid, and exactly what
+#   TEMPLATE_FIDELITY_UNPROVEN exists to catch on a pure source_slide_pattern template.
 ```
 
 A DeckSpec v2 is verified against its plan on `validate`, `render`, and `qa`: `planDigest` must equal

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { slideFunctionSchema, type CompositionFamily, type SlideFunction, type SlideSpec } from "./schema";
+import { slideFunctionSchema, type CompositionFamily, type DeckPlan, type SlideFunction, type SlideSpec } from "./schema";
+import type { CompositionPlan } from "./planning";
 import { elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
 
 /**
@@ -28,6 +29,7 @@ export type TemplateSlot = {
   /** The one thing a `slotBindings` dictionary would have expressed — kept on the slot itself so
    * there is exactly one place a slot's mapping lives, not two that can drift apart. */
   binding: SlotBindingPath;
+  /** The raw PowerPoint shape name — pptx-automizer's selector, not our composite element id. */
   shapeId: string;
   bounds: { x: number; y: number; w: number; h: number };
   maxChars?: number;
@@ -50,12 +52,16 @@ export type AssetClass = (typeof assetClasses)[number];
 export type TemplatePattern = {
   id: string;
   sourceSlideId: string;
+  sourceSlideNumber: number;
   suitableFor: { functions: SlideFunction[]; compositions: string[]; densities: Array<"low" | "medium" | "high">; confidence: number };
   skeleton: {
     sourceSlidePart: string;
+    /** Raw PowerPoint shape names (never touched — preserved by simply not acting on them). */
     preservedShapeIds: string[];
     replaceableSlots: TemplateSlot[];
+    /** Raw PowerPoint shape names the renderer removes via pptx-automizer's name-selector API. */
     removableContentIds: string[];
+    /** Keyed by our own element id (template-analysis.ts), not shape name — bookkeeping only. */
     assetClasses: Record<string, AssetClass>;
   };
   visualSignature: { backgroundTreatment: string; compositionFamily: CompositionFamily; surfaceUsage: string; density: "low" | "medium" | "high" };
@@ -145,21 +151,29 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
     const removableContentIds: string[] = [];
     const replaceableSlots: TemplateSlot[] = [];
     const elementAssetClasses: Record<string, AssetClass> = {};
+    const nameOccurrences = new Map<string, number>();
+    for (const element of slide.elements) nameOccurrences.set(element.name, (nameOccurrences.get(element.name) ?? 0) + 1);
+    const hasReliableName = (element: TemplateElement) => Boolean(element.name) && nameOccurrences.get(element.name) === 1;
 
     for (const element of slide.elements) {
-      const assetClass = classifyTemplateAsset(element, elements.source.slideSize);
+      const reliablyNamed = hasReliableName(element);
+      const assetClass = reliablyNamed ? classifyTemplateAsset(element, elements.source.slideSize) : "unknown";
       elementAssetClasses[element.id] = assetClass;
       if (assetClass === "structural" || assetClass === "brand") {
-        preservedShapeIds.push(element.id);
+        preservedShapeIds.push(element.name);
         continue;
       }
       if (assetClass === "unknown") {
-        removableContentIds.push(element.id);
+        // Structural-by-role but ambiguously named elements are simply left alone (preserved by
+        // inaction is always safe); anything else ambiguous is removed defensively rather than
+        // risk a name-collision hitting the wrong shape.
+        if (reliablyNamed === false && preservedRoles.has(element.role as SemanticRole)) continue;
+        if (element.name) removableContentIds.push(element.name);
         continue;
       }
       const binding = element.type === "text" ? ROLE_TO_BINDING[element.role as SemanticRole] : undefined;
       if (!binding) {
-        removableContentIds.push(element.id);
+        removableContentIds.push(element.name);
         continue;
       }
       const style = element.styleRef ? elements.styles[element.styleRef] : undefined;
@@ -168,7 +182,7 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
         id: element.id,
         role: element.role as SemanticRole,
         binding,
-        shapeId: element.id,
+        shapeId: element.name,
         bounds: element.bounds,
         maxChars,
         maxLines,
@@ -185,8 +199,9 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
     return {
       id: `pattern-${slide.id}`,
       sourceSlideId: slide.id,
+      sourceSlideNumber: Number(slide.id.replace(/^S/, "")),
       suitableFor: { functions: [], compositions: [], densities: [density], confidence: 0.5 },
-      skeleton: { sourceSlidePart: slide.sourceSlidePart, preservedShapeIds, replaceableSlots, removableContentIds, assetClasses: elementAssetClasses },
+      skeleton: { sourceSlidePart: slide.sourceSlidePart, preservedShapeIds: [...new Set(preservedShapeIds)], replaceableSlots, removableContentIds: [...new Set(removableContentIds)], assetClasses: elementAssetClasses },
       visualSignature: {
         backgroundTreatment: slide.elements.some((element) => element.role === "surface") ? "surface" : "plain",
         compositionFamily,
@@ -278,6 +293,77 @@ export function applyPatternLabels(artifact: TemplatePatternsArtifact, labels: P
         },
         visualSignature: label.compositionFamily ? { ...pattern.visualSignature, compositionFamily: label.compositionFamily } : pattern.visualSignature,
       };
+    }),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pattern Resolver — runs right after Composition Resolver, before a DeckSpec exists. Like
+// CompositionPlan, this produces a ranked shortlist, not a single final choice: there is no
+// authored slide text yet at this stage to check a slot's capacity against, so that check (and
+// TEMPLATE_SLOT_OVERFLOW) happens later, once the DeckSpec that must fall within this shortlist
+// has real content — exactly the same division of labor resolveCompositionPlan already uses.
+// ---------------------------------------------------------------------------------------------
+
+export type PatternCandidate = { patternId: string; sourceSlideId: string; rank: 1 | 2 | 3; reasons: string[] };
+export type PatternPlan = { version: 1; slides: Array<{ id: string; candidates: PatternCandidate[] }> };
+
+type CompositionPlanContext = Pick<CompositionPlan, "slides">;
+
+/**
+ * Every real slide has a headline; a pattern with no slot bound to `"headline"` cannot be used at
+ * all, so this is a hard filter — never merely a scoring dimension a low-confidence pattern could
+ * still win on. Slot *capacity* is not checked here (see the module comment above); only whether
+ * the pattern can hold a headline in the first place.
+ */
+function canHoldHeadline(pattern: TemplatePattern): boolean {
+  return pattern.skeleton.replaceableSlots.some((slot) => slot.binding === "headline");
+}
+
+export function resolvePatternPlan(deckPlan: DeckPlan, compositionPlan: CompositionPlanContext, patterns: TemplatePatternsArtifact): PatternPlan {
+  const compositionBySlide = new Map(compositionPlan.slides.map((slide) => [slide.id, slide.candidates[0]]));
+  let previousPatternId: string | undefined;
+
+  return {
+    version: 1,
+    slides: deckPlan.slides.map((intent) => {
+      const topComposition = compositionBySlide.get(intent.id);
+      const candidates = patterns.patterns
+        .filter(canHoldHeadline)
+        .map((pattern) => {
+          const familyMatch = topComposition ? pattern.visualSignature.compositionFamily === topComposition.family : false;
+          const functionMatch = pattern.suitableFor.functions.includes(intent.function);
+          const densityMatch = pattern.suitableFor.densities.includes(intent.density);
+          const repetitionPenalty = pattern.id === previousPatternId ? 0 : 1;
+          return {
+            pattern,
+            familyMatch: familyMatch ? 1 : 0,
+            functionMatch: functionMatch ? 1 : 0,
+            densityMatch: densityMatch ? 1 : 0,
+            repetitionPenalty,
+            confidence: pattern.suitableFor.confidence,
+          };
+        })
+        .sort((left, right) => right.functionMatch - left.functionMatch
+          || right.familyMatch - left.familyMatch
+          || right.densityMatch - left.densityMatch
+          || right.confidence - left.confidence
+          || right.repetitionPenalty - left.repetitionPenalty
+          || left.pattern.id.localeCompare(right.pattern.id))
+        .slice(0, 3)
+        .map(({ pattern, familyMatch, functionMatch, densityMatch, repetitionPenalty }, index) => ({
+          patternId: pattern.id,
+          sourceSlideId: pattern.sourceSlideId,
+          rank: (index + 1) as 1 | 2 | 3,
+          reasons: [
+            functionMatch ? "slide function" : "",
+            familyMatch ? "composition family" : "",
+            densityMatch ? "density" : "",
+            repetitionPenalty ? "" : "recently used",
+          ].filter(Boolean),
+        }));
+      if (candidates.length > 0) previousPatternId = candidates[0].patternId;
+      return { id: intent.id, candidates };
     }),
   };
 }

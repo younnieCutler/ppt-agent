@@ -10,6 +10,8 @@ export type ArtifactProvenance = {
   resolvedStyleDigest?: string;
   templateGrammarDigest?: string;
   compositionPlanDigest?: string;
+  templatePatternsDigest?: string;
+  patternPlanDigest?: string;
   /**
    * What each derived artifact was derived *from*. File-by-file freshness cannot see a mixed run:
    * every file can match its own digest while the reference selection and the resolved style were

@@ -22,14 +22,16 @@ export type TemplateTextStyle = { family?: string; sizePt?: number; weight?: num
 // this element walked out of," not an inference over the rendered result.
 export const elementOwnerships = ["master-owned", "layout-owned", "slide-body-owned"] as const;
 export type ElementOwnership = (typeof elementOwnerships)[number];
-export type TemplateElement = { id: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; ownership: ElementOwnership; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
+export type TemplateElement = { id: string; /** The raw PowerPoint shape name (`cNvPr@name`) — pptx-automizer selects/modifies/removes shapes by this exact name, never by `id` (a composite, JSON-key-safe string derived from it). */ name: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; ownership: ElementOwnership; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
 // Two independent versions: the extractor that reads a PPTX into elements, and the compiler that
 // turns elements into grammar. Either can change without the other, and a pack whose grammar was
 // compiled by an older compiler is stale even when its elements are current.
-// Bumped to "2" for layout/master extraction, ownership classification and strategy detection —
+// Bumped to "3": elements now also carry `name`, the raw PowerPoint shape name pptx-automizer
+// needs to select/modify/remove a specific shape when cloning a source slide skeleton (PR D) — an
+// artifact analyzed before this existed cannot drive that renderer path at all.
 // loadOrganizationPack already refuses a pack whose artifacts predate the current analyzer version,
-// so this bump *is* the migration path for any pack analyzed before this existed.
-export const TEMPLATE_ANALYZER_VERSION = "2";
+// so each bump *is* the migration path for any pack analyzed before the new field existed.
+export const TEMPLATE_ANALYZER_VERSION = "3";
 export const TEMPLATE_GRAMMAR_COMPILER_VERSION = "1";
 /** Everything the analysis consumed, so a pack can prove its artifacts describe its current inputs. */
 export type AnalysisInputs = { templateDigest: string; roleOverridesDigest: string; analyzerVersion: string };
@@ -338,7 +340,8 @@ function extractSlide(xml: string, slideId: string, styles: Record<string, Templ
       const type = typeOf(node);
       if (!type) continue;
       const bounds = transform(node, parent).rect;
-      elements.push({ id: elementId(node, slideId, elements.length), slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: type === "text" ? styleId(textStyle(node) ?? {}, styles) : undefined, features: feature(node) });
+      const name = first(node, P_NS, "cNvPr")?.getAttribute("name") ?? "";
+      elements.push({ id: elementId(node, slideId, elements.length), name, slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: type === "text" ? styleId(textStyle(node) ?? {}, styles) : undefined, features: feature(node) });
     }
   };
   walk(children(root), { x: 0, y: 0, sx: 1, sy: 1 });

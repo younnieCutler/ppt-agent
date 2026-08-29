@@ -19,7 +19,8 @@ import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAga
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
 import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
-import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema } from "./template-patterns";
+import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, type TemplatePattern } from "./template-patterns";
+import { applyPatternSkeleton } from "./template";
 import { templateMapSchema } from "./organization";
 import { createRunWorkspace, removeRunWorkspace } from "./workspace";
 
@@ -27,8 +28,8 @@ import { createRunWorkspace, removeRunWorkspace } from "./workspace";
  * Everything downstream of the plan, and the provenance that describes it. Listed once so an added
  * phase cannot forget to clear its own output.
  */
-const DERIVED_ARTIFACTS = ["reference-selection.json", "resolved-style.json", "style-context.json", "template-grammar.json", "composition-plan.json"] as const;
-const DERIVED_PROVENANCE = ["referenceSelectionDigest", "referenceSelectionSource", "resolvedStyleDigest", "resolvedStyleSource", "templateGrammarDigest", "compositionPlanDigest"] as const;
+const DERIVED_ARTIFACTS = ["reference-selection.json", "resolved-style.json", "style-context.json", "template-grammar.json", "composition-plan.json", "pattern-plan.json"] as const;
+const DERIVED_PROVENANCE = ["referenceSelectionDigest", "referenceSelectionSource", "resolvedStyleDigest", "resolvedStyleSource", "templateGrammarDigest", "compositionPlanDigest", "patternPlanDigest"] as const;
 
 /**
  * Root inputs changed, so everything derived from them is obsolete — including artifacts the new
@@ -282,7 +283,7 @@ export async function release(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|template-preview|pattern-label|plan-validate|composition-resolve|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|template-preview|pattern-label|plan-validate|composition-resolve|pattern-resolve|render-pattern-skeleton|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
@@ -485,8 +486,66 @@ async function main(): Promise<void> {
     const compositionPlan = resolveCompositionPlan(readJson(planPath), styleContext as never, grammar as never);
     const outputPath = path.join(runDir, "composition-plan.json");
     fs.writeFileSync(outputPath, JSON.stringify(compositionPlan, null, 2));
-    recordProvenance(runDir, { compositionPlanDigest: sha256(JSON.stringify(compositionPlan)) });
+    // Hash the bytes actually on disk, not a re-serialization of the in-memory object: JSON.stringify
+    // without the pretty-print arguments produces different bytes than what was just written, so a
+    // digest computed either way never matches a later sha256File() freshness check against the file.
+    recordProvenance(runDir, { compositionPlanDigest: sha256File(outputPath) });
     emit({ status: "pass", outputPath, slides: compositionPlan.slides.length }, compositionPlan);
+    return;
+  }
+
+  if (command === "pattern-resolve") {
+    const planPath = option(args, "--plan");
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const provenancePath = path.join(runDir, "artifact-provenance.json");
+    const compositionPlanPath = path.join(runDir, "composition-plan.json");
+    if (!fs.existsSync(provenancePath)) throw new Error("Pattern resolution requires artifact-provenance.json.");
+    const provenance = readJson(provenancePath) as ArtifactProvenance & Record<string, string>;
+    if (!provenance.compositionPlanDigest) throw new Error("Pattern resolution requires composition-plan.json. Run `composition-resolve` first.");
+    if (!fs.existsSync(compositionPlanPath) || sha256File(compositionPlanPath) !== provenance.compositionPlanDigest) {
+      throw new Error("Pattern resolution blocked: composition-plan.json changed after composition resolution (artifact-provenance.json digest mismatch). Re-run `composition-resolve`.");
+    }
+    if (provenance.deckPlanDigest !== deckPlanDigest(readJson(planPath))) throw new Error("Pattern resolution blocked: deck plan digest is stale.");
+    const patternsPath = optionalOption(args, "--patterns") ?? path.join(runDir, "template", "template-patterns.json");
+    if (!fs.existsSync(patternsPath)) {
+      throw new Error(`Pattern resolution requires ${patternsPath}. Run \`template-analyze\` first — or skip pattern-resolve entirely for a native_layout template, which has no source-slide patterns to rank.`);
+    }
+    const patterns = readJson(patternsPath) as Parameters<typeof resolvePatternPlan>[2];
+    const compositionPlan = readJson(compositionPlanPath) as Parameters<typeof resolvePatternPlan>[1];
+    const patternPlan = resolvePatternPlan(readJson(planPath) as never, compositionPlan, patterns);
+    const outputPath = path.join(runDir, "pattern-plan.json");
+    fs.writeFileSync(outputPath, JSON.stringify(patternPlan, null, 2));
+    recordProvenance(runDir, { templatePatternsDigest: sha256File(patternsPath), patternPlanDigest: sha256File(outputPath) });
+    emit({ status: "pass", outputPath, slides: patternPlan.slides.length }, patternPlan);
+    return;
+  }
+
+  if (command === "render-pattern-skeleton") {
+    const specPath = option(args, "--spec");
+    const scratchPath = option(args, "--scratch");
+    const templatePath = option(args, "--template");
+    const outPath = option(args, "--out");
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const deck = deckSchema.parse(readJson(specPath));
+    const patternPlanPath = path.join(runDir, "pattern-plan.json");
+    if (!fs.existsSync(patternPlanPath)) throw new Error(`Skeleton render requires ${patternPlanPath}. Run \`pattern-resolve\` first.`);
+    const patternsPath = path.join(runDir, "template", "template-patterns.json");
+    if (!fs.existsSync(patternsPath)) throw new Error(`Skeleton render requires ${patternsPath}. Run \`template-analyze\` first.`);
+    const patternPlan = readJson(patternPlanPath) as { slides: Array<{ id: string; candidates: Array<{ patternId: string; rank: number }> }> };
+    const patternsById = new Map<string, TemplatePattern>((readJson(patternsPath) as { patterns: TemplatePattern[] }).patterns.map((pattern) => [pattern.id, pattern]));
+    // The rank-1 candidate is the default choice: a DeckSpec has no field yet to record "the host
+    // picked candidate #2" (a real future refinement), so absent that, rank-1 — the same one
+    // `pattern-resolve` itself ranked highest — is what gets rendered.
+    const resolvedPatterns = new Map<string, TemplatePattern>();
+    for (const slide of patternPlan.slides) {
+      const topCandidate = slide.candidates.find((candidate) => candidate.rank === 1);
+      const pattern = topCandidate && patternsById.get(topCandidate.patternId);
+      if (pattern) resolvedPatterns.set(slide.id, pattern);
+    }
+    const manifest = await applyPatternSkeleton(templatePath, scratchPath, outPath, deck.slides, resolvedPatterns);
+    const manifestPath = path.join(runDir, "render-manifest.json");
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    emit({ status: "pass", outputPath: path.resolve(outPath), manifestPath, slides: manifest.length }, manifest);
     return;
   }
 

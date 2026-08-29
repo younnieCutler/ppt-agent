@@ -1,0 +1,144 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import JSZip from "jszip";
+import { describe, expect, it } from "vitest";
+import { renderDeck } from "../../src/renderer";
+import { applyPatternSkeleton } from "../../src/template";
+import { extractTemplateElements, compileTemplateGrammar } from "../../src/template-analysis";
+import { compileTemplatePatterns, type TemplatePattern } from "../../src/template-patterns";
+import { buildPatternFixture, FIXTURE_STRINGS } from "../fixtures/pattern-template";
+
+const repoRoot = path.resolve(__dirname, "../..");
+const deckFixture = JSON.parse(fs.readFileSync(path.join(repoRoot, "tests/fixtures/deck.json"), "utf8"));
+
+function deckSlide(overrides: Record<string, unknown> & { layout: string; id: string; headline: string }): unknown {
+  return {
+    role: "body",
+    composition: overrides.layout === "title" ? "cover" : "hero_evidence",
+    sourceRefs: [{ sourceId: "prompt", excerptId: "R001" }],
+    storyBeat: "opening",
+    claims: [{ text: overrides.headline, kind: "interpretation", status: "verified" }],
+    ...overrides,
+  };
+}
+
+// DeckSpec requires >= 3 slides and slideCount === slides.length; a filler third slide keeps every
+// test deck valid without adding a fourth pattern to reason about.
+function filler(id: string): unknown {
+  return deckSlide({ id, layout: "statement", headline: `Filler headline ${id}`, content: { body: "Filler body.", proofs: [] } });
+}
+
+function deckWithSlides(slides: unknown[]): Record<string, unknown> {
+  const allSlides = slides.length >= 3 ? slides : [...slides, ...Array.from({ length: 3 - slides.length }, (_, i) => filler(`S9${i}`))];
+  return { ...deckFixture, contract: { ...deckFixture.contract, slideCount: allSlides.length }, slides: allSlides };
+}
+
+async function zipText(pptxPath: string): Promise<string> {
+  const zip = await JSZip.loadAsync(fs.readFileSync(pptxPath));
+  const parts = await Promise.all(Object.keys(zip.files).filter((name) => name.endsWith(".xml")).map((name) => zip.file(name)!.async("string")));
+  return parts.join("\n");
+}
+
+describe("applyPatternSkeleton: skeleton clone + slot injection", () => {
+  it(
+    "clones the real source slides, replaces slot content, preserves structural shapes, and leaks no example text",
+    async () => {
+      const templatePath = await buildPatternFixture();
+      const elements = await extractTemplateElements(templatePath);
+      const grammar = compileTemplateGrammar(elements);
+      const patternsArtifact = compileTemplatePatterns(elements, grammar);
+      const coverPattern = patternsArtifact.patterns[0]; // S01, dark cover
+      const bodyPattern = patternsArtifact.patterns[1]; // S02, editorial body
+
+      const deck = deckWithSlides([
+        deckSlide({ id: "S01", layout: "title", headline: "GENERATED HEADLINE ONE", content: { subtitle: "Generated subtitle" } }),
+        deckSlide({ id: "S02", layout: "statement", headline: "GENERATED HEADLINE TWO", content: { body: "Generated grounded statement body.", proofs: [] } }),
+      ]);
+
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-pattern-skeleton-"));
+      try {
+        const scratchPath = path.join(workDir, "scratch.pptx");
+        await renderDeck(deck, scratchPath, repoRoot);
+
+        const outputPath = path.join(workDir, "final.pptx");
+        const resolvedPatterns = new Map<string, TemplatePattern>([
+          ["S01", coverPattern],
+          ["S02", bodyPattern],
+        ]);
+        const manifest = await applyPatternSkeleton(templatePath, scratchPath, outputPath, deck.slides as never, resolvedPatterns);
+
+        expect(manifest[0]).toEqual({ slideId: "S01", mode: `pattern:${coverPattern.id}` });
+        expect(manifest[1]).toEqual({ slideId: "S02", mode: `pattern:${bodyPattern.id}` });
+        expect(fs.existsSync(outputPath)).toBe(true);
+
+        const xml = await zipText(outputPath);
+        // Injected content is present...
+        expect(xml).toContain("GENERATED HEADLINE ONE");
+        expect(xml).toContain("GENERATED HEADLINE TWO");
+        expect(xml).toContain("Generated grounded statement body.");
+        // ...and every one of the template's own example strings is gone.
+        for (const text of Object.values(FIXTURE_STRINGS)) expect(xml).not.toContain(text);
+
+        // The output package is still a valid, openable PPTX with the right slide count.
+        const outputZip = await JSZip.loadAsync(fs.readFileSync(outputPath));
+        const slideParts = Object.keys(outputZip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
+        expect(slideParts).toHaveLength(3);
+      } finally {
+        fs.rmSync(workDir, { recursive: true, force: true });
+        fs.rmSync(path.dirname(templatePath), { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
+
+  it("falls through to the generic scratch slide when a slide has no resolved pattern", async () => {
+    const templatePath = await buildPatternFixture();
+    const elements = await extractTemplateElements(templatePath);
+    const grammar = compileTemplateGrammar(elements);
+    const patternsArtifact = compileTemplatePatterns(elements, grammar);
+
+    const deck = deckWithSlides([deckSlide({ id: "S01", layout: "title", headline: "NO PATTERN HEADLINE", content: { subtitle: "x" } })]);
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-pattern-fallback-"));
+    try {
+      const scratchPath = path.join(workDir, "scratch.pptx");
+      await renderDeck(deck, scratchPath, repoRoot);
+      const outputPath = path.join(workDir, "final.pptx");
+      const manifest = await applyPatternSkeleton(templatePath, scratchPath, outputPath, deck.slides as never, new Map());
+      expect(manifest[0]).toEqual({ slideId: "S01", mode: "renderer" });
+      const xml = await zipText(outputPath);
+      expect(xml).toContain("NO PATTERN HEADLINE");
+    } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
+      fs.rmSync(path.dirname(templatePath), { recursive: true, force: true });
+    }
+    void patternsArtifact;
+  }, 60000);
+
+  it("throws rather than silently rendering when a required slot has no matching content", async () => {
+    const templatePath = await buildPatternFixture();
+    const elements = await extractTemplateElements(templatePath);
+    const grammar = compileTemplateGrammar(elements);
+    const patternsArtifact = compileTemplatePatterns(elements, grammar);
+    const coverPattern = patternsArtifact.patterns[0];
+
+    // A "chart" layout slide has no `headline`-bindable field path collision — but headline is a
+    // base field every SlideSpec carries, so force the failure a different real way: a required
+    // slot whose binding never resolves for this slide's actual layout.
+    const requiredNonHeadlineSlot: TemplatePattern = {
+      ...coverPattern,
+      skeleton: { ...coverPattern.skeleton, replaceableSlots: [{ id: "e1", role: "subtitle", binding: "subhead", shapeId: "Cover Subtitle", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: true }] },
+    };
+    const deck = deckWithSlides([deckSlide({ id: "S01", layout: "statement", headline: "H", content: { body: "b", proofs: [] } })]);
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-pattern-required-"));
+    try {
+      const scratchPath = path.join(workDir, "scratch.pptx");
+      await renderDeck(deck, scratchPath, repoRoot);
+      const outputPath = path.join(workDir, "final.pptx");
+      await expect(applyPatternSkeleton(templatePath, scratchPath, outputPath, deck.slides as never, new Map([["S01", requiredNonHeadlineSlot]]))).rejects.toThrow(/required slot/);
+    } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
+      fs.rmSync(path.dirname(templatePath), { recursive: true, force: true });
+    }
+  }, 60000);
+});
