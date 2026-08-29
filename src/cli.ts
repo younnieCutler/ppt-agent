@@ -20,6 +20,7 @@ import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } 
 import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
 import { templateMapSchema } from "./organization";
+import { createRunWorkspace, removeRunWorkspace } from "./workspace";
 
 /**
  * Everything downstream of the plan, and the provenance that describes it. Listed once so an added
@@ -195,6 +196,9 @@ export async function release(args: string[]): Promise<void> {
   const visualQaPath = optionalOption(args, "--visual-qa");
   const runDir = optionalOption(args, "--run-dir");
   const acceptRisk = hasFlag(args, "--accept-risk");
+  const publishPdf = hasFlag(args, "--pdf");
+  const keepWorkspace = hasFlag(args, "--keep-workspace");
+  if (publishPdf && !runDir) throw new Error("Release blocked: --pdf requires --run-dir (the PDF is published from <run-dir>/visual/deck.pdf).");
   const qa = readJson(qaPath) as { status?: string; attempts?: number };
   const judgment = fs.readFileSync(path.resolve(judgmentPath), "utf8");
   const repairState = readJson(repairStatePath) as { attempts?: unknown };
@@ -233,20 +237,64 @@ export async function release(args: string[]): Promise<void> {
       throw new Error("Release blocked: the PPTX being released does not match the PPTX visual-qa judged (visual/render-provenance.json digest mismatch). Re-run `visual` and `visual-qa` against the exact file being released.");
     }
   }
-  fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
-  fs.copyFileSync(path.resolve(pptxPath), path.resolve(outPath));
-  print({ status: releaseStatus, outputPath: path.resolve(outPath), attempts: repairState.attempts });
+  // Publish before touching anything else: the deliverable's existence must never depend on
+  // whether cleanup afterward succeeds.
+  const resolvedOutPath = path.resolve(outPath);
+  fs.mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
+  fs.copyFileSync(path.resolve(pptxPath), resolvedOutPath);
+  const publishedSha256 = crypto.createHash("sha256").update(fs.readFileSync(resolvedOutPath)).digest("hex");
+  const sourceSha256 = crypto.createHash("sha256").update(fs.readFileSync(path.resolve(pptxPath))).digest("hex");
+  if (publishedSha256 !== sourceSha256) throw new Error("Release blocked: published PPTX does not match its source after copy (publish integrity check failed).");
+
+  let pdfOutputPath: string | undefined;
+  if (publishPdf) {
+    // The PDF Visual QA actually judged, copied verbatim. Re-converting at release time is exactly
+    // how a Japan Career Agent deliverable ended up with a phantom duplicated headline that neither
+    // the DeckSpec nor the judged montage ever had — a different converter, run again, is a new
+    // artifact nobody re-judged.
+    const judgedPdfPath = path.join(path.resolve(runDir!), "visual", "deck.pdf");
+    if (!fs.existsSync(judgedPdfPath)) throw new Error(`Release blocked: --pdf requires ${judgedPdfPath} to exist. Re-run \`visual\` before releasing.`);
+    pdfOutputPath = `${resolvedOutPath}.pdf`.replace(/\.pptx\.pdf$/, ".pdf");
+    fs.copyFileSync(judgedPdfPath, pdfOutputPath);
+    const publishedPdfSha256 = crypto.createHash("sha256").update(fs.readFileSync(pdfOutputPath)).digest("hex");
+    const sourcePdfSha256 = crypto.createHash("sha256").update(fs.readFileSync(judgedPdfPath)).digest("hex");
+    if (publishedPdfSha256 !== sourcePdfSha256) throw new Error("Release blocked: published PDF does not match visual/deck.pdf after copy (publish integrity check failed).");
+  }
+
+  let workspaceRemoved = false;
+  let cleanupWarning: string | undefined;
+  if (runDir && !keepWorkspace) {
+    // A cleanup failure must never retract or invalidate an already-published deliverable — it is
+    // logged and reported, not thrown, so the caller's success status still reflects reality.
+    try {
+      removeRunWorkspace(runDir);
+      workspaceRemoved = true;
+    } catch (error) {
+      cleanupWarning = `Workspace cleanup failed for ${path.resolve(runDir)}: ${error instanceof Error ? error.message : String(error)}`;
+      process.stderr.write(`Warning: ${cleanupWarning}\n`);
+    }
+  }
+
+  print({ status: releaseStatus, outputPath: resolvedOutPath, pdfOutputPath, attempts: repairState.attempts, workspaceRemoved, cleanupWarning });
 }
 
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|plan-validate|composition-resolve|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|plan-validate|composition-resolve|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
   if (command === "fonts") {
     print(listInstalledFonts());
+    return;
+  }
+
+  if (command === "workspace-open") {
+    const name = option(args, "--name");
+    const projectDir = optionalOption(args, "--project-dir") ?? projectDirectory();
+    const workspace = createRunWorkspace(projectDir, name);
+    print({ status: "pass", ...workspace });
     return;
   }
 

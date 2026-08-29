@@ -18,6 +18,21 @@ Claude Code behaviour that existed before them:
 - `PPT_AGENT_TRANSCRIPT_DIR` — directory of host session `.jsonl` transcripts read by `tokens`
   (falls back to Claude Code's `~/.claude/projects/<slug>`).
 
+## Run workspace
+
+Every run is scoped to a hidden directory, never the user's output directory:
+
+```sh
+node dist/cli.js workspace-open --name <presentation-name> [--project-dir <dir>]
+# → { runId, runDir } — runDir is <project-dir>/.ppt-agent/runs/<runId>/, already gitignored.
+```
+
+Use the printed `runDir` as `--run-dir` for every command below. On success, `release` deletes the
+whole run directory automatically — the user's output directory holds only the deliverable(s). On
+any failure the workspace is left in place for debugging, since `release` throws before it ever
+reaches the cleanup step. Pass `--keep-workspace` to `release` to keep a **successful** run's
+workspace too (debugging, or inspecting what a pattern-based render actually preserved).
+
 Confirm audience, slide count, fonts, and delivery environment before rendering. Do not invent source-backed claims or substitute unavailable fonts. Commands below are cross-platform (Windows and macOS); adjust path separators for your shell.
 
 ## Interview: presentation style
@@ -214,3 +229,5 @@ A repair extends the measurement window: `repair-context` opens the repair phase
 Every command that writes a run-dir artifact prints a one-line summary, not the whole blob — the artifact is on disk, and printing it puts a second copy into the conversation for nothing. **Read the file when you need the contents.** Failing QA runs still print their full findings, because that is what you have to act on. `--print` restores full output on any command.
 
 `release` additionally accepts `--visual-qa <path>` and `--accept-risk`: a hard visual finding always blocks; an unresolved risk finding blocks unless `--accept-risk` is passed, in which case the release status is `pass_with_warning` instead of `pass`. Passing `--visual-qa` makes `--run-dir <run-dir>` mandatory alongside it: release reads `visual/render-provenance.json` from that run directory and blocks — missing file, or a digest mismatch against the PPTX being released — rather than silently shipping a file re-rendered after Visual QA last judged it.
+
+`release` also accepts `--pdf` and `--keep-workspace`. `--pdf` requires `--run-dir` and publishes `<run-dir>/visual/deck.pdf` — the exact PDF Visual QA judged — as `<out-basename>.pdf` next to the PPTX; it never re-converts, since a different converter run after judgment is exactly what produced a phantom duplicated headline in a past regression. Without `--pdf`, no PDF is published — the default visible output is the PPTX alone. After a successful release, `--run-dir`'s workspace is deleted unless `--keep-workspace` is passed; a cleanup failure is reported as a warning on the release result and never retracts the already-published deliverable.
