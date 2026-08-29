@@ -215,9 +215,13 @@ async function main(): Promise<void> {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
+      // composition-resolve reads the run directory's grammar, so style writes the copy it recorded:
+      // a digest describing a file nobody put there would block every run with a v2 pack.
+      const grammarRunPath = path.join(path.resolve(runDir), "template-grammar.json");
+      if (style.templateGrammar) fs.writeFileSync(grammarRunPath, JSON.stringify(style.templateGrammar, null, 2));
       recordProvenance(runDir, {
         resolvedStyleDigest: sha256File(path.join(path.resolve(runDir), "style-context.json")),
-        templateGrammarDigest: style.templateGrammarDigest,
+        templateGrammarDigest: style.templateGrammar ? sha256File(grammarRunPath) : undefined,
       });
       markPhase(runDir, "styleResolution");
     }
