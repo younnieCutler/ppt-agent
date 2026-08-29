@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
 import type { QaFinding } from "./qa";
 import type { DeckSpec, SlideSpec } from "./schema";
-import { resolveSlotContent, slotCarriesRealContent, type TemplatePattern } from "./template-patterns";
+import { hasFullSemanticCoverage, resolveSlotContent, type TemplatePattern } from "./template-patterns";
 import type { TemplateStrategy } from "./template-analysis";
 import { displayWidth } from "./typography";
 
@@ -258,27 +258,24 @@ export function checkTemplateSlotCapacity(deck: Pick<DeckSpec, "slides">, chosen
  * connector/shape *geometry* the generic renderer's own composition contract makes, and a
  * pattern's editability guarantee comes from being real copied shapes, not from matching that
  * contract — see the exemption's own comment in qa.ts). That exemption must never be read as
- * covering *content* too: this is the independent, non-exempted check for whether the slide's real
- * payload — not just its headline — actually reached a slot. Only `title` is skipped, matching
- * `patternFitsSlide`'s own reasoning (a cover's payload is legitimately its headline/subtitle).
- * `quantitative` is checked like every other layout — `content.metrics[]` is its real payload and
- * a headline-only pattern must not pass just because it also happens to carry a `source` slot
- * (`slotCarriesRealContent` excludes `headline`/`source` from counting, since both resolve on
- * every slide regardless of layout and prove nothing about this slide's actual content).
+ * covering *content* too: this is the independent, non-exempted check for whether the slide's
+ * *whole* real payload — not just its headline, and not just a fragment of it — actually reached a
+ * slot. Uses the same per-layout `hasFullSemanticCoverage` contract as `patternFitsSlide`
+ * (template-patterns.ts) so a slide/pattern pair that never went through the Pattern Resolver's own
+ * selection (e.g. a caller renders directly against a hand-picked pattern) still gets caught here
+ * with an identical standard, not a looser "did anything at all resolve" one.
  */
 export function checkTemplateSemanticContentDropped(deck: Pick<DeckSpec, "slides">, chosenPatterns: Map<string, TemplatePattern>): QaFinding[] {
   const findings: QaFinding[] = [];
   for (const slide of deck.slides as SlideSpec[]) {
     const pattern = chosenPatterns.get(slide.id);
     if (!pattern) continue;
-    if (slide.layout === "title") continue;
-    const carriesRealContent = pattern.skeleton.replaceableSlots.some((slot) => slotCarriesRealContent(slide, slot));
-    if (!carriesRealContent) {
+    if (!hasFullSemanticCoverage(slide, pattern.skeleton.replaceableSlots)) {
       findings.push({
         severity: "hard",
         code: "TEMPLATE_SEMANTIC_CONTENT_DROPPED",
         slideId: slide.id,
-        message: `Pattern '${pattern.id}' has no slot bound to slide '${slide.id}''s non-headline content (layout '${slide.layout}'). Cloning this pattern would render only the headline; the composition's real payload has nowhere to go and would be silently dropped.`,
+        message: `Pattern '${pattern.id}' does not have full slot coverage for slide '${slide.id}''s content (layout '${slide.layout}'). Cloning this pattern would render the headline and, at best, part of the composition's real payload — the rest has nowhere to go and would be silently dropped.`,
       });
     }
   }

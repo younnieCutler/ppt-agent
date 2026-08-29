@@ -291,24 +291,55 @@ export function slotCarriesRealContent(slide: SlideSpec, slot: Pick<TemplateSlot
 }
 
 /**
- * Whether cloning `pattern` for `slide` would actually carry the slide's real payload, not just
- * its headline — and would not visibly overflow a required slot. The Pattern Resolver uses this
- * to pick the first candidate (by rank) that fits rather than always rendering rank 1, and
- * `checkTemplateSemanticContentDropped` (template-fidelity.ts) uses the same
- * `slotCarriesRealContent` question to catch it after the fact if a caller renders directly
+ * Per-layout full-coverage contract: not "did *some* slot resolve *something*", but "does the set
+ * of slots that actually resolved cover this layout's *whole* real payload". Every list-shaped
+ * binding (`content.steps[]`, `content.body` for process/evidence/timeline, `content.metrics[]`,
+ * `content.left/right.items[]`) always maps the *entire* underlying array when it resolves at all
+ * — `resolveSlotContent` never slices a partial page of it — so the only place partial coverage
+ * was actually possible is `comparison`, which is the one layout whose payload is split across two
+ * independent bindings (`content.left.items[]` and `content.right.items[]`): a pattern with only
+ * one of the two previously passed the old "any slot resolved" test while silently dropping the
+ * other side. `content.body`'s comparison branch already flattens both sides into one string, so a
+ * pattern using it alone still has full coverage without needing both granular slots.
+ */
+export function hasFullSemanticCoverage(slide: SlideSpec, slots: TemplateSlot[]): boolean {
+  const resolves = (binding: SlotBindingPath) => slots.some((slot) => slot.binding === binding && slotCarriesRealContent(slide, slot));
+  switch (slide.layout) {
+    case "title":
+      return true; // a cover's real payload is legitimately just its headline/subtitle
+    case "statement":
+    case "evidence":
+    case "timeline":
+      return resolves("content.body");
+    case "process":
+      return resolves("content.body") || resolves("content.steps[]");
+    case "quantitative":
+      return resolves("content.metrics[]");
+    case "comparison":
+      return resolves("content.body") || (resolves("content.left.items[]") && resolves("content.right.items[]"));
+    case "architecture":
+    case "pipeline":
+    case "chart":
+      // No binding exists for a graph or a chart's structured payload yet (nodes/edges/zones/
+      // dataRef) — no pattern can ever have full coverage for these today, which is the honest
+      // "not supported" outcome rather than a silent headline-only render.
+      return false;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether cloning `pattern` for `slide` would actually carry the slide's whole real payload, not
+ * just its headline or a fragment of it — and would not visibly overflow a required slot. The
+ * Pattern Resolver uses this to pick the first candidate (by rank) that fits rather than always
+ * rendering rank 1, and `checkTemplateSemanticContentDropped` (template-fidelity.ts) uses the same
+ * `hasFullSemanticCoverage` question to catch it after the fact if a caller renders directly
  * against a resolved pattern without going through this gate.
- *
- * `title` alone is exempt: a cover's only real payload often *is* its headline/subtitle. Every
- * other layout — including `quantitative` — is checked; `architecture`/`pipeline`/`chart` have no
- * binding for their structured payload (a graph or a chart is not prose) and so correctly never
- * pass this test with any pattern today, which is the honest "not supported yet" outcome rather
- * than a silent headline-only render.
  */
 export function patternFitsSlide(pattern: TemplatePattern, slide: SlideSpec): boolean {
   const slots = pattern.skeleton.replaceableSlots;
-  if (slide.layout !== "title") {
-    if (!slots.some((slot) => slotCarriesRealContent(slide, slot))) return false;
-  }
+  if (!hasFullSemanticCoverage(slide, slots)) return false;
   return !slots.some((slot) => {
     if (!slot.required || slot.maxChars === undefined) return false;
     const content = resolveSlotContent(slide, slot.binding);

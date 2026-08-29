@@ -181,4 +181,39 @@ describe("patternFitsSlide", () => {
     expect(patternFitsSlide(sourceOnlyPattern, evidenceSlide)).toBe(false);
     expect(patternFitsSlide(sourceOnlyPattern, quantitativeSlide)).toBe(false);
   });
+
+  const comparisonSlide: SlideSpec = {
+    id: "S01", role: "body", storyBeat: "design", headline: "Old vs new", headlineAlignment: "left",
+    claims: [{ text: "Old vs new" }], composition: "two_column", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+    layout: "comparison", content: { left: { label: "Before", items: ["Manual", "Slow"] }, right: { label: "After", items: ["Automated", "Fast"] } },
+  } as unknown as SlideSpec;
+
+  it("rejects a pattern that only resolves one side of a comparison — full coverage means BOTH sides, not just some slot resolving", () => {
+    const leftOnlyPattern: TemplatePattern = {
+      ...headlineOnlyPattern,
+      skeleton: { ...headlineOnlyPattern.skeleton, replaceableSlots: [...headlineOnlyPattern.skeleton.replaceableSlots, { id: "slot2", role: "label", binding: "content.left.items[]", shapeId: "Left", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false }] },
+    };
+    // Before the full-coverage fix, this passed: "some non-headline slot resolved" was satisfied
+    // by the left side alone, silently dropping the right side entirely.
+    expect(patternFitsSlide(leftOnlyPattern, comparisonSlide)).toBe(false);
+  });
+
+  it("accepts a pattern that resolves both sides of a comparison independently", () => {
+    const bothSidesPattern: TemplatePattern = {
+      ...headlineOnlyPattern,
+      skeleton: {
+        ...headlineOnlyPattern.skeleton,
+        replaceableSlots: [
+          ...headlineOnlyPattern.skeleton.replaceableSlots,
+          { id: "slot2", role: "label", binding: "content.left.items[]", shapeId: "Left", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false },
+          { id: "slot3", role: "label", binding: "content.right.items[]", shapeId: "Right", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false },
+        ],
+      },
+    };
+    expect(patternFitsSlide(bothSidesPattern, comparisonSlide)).toBe(true);
+  });
+
+  it("accepts a pattern that resolves comparison content via a single content.body slot — it already flattens both sides", () => {
+    expect(patternFitsSlide(withBodySlot, comparisonSlide)).toBe(true);
+  });
 });
