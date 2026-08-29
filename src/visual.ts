@@ -167,6 +167,18 @@ export function selectBackend(backends: VisualRenderBackend[] = [powerpointBacke
   throw new Error(`No visual render backend available. ${probes.map(({ backend, probe }) => `${backend.name}: ${probe.detail}`).join(" ")}`);
 }
 
+/** For tests that need to `it.skipIf` a rendered-image assertion on a CI runner with neither
+ * PowerPoint nor LibreOffice installed — mirrors the PowerPoint-COM availability check already
+ * used by tests/integration/render.test.ts, generalized to either backend. */
+export function visualRenderBackendAvailable(): boolean {
+  try {
+    selectBackend();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function escapeXml(text: string): string {
   return text.replace(/[<>&"']/g, (character) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "\"": "&quot;", "'": "&apos;" })[character] ?? character);
 }

@@ -84,22 +84,15 @@ export type TemplatePatternsArtifact = {
 // in as an example, which is exactly why cloning a skeleton needs sanitization at all.
 const preservedRoles = new Set<SemanticRole>(["divider", "surface", "footer"]);
 
-/**
- * A full-bleed, z-index-0 image with no text overlay in its bounds is treated as template chrome
- * (a cover photograph, a background texture) by default; anything else with no name/role signal at
- * all is `unknown`, not guessed as decorative. This is the concrete rule for the case flagged in
- * the plan doc's Conflicts section — a decorative shape with no name match (an accent bar with no
- * `divider`/`logo` name hint) still lands in `unknown` and is rejected by default rather than kept,
- * because there is genuinely no signal telling the classifier apart from example content here.
- */
-function isFullBleedBackgroundImage(element: TemplateElement, slideSize: { w: number; h: number }): boolean {
-  return element.type === "image" && element.zIndex === 0 && element.bounds.w >= slideSize.w * 0.9 && element.bounds.h >= slideSize.h * 0.9;
-}
-
-export function classifyTemplateAsset(element: TemplateElement, slideSize: { w: number; h: number }): AssetClass {
+export function classifyTemplateAsset(element: TemplateElement, _slideSize: { w: number; h: number }): AssetClass {
   if (element.role === "logo") return "brand";
   if (preservedRoles.has(element.role as SemanticRole)) return "structural";
-  if (isFullBleedBackgroundImage(element, slideSize)) return "structural";
+  // A full-bleed, z-index-0 image is genuinely ambiguous: it could be template chrome (a
+  // background texture) or a cover photograph the template author put in as an example — a real
+  // company cover slide's sample photo satisfies this geometry test exactly as well as a texture
+  // does. There is no signal here telling the two apart, so — same rule as any other unnamed,
+  // unclassified element in this function — it defaults to `unknown` (removed on clone) rather
+  // than assumed brand chrome and shipped in every generated deck.
   if (element.role === "unknown") return "unknown";
   // Every other classified role (title, subtitle, heading, body, caption, eyebrow, label,
   // key_message, metric, metric_label, annotation, step, route, source) is content, not chrome.

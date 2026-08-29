@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { buildPatternFixture } from "../fixtures/pattern-template";
+import { visualRenderBackendAvailable } from "../../src/visual";
 
 const repoRoot = path.resolve(__dirname, "../..");
 const tsxPackage = createRequire(__filename).resolve("tsx/package.json");
@@ -14,8 +15,12 @@ function cli(args: string[]): string {
   return execFileSync(process.execPath, [tsxCli, path.join(repoRoot, "src/cli.ts"), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
+// A clean Windows CI runner has neither PowerPoint nor LibreOffice installed — `template-preview`
+// needs one of them to rasterize slides, so this test needs a real backend, not merely Windows.
+const noVisualBackend = !visualRenderBackendAvailable();
+
 describe("template-preview + pattern-label", () => {
-  it(
+  it.skipIf(noVisualBackend)(
     "renders a raw template's own slides to a montage, and pattern-label merges host-authored functions into template-patterns.json",
     async () => {
       const templatePath = await buildPatternFixture();

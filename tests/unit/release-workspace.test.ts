@@ -96,7 +96,10 @@ describe("release workspace cleanup", () => {
       expect(fs.existsSync(outPath)).toBe(true);
       expect((result as unknown as { cleanupWarning?: string } | undefined)).toBeUndefined(); // release() prints, does not return
     } finally {
-      fs.chmodSync(runDir, 0o700);
+      // Windows does not honor a POSIX permission bit on a directory the way rmSync's failure
+      // path here assumes — cleanup can succeed anyway and remove runDir outright, so restoring
+      // its mode afterward would otherwise throw ENOENT on a path that is legitimately gone.
+      if (fs.existsSync(runDir)) fs.chmodSync(runDir, 0o700);
     }
   });
 

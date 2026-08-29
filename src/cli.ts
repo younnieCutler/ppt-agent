@@ -23,6 +23,7 @@ import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolv
 import { checkTemplatePatternNotFound, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
 import { applyPatternSkeleton } from "./template";
 import { templateMapSchema } from "./organization";
+import { resolveTemplateSourceSpec } from "./template-source";
 import { createRunWorkspace, removeRunWorkspace } from "./workspace";
 
 /**
@@ -810,14 +811,22 @@ async function main(): Promise<void> {
       ? await ooxmlQa(pptxPath, canonicalDeck, undefined, styleForFonts as never, patternRenderedSlideIds)
       : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
     let report = mergeFindings(structural, ooxmlFindings);
-    if (renderManifest && style.organization?.templatePath && fs.existsSync(path.resolve(pptxPath))) {
+    // style.organization is only populated for contract.organization (a pre-built Organization
+    // Pack) — the raw-pptx entry point (contract.template: {kind:"pptx"}) has no organization pack
+    // at all, and leakage/fidelity checking was silently skipped for it. resolveTemplateSourceSpec
+    // is the one place both input shapes normalize to a template.pptx path.
+    const templateSource = resolveTemplateSourceSpec(canonicalDeck.contract);
+    const sourceTemplatePath = templateSource
+      ? path.resolve(projectDir, templateSource.kind === "organization" ? path.join(templateSource.path, "template.pptx") : templateSource.path)
+      : undefined;
+    if (renderManifest && sourceTemplatePath && fs.existsSync(sourceTemplatePath) && fs.existsSync(path.resolve(pptxPath))) {
       const manifest = renderManifest;
       const patternsPath = path.join(path.resolve(runDir), "template", "template-patterns.json");
       const elementsPath = path.join(path.resolve(runDir), "template", "template-elements.json");
       if (fs.existsSync(patternsPath) && fs.existsSync(elementsPath)) {
         const patterns = (readJson(patternsPath) as { patterns: Parameters<typeof templateFidelityQa>[4] }).patterns;
         const strategy = (readJson(elementsPath) as { strategy: Parameters<typeof templateFidelityQa>[5] }).strategy;
-        const fidelityFindings = await templateFidelityQa(pptxPath, style.organization.templatePath, canonicalDeck, manifest, patterns, strategy);
+        const fidelityFindings = await templateFidelityQa(pptxPath, sourceTemplatePath, canonicalDeck, manifest, patterns, strategy);
         const patternsById = new Map(patterns.map((pattern) => [pattern.id, pattern]));
         const chosenPatterns = new Map(
           manifest

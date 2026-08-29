@@ -27,8 +27,8 @@ describe("classifyTemplateAsset", () => {
     expect(classifyTemplateAsset({ ...base, type: "text", role: "footer" }, slideSize)).toBe("structural");
   });
 
-  it("classifies a full-bleed z-index-0 image as structural background, not example content", () => {
-    expect(classifyTemplateAsset({ ...base, type: "image", role: "unknown", zIndex: 0, bounds: { x: 0, y: 0, w: 13.3, h: 7.5 } }, slideSize)).toBe("structural");
+  it("classifies a full-bleed z-index-0 image as unknown, not assumed structural background — it could equally be a cover photo the template author left as an example", () => {
+    expect(classifyTemplateAsset({ ...base, type: "image", role: "unknown", zIndex: 0, bounds: { x: 0, y: 0, w: 13.3, h: 7.5 } }, slideSize)).toBe("unknown");
   });
 
   it("classifies a non-full-bleed image with no role signal as unknown, not structural", () => {
