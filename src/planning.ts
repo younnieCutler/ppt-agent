@@ -1,10 +1,13 @@
 import { allowedCompositions, compositionFamily, contentModelSchema, contractSchema, deckPlanSchema, deckSchema, type CompositionFamily, type ContentModel, type DeckPlan, type PlanVisualIntent, type SlideFunction, type SlideSpec, type SourceRef } from "./schema";
 import type { QaFinding } from "./qa";
+import { sha256 } from "./provenance";
 
 export const planningFindingSeverity = {
   SLIDE_THESIS_MISSING: "hard",
   PRIMARY_EVIDENCE_MISSING: "hard",
   PRIMARY_EVIDENCE_NOT_IN_CONTENT_MODEL: "hard",
+  SECONDARY_EVIDENCE_NOT_IN_CONTENT_MODEL: "hard",
+  DECK_PLAN_DIGEST_MISMATCH: "hard",
   PLAN_SLIDE_COUNT_MISMATCH: "hard",
   PLAN_STORY_BEAT_DRIFT: "hard",
   MULTIPLE_DOMINANT_CLAIMS: "hard",
@@ -17,6 +20,15 @@ export const planningFindingSeverity = {
 type PlanningFindingCode = keyof typeof planningFindingSeverity;
 type PlanningJudgment = { slideId?: string; code: PlanningFindingCode; message: string };
 export type PlanningQaReport = { status: "pass" | "review" | "fail"; findings: QaFinding[]; plan: DeckPlan };
+
+/**
+ * The one definition of a DeckPlan's digest. It hashes the *normalized* plan — the schema's own
+ * output — so a plan that is re-serialized, re-indented, or key-reordered still digests the same,
+ * and every producer and verifier agrees without re-implementing the algorithm.
+ */
+export function deckPlanDigest(planInput: unknown): string {
+  return sha256(JSON.stringify(deckPlanSchema.parse(planInput)));
+}
 
 function refKey(ref: SourceRef): string {
   return `${ref.sourceId}:${ref.excerptId}`;
@@ -41,6 +53,11 @@ export function validateDeckPlan(planInput: unknown, contractInput: unknown, con
     if (!slide.thesis.trim()) findings.push(finding("SLIDE_THESIS_MISSING", "Every slide requires a thesis.", slide.id));
     if (slide.primaryEvidence.length === 0) findings.push(finding("PRIMARY_EVIDENCE_MISSING", "Every slide requires primary evidence.", slide.id));
     if (!contract.storyline.includes(slide.storyBeat)) findings.push(finding("PLAN_STORY_BEAT_DRIFT", `Story beat '${slide.storyBeat}' is absent from the contract storyline.`, slide.id));
+    // Authoring contexts hand a worker both evidence sets, so an unresolvable secondary ref is a
+    // dangling reference the worker would be asked to cite. Its own code keeps the diagnosis clear.
+    for (const ref of slide.secondaryEvidence) {
+      if (!refs.has(refKey(ref))) findings.push(finding("SECONDARY_EVIDENCE_NOT_IN_CONTENT_MODEL", `Secondary evidence '${refKey(ref)}' is absent from the ContentModel.`, slide.id));
+    }
     for (const ref of slide.primaryEvidence) {
       if (!refs.has(refKey(ref))) findings.push(finding("PRIMARY_EVIDENCE_NOT_IN_CONTENT_MODEL", `Primary evidence '${refKey(ref)}' is absent from the ContentModel.`, slide.id));
     }
@@ -65,6 +82,12 @@ export function verifyDeckAgainstPlan(deckInput: unknown, planInput: unknown, co
   const compositionPlan = compositionPlanInput as CompositionPlanInput;
   const findings: QaFinding[] = [];
   const candidatesBySlide = new Map((compositionPlan.slides ?? []).map((slide) => [slide.id, slide.candidates ?? []]));
+  // A digest that is only checked for shape proves nothing: it has to be the digest of the plan the
+  // deck is being verified against, or a DeckSpec can carry any 64-character string and pass.
+  const declared = deckInput as { version?: unknown; planDigest?: unknown };
+  if (declared.version === 2 && declared.planDigest !== deckPlanDigest(plan)) {
+    findings.push(finding("DECK_PLAN_DIGEST_MISMATCH", "DeckSpec v2 planDigest does not match the digest of deck-plan.json. Re-author the DeckSpec against the current plan."));
+  }
   if (deck.slides.length !== plan.slides.length) return [finding("PLAN_SLIDE_COUNT_MISMATCH", "DeckSpec and DeckPlan slide counts differ.")];
   deck.slides.forEach((slide, index) => {
     const intent = plan.slides[index];

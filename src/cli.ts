@@ -15,45 +15,31 @@ import { resolvePresentationStyle, styleContext } from "./style";
 import { writeP3Metrics } from "./metrics";
 import { markPhase, measurementWindow, projectSlug, resolveTranscript, writeTokenReport } from "./tokens";
 import { recordRun, writeQualityReport } from "./score";
-import { resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
+import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
+import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
 import { templateMapSchema } from "./organization";
 
-/**
- * Two artifacts that are only valid together. A plain rename-then-rename leaves the pair mismatched
- * if the second one fails, so the previous contents are held and restored on failure: a failed
- * write keeps the last valid pair rather than inventing a new one.
- */
-/**
- * Re-hashes the run directory's copy of each recorded input. A missing file for a recorded digest is
- * as stale as a changed one — the artifact the digest describes is no longer there to check.
- */
-function assertFresh(runDir: string, provenance: Record<string, string>, inputs: Array<[string, string]>): void {
-  for (const [field, fileName] of inputs) {
-    const recorded = provenance[field];
-    if (!recorded) continue;
-    const filePath = path.join(path.resolve(runDir), fileName);
-    if (!fs.existsSync(filePath)) throw new Error(`Composition resolution blocked: ${fileName} is recorded in artifact-provenance.json but missing from the run directory.`);
-    if (sha256File(filePath) !== recorded) throw new Error(`Composition resolution blocked: ${fileName} changed after planning (artifact-provenance.json digest mismatch). Re-run plan-validate.`);
-  }
+/** Merges into the run directory's artifact provenance, so each phase records only its own inputs. */
+function recordProvenance(runDir: string, fields: Partial<ArtifactProvenance>): void {
+  const provenancePath = path.join(path.resolve(runDir), "artifact-provenance.json");
+  const existing = fs.existsSync(provenancePath) ? (readJson(provenancePath) as ArtifactProvenance) : ({} as ArtifactProvenance);
+  writeArtifactProvenance(runDir, { ...existing, ...fields });
 }
 
-function writeArtifactPair(files: Array<{ path: string; contents: string }>): void {
-  const previous = files.map((file) => (fs.existsSync(file.path) ? fs.readFileSync(file.path) : undefined));
-  const temporaries = files.map((file) => `${file.path}.${process.pid}.tmp`);
-  try {
-    files.forEach((file, index) => fs.writeFileSync(temporaries[index], file.contents));
-    files.forEach((file, index) => fs.renameSync(temporaries[index], file.path));
-  } catch (error) {
-    files.forEach((file, index) => {
-      const restore = previous[index];
-      if (restore) fs.writeFileSync(file.path, restore);
-      else fs.rmSync(file.path, { force: true });
-    });
-    throw error;
-  } finally {
-    temporaries.forEach((temporary) => fs.rmSync(temporary, { force: true }));
+function assertFresh(runDir: string, provenance: Record<string, string>, inputs: Array<[keyof ArtifactProvenance, string]>): void {
+  for (const [field, fileName] of inputs) {
+    const recorded = provenance[field];
+    const filePath = path.join(path.resolve(runDir), fileName);
+    if (!recorded) {
+      // An input that appeared after the digests were recorded was never part of what produced them,
+      // so resolving against it would silently mix two runs.
+      if (fs.existsSync(filePath)) throw new Error(`Composition resolution blocked: ${fileName} exists but is not recorded in artifact-provenance.json. Re-run the phase that produces it.`);
+      continue;
+    }
+    if (!fs.existsSync(filePath)) throw new Error(`Composition resolution blocked: ${fileName} is recorded in artifact-provenance.json but missing from the run directory.`);
+    if (sha256File(filePath) !== recorded) throw new Error(`Composition resolution blocked: ${fileName} changed after it was recorded (artifact-provenance.json digest mismatch). Re-run the phase that produces it.`);
   }
 }
 
@@ -229,6 +215,10 @@ async function main(): Promise<void> {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
+      recordProvenance(runDir, {
+        resolvedStyleDigest: sha256File(path.join(path.resolve(runDir), "style-context.json")),
+        templateGrammarDigest: style.templateGrammarDigest,
+      });
       markPhase(runDir, "styleResolution");
     }
     emit({ status: "pass", themeId: style.themeId, designDirection: style.designDirection, resolvedBy: style.provenance.resolvedBy, outputPath: runDir ? path.join(path.resolve(runDir), "style-context.json") : undefined }, style);
@@ -247,6 +237,7 @@ async function main(): Promise<void> {
     if (runDir) {
       fs.mkdirSync(path.resolve(runDir), { recursive: true });
       fs.writeFileSync(path.join(path.resolve(runDir), "reference-selection.json"), JSON.stringify(selected, null, 2));
+      recordProvenance(runDir, { referenceSelectionDigest: sha256File(path.join(path.resolve(runDir), "reference-selection.json")) });
       markPhase(runDir, "referenceRetrieval");
     }
     emit({ status: "pass", selected: selected.map((entry) => entry.id), outputPath: runDir ? path.join(path.resolve(runDir), "reference-selection.json") : undefined }, selected);
@@ -291,12 +282,10 @@ async function main(): Promise<void> {
     fs.writeFileSync(runContentModelPath, JSON.stringify(contentModel, null, 2));
     const reportPath = path.join(runDir, "planning-qa.json");
     fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-    const existing = fs.existsSync(path.join(runDir, "artifact-provenance.json")) ? readJson(path.join(runDir, "artifact-provenance.json")) as Record<string, string> : {};
-    writeArtifactProvenance(runDir, {
-      ...existing,
+    recordProvenance(runDir, {
       contractDigest: sha256File(contractPath),
       contentModelDigest: sha256File(runContentModelPath),
-      deckPlanDigest: sha256(JSON.stringify(report.plan)),
+      deckPlanDigest: deckPlanDigest(report.plan),
     });
     emitReport({ ...report, findings: report.findings }, reportPath);
     if (report.status !== "pass") process.exitCode = 2;
@@ -320,15 +309,21 @@ async function main(): Promise<void> {
       ["contractDigest", "contract.json"],
       ["contentModelDigest", "content-model.json"],
       ["referenceSelectionDigest", "reference-selection.json"],
+      ["templateGrammarDigest", "template-grammar.json"],
     ]);
-    if (provenance.deckPlanDigest !== sha256(JSON.stringify(readJson(planPath)))) throw new Error("Composition resolution blocked: deck plan digest is stale.");
+    // Style resolution is a prerequisite phase, and the style actually passed here is the one that
+    // must match it — checking only the run directory's copy would miss a --style-context pointing
+    // somewhere else entirely.
+    if (!provenance.resolvedStyleDigest) throw new Error("Composition resolution requires style provenance. Run `style --run-dir` first.");
+    if (sha256File(styleContextPath) !== provenance.resolvedStyleDigest) throw new Error("Composition resolution blocked: style-context.json changed after style resolution (artifact-provenance.json digest mismatch). Re-run `style`.");
+    if (provenance.deckPlanDigest !== deckPlanDigest(readJson(planPath))) throw new Error("Composition resolution blocked: deck plan digest is stale.");
     const styleContext = readJson(styleContextPath);
     const grammarPath = path.join(runDir, "template-grammar.json");
     const grammar = fs.existsSync(grammarPath) ? readJson(grammarPath) : {};
     const compositionPlan = resolveCompositionPlan(readJson(planPath), styleContext as never, grammar as never);
     const outputPath = path.join(runDir, "composition-plan.json");
     fs.writeFileSync(outputPath, JSON.stringify(compositionPlan, null, 2));
-    writeArtifactProvenance(runDir, { ...provenance, resolvedStyleDigest: sha256File(styleContextPath), compositionPlanDigest: sha256(JSON.stringify(compositionPlan)) } as ArtifactProvenance);
+    recordProvenance(runDir, { compositionPlanDigest: sha256(JSON.stringify(compositionPlan)) });
     emit({ status: "pass", outputPath, slides: compositionPlan.slides.length }, compositionPlan);
     return;
   }

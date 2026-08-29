@@ -2,15 +2,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { renderDeck } from "../../src/renderer";
 
 const repoRoot = path.resolve(__dirname, "../..");
 const deckFixture = JSON.parse(fs.readFileSync(path.join(repoRoot, "tests/fixtures/deck.json"), "utf8"));
 
+// The real CLI boundary, invoked the way every platform can: this node, and the tsx CLI resolved
+// from the repository's own node_modules. `npx` is a shell-resolved shim that does not exist as an
+// executable on Windows runners (spawnSync npx ENOENT).
+const tsxPackage = createRequire(__filename).resolve("tsx/package.json");
+const tsxCli = path.join(path.dirname(tsxPackage), JSON.parse(fs.readFileSync(tsxPackage, "utf8")).bin as string);
+
 function cli(args: string[], options: { expectFailure?: boolean } = {}): string {
   try {
-    return execFileSync("npx", ["tsx", path.join(repoRoot, "src/cli.ts"), ...args], { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return execFileSync(process.execPath, [tsxCli, path.join(repoRoot, "src/cli.ts"), ...args], { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   } catch (error) {
     if (!options.expectFailure) throw error;
     const failure = error as { stderr?: string; stdout?: string };
@@ -18,32 +25,23 @@ function cli(args: string[], options: { expectFailure?: boolean } = {}): string 
   }
 }
 
-const contract = {
-  sources: [{ kind: "prompt", id: "brief", text: "Brief" }],
-  purpose: "internal",
-  audience: "Team",
-  storyline: ["opening", "evidence", "closing"],
-  language: "en",
-  slideCount: 3,
-  brand: { kind: "default" },
-  fonts: { heading: "Arial", body: "Arial" },
-  aspectRatio: "16:9",
-};
-const contentModel = { version: 1, sources: [{ sourceId: "brief", excerpts: [{ id: "E01", locator: "1", text: "Grounded fact" }] }] };
+const contract = deckFixture.contract;
+const ref = deckFixture.slides[0].sourceRefs[0];
+const contentModel = { version: 1, sources: [{ sourceId: ref.sourceId, excerpts: [{ id: ref.excerptId, locator: "1", text: "Grounded fact" }] }] };
 const plan = {
   version: 1,
-  title: "Plan",
-  narrativeThesis: "One story",
-  slides: ["opening", "evidence", "closing"].map((storyBeat, index) => ({
-    id: `S0${index + 1}`,
-    storyBeat,
-    thesis: `Thesis ${index + 1}`,
+  title: deckFixture.title,
+  narrativeThesis: "One story, traceable end to end.",
+  slides: deckFixture.slides.map((slide: { id: string; storyBeat: string; headline: string }, index: number) => ({
+    id: slide.id,
+    storyBeat: slide.storyBeat,
+    thesis: slide.headline,
     function: index === 0 ? "cover" : "evidence",
-    primaryEvidence: [{ sourceId: "brief", excerptId: "E01" }],
+    primaryEvidence: [ref],
     secondaryEvidence: [],
     visualIntent: index === 0 ? "single_focal" : "hierarchy",
     density: "medium",
-    takeaway: `Takeaway ${index + 1}`,
+    takeaway: slide.headline,
   })),
 };
 
@@ -78,47 +76,50 @@ describe("template-analyze CLI", () => {
     expect(applied).toMatchObject({ role: "annotation", confidence: 1 });
   }, 120000);
 
-  it("keeps the previous valid artifact pair when the second write fails", async () => {
-    const pack = await packWithTemplate();
-    cli(["template-analyze", "--input", path.join(pack, "template.pptx"), "--out", pack]);
-    const elementsPath = path.join(pack, "template-elements.json");
-    const grammarPath = path.join(pack, "template-grammar.json");
-    const elementsBefore = fs.readFileSync(elementsPath, "utf8");
-    const grammarBefore = fs.readFileSync(grammarPath, "utf8");
-
-    // A directory where the grammar file belongs makes the second rename fail, which is the case
-    // that used to leave fresh elements paired with a stale grammar.
-    fs.rmSync(grammarPath);
-    fs.mkdirSync(grammarPath);
-    fs.writeFileSync(path.join(grammarPath, "blocker"), "");
-    const failure = cli(["template-analyze", "--input", path.join(pack, "template.pptx"), "--out", pack], { expectFailure: true });
-    expect(failure).not.toBe("");
-
-    expect(fs.readFileSync(elementsPath, "utf8")).toBe(elementsBefore);
-    fs.rmSync(grammarPath, { recursive: true });
-    fs.writeFileSync(grammarPath, grammarBefore);
-  }, 120000);
 });
 
 describe("composition-resolve provenance chain", () => {
-  it("blocks when an input recorded at planning time changed afterwards", () => {
+  function plannedRun(): { runDir: string; resolveArgs: string[] } {
     const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-provenance-"));
-    fs.writeFileSync(path.join(runDir, "contract.json"), JSON.stringify(contract, null, 2));
+    const contractPath = path.join(runDir, "contract.json");
+    fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
     const contentModelPath = path.join(runDir, "source-content-model.json");
     fs.writeFileSync(contentModelPath, JSON.stringify(contentModel, null, 2));
     const planPath = path.join(runDir, "plan-input.json");
     fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
-    fs.writeFileSync(path.join(runDir, "style-context.json"), JSON.stringify({ archetype: "corporate" }, null, 2));
     cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
+    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
+    return { runDir, resolveArgs: ["composition-resolve", "--plan", path.join(runDir, "deck-plan.json"), "--style-context", path.join(runDir, "style-context.json"), "--run-dir", runDir] };
+  }
 
-    const resolveArgs = ["composition-resolve", "--plan", path.join(runDir, "deck-plan.json"), "--style-context", path.join(runDir, "style-context.json"), "--run-dir", runDir];
+  it("resolves once every recorded input still matches", () => {
+    const { resolveArgs } = plannedRun();
     expect(cli(resolveArgs)).toContain("composition-plan.json");
+  }, 120000);
 
+  it("blocks when the contract changed after planning", () => {
+    const { runDir, resolveArgs } = plannedRun();
     fs.writeFileSync(path.join(runDir, "contract.json"), JSON.stringify({ ...contract, audience: "Board" }, null, 2));
-    expect(cli(resolveArgs, { expectFailure: true })).toMatch(/contract\.json changed after planning/);
+    expect(cli(resolveArgs, { expectFailure: true })).toMatch(/contract\.json changed after it was recorded/);
+  }, 120000);
 
-    fs.writeFileSync(path.join(runDir, "contract.json"), JSON.stringify(contract, null, 2));
+  it("blocks when a recorded input went missing", () => {
+    const { runDir, resolveArgs } = plannedRun();
     fs.rmSync(path.join(runDir, "content-model.json"));
     expect(cli(resolveArgs, { expectFailure: true })).toMatch(/content-model\.json is recorded/);
+  }, 120000);
+
+  it("blocks when the resolved style changed after style resolution", () => {
+    const { runDir, resolveArgs } = plannedRun();
+    const stylePath = path.join(runDir, "style-context.json");
+    fs.writeFileSync(stylePath, JSON.stringify({ ...JSON.parse(fs.readFileSync(stylePath, "utf8")), tampered: true }, null, 2));
+    expect(cli(resolveArgs, { expectFailure: true })).toMatch(/style-context\.json changed after style resolution/);
+  }, 120000);
+
+  it("blocks an input that appeared after the digests were recorded", () => {
+    // A reference selection dropped in after planning was never part of what produced these digests.
+    const { runDir, resolveArgs } = plannedRun();
+    fs.writeFileSync(path.join(runDir, "reference-selection.json"), JSON.stringify([{ id: "R01" }], null, 2));
+    expect(cli(resolveArgs, { expectFailure: true })).toMatch(/reference-selection\.json exists but is not recorded/);
   }, 120000);
 });

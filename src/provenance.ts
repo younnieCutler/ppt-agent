@@ -6,14 +6,15 @@ export type ArtifactProvenance = {
   contractDigest: string;
   contentModelDigest: string;
   referenceSelectionDigest?: string;
-  organizationPackDigest?: string;
   deckPlanDigest?: string;
   resolvedStyleDigest?: string;
   templateGrammarDigest?: string;
   compositionPlanDigest?: string;
-  deckSpecDigest?: string;
-  pptxDigest?: string;
 };
+
+// Removed rather than kept as decoration: organizationPackDigest, deckSpecDigest, and pptxDigest were
+// declared here but never produced or verified. The pack's identity is already carried by
+// templateGrammarDigest, and the rendered PPTX by visual/render-provenance.json.
 
 export function sha256(input: Buffer | string): string {
   return crypto.createHash("sha256").update(input).digest("hex");

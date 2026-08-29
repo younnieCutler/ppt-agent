@@ -117,15 +117,18 @@ export function compileTemplateGrammar(artifact: TemplateElementsArtifact): Temp
   const ys = usable.map((element) => element.bounds.y);
   const rights = usable.map((element) => element.bounds.x + element.bounds.w);
   const bottoms = usable.map((element) => element.bounds.y + element.bounds.h);
-  const minX = xs.length ? Math.max(0, Math.min(...xs)) : 0;
-  const minY = ys.length ? Math.max(0, Math.min(...ys)) : 0;
   // Real templates park helper shapes off the canvas, and a group's own extents can reach past the
-  // slide. An unclamped frame there is wider than the slide, which makes outerMargins negative and
-  // hands the renderer a frame no slide can hold.
+  // slide. The frame is the intersection of the elements' bounding box with the canvas, not the
+  // bounding box itself: an unclamped frame is wider than the slide, which makes outerMargins
+  // negative and hands the renderer a frame no slide can hold.
   const { w: slideW, h: slideH } = artifact.source.slideSize;
-  const maxRight = Math.min(slideW, Math.max(...rights, minX));
-  const maxBottom = Math.min(slideH, Math.max(...bottoms, minY));
-  const contentFrame = { x: minX, y: minY, w: Math.max(0, maxRight - minX), h: Math.max(0, maxBottom - minY) };
+  const clamp = (value: number, limit: number) => Math.min(Math.max(value, 0), limit);
+  const left = clamp(xs.length ? Math.min(...xs) : 0, slideW);
+  const top = clamp(ys.length ? Math.min(...ys) : 0, slideH);
+  const right = clamp(rights.length ? Math.max(...rights) : 0, slideW);
+  const bottom = clamp(bottoms.length ? Math.max(...bottoms) : 0, slideH);
+  // Everything off one edge collapses the frame to zero area there rather than inverting it.
+  const contentFrame = { x: Math.min(left, right), y: Math.min(top, bottom), w: Math.max(0, right - left), h: Math.max(0, bottom - top) };
   const colors = [...new Set(Object.values(artifact.styles).map((style) => style.color).filter((color): color is string => Boolean(color)))];
   const dividerUsage = elements.filter((element) => element.role === "divider").length / Math.max(1, artifact.slides.length);
   const hasMetric = elements.some((element) => element.role === "metric");
