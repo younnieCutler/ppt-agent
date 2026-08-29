@@ -158,6 +158,42 @@ describe("resolveSlotContent", () => {
     expect(result[0]).toContain("Bob");
     expect(result[1]).toBe("Build");
   });
+
+  it("content.metrics[] always carries period (a required field) and comparisonBasis/note when present", () => {
+    const quantitative: SlideSpec = {
+      id: "S05", role: "body", storyBeat: "evidence", headline: "Adoption", headlineAlignment: "left",
+      claims: [{ text: "Adoption" }], composition: "ranked_bars", sourceRefs: [{ sourceId: "src1", excerptId: "ex1" }],
+      layout: "quantitative",
+      content: { kind: "bar", metrics: [{ label: "Adoption", value: 42, unit: "%", period: "Q3 2026", comparisonBasis: "Q2 2026", note: "pilot only" }] },
+    } as unknown as SlideSpec;
+    const result = resolveSlotContent(quantitative, "content.metrics[]") as string[];
+    expect(result[0]).toContain("Q3 2026");
+    expect(result[0]).toContain("Q2 2026");
+    expect(result[0]).toContain("pilot only");
+  });
+
+  it("content.body includes a timeline milestone's detail, an evidence slide's caption, and a comparison's delta when present", () => {
+    const timeline: SlideSpec = {
+      id: "S06", role: "body", storyBeat: "roadmap", headline: "Roadmap", headlineAlignment: "left",
+      claims: [{ text: "Roadmap" }], composition: "linear_roadmap", sourceRefs: [{ sourceId: "src1", excerptId: "ex1" }],
+      layout: "timeline", content: { milestones: [{ label: "Launch", date: "Q4", detail: "public beta" }, { label: "GA", date: "Q1" }] },
+    } as unknown as SlideSpec;
+    expect((resolveSlotContent(timeline, "content.body") as string[])[0]).toContain("public beta");
+
+    const evidence: SlideSpec = {
+      id: "S07", role: "body", storyBeat: "evidence", headline: "Findings", headlineAlignment: "left",
+      claims: [{ text: "Findings" }], composition: "evidence_list", sourceRefs: [{ sourceId: "src1", excerptId: "ex1" }],
+      layout: "evidence", content: { bullets: ["First"], caption: "Source: internal survey" },
+    } as unknown as SlideSpec;
+    expect(resolveSlotContent(evidence, "content.body")).toContain("Source: internal survey");
+
+    const comparison: SlideSpec = {
+      id: "S08", role: "body", storyBeat: "design", headline: "Compare", headlineAlignment: "left",
+      claims: [{ text: "Compare" }], composition: "two_column", sourceRefs: [{ sourceId: "src1", excerptId: "ex1" }],
+      layout: "comparison", content: { left: { label: "Before", items: ["a"] }, right: { label: "After", items: ["b"] }, delta: "3x faster" },
+    } as unknown as SlideSpec;
+    expect(resolveSlotContent(comparison, "content.body")).toContain("3x faster");
+  });
 });
 
 describe("pattern-label host contract", () => {

@@ -234,6 +234,23 @@ function flattenStep(step: { label: string; detail?: string; members?: string[] 
   return parts.join(" — ");
 }
 
+/** `detail` is optional (schema: `{label, date, detail?}`) — dropping it when present is exactly
+ * the kind of silent loss `content.body`'s per-layout flattening exists to avoid. */
+function flattenMilestone(milestone: { label: string; date: string; detail?: string }): string {
+  const base = `${milestone.date} — ${milestone.label}`;
+  return milestone.detail ? `${base}: ${milestone.detail}` : base;
+}
+
+/** `period` is a required field (schema: `period: z.string().min(1)`) and was previously dropped
+ * entirely — not an optional nuance but a real field the slide always has. `comparisonBasis`/
+ * `note` are genuinely optional and included only when present. */
+function flattenMetric(metric: { label: string; value: number; unit: string; period: string; comparisonBasis?: string; note?: string }): string {
+  const parts = [`${metric.label} ${metric.value}${metric.unit} (${metric.period})`];
+  if (metric.comparisonBasis) parts.push(`vs ${metric.comparisonBasis}`);
+  if (metric.note) parts.push(metric.note);
+  return parts.join(", ");
+}
+
 export function resolveSlotContent(slide: SlideSpec, binding: SlotBindingPath): string | string[] | undefined {
   switch (binding) {
     case "headline":
@@ -251,16 +268,19 @@ export function resolveSlotContent(slide: SlideSpec, binding: SlotBindingPath): 
       // fit for those layouts, which the Pattern Resolver's capacity/content check must reject.
       if (slide.layout === "statement") return slide.content.body;
       if (slide.layout === "process") return slide.content.steps.map(flattenStep);
-      if (slide.layout === "evidence") return slide.content.bullets;
-      if (slide.layout === "timeline") return slide.content.milestones.map((milestone) => `${milestone.date} — ${milestone.label}`);
-      if (slide.layout === "comparison") return [`${slide.content.left.label}: ${slide.content.left.items.join(", ")}`, `${slide.content.right.label}: ${slide.content.right.items.join(", ")}`];
+      if (slide.layout === "evidence") return slide.content.caption ? [...slide.content.bullets, slide.content.caption] : slide.content.bullets;
+      if (slide.layout === "timeline") return slide.content.milestones.map(flattenMilestone);
+      if (slide.layout === "comparison") {
+        const sides = [`${slide.content.left.label}: ${slide.content.left.items.join(", ")}`, `${slide.content.right.label}: ${slide.content.right.items.join(", ")}`];
+        return slide.content.delta ? [...sides, slide.content.delta] : sides;
+      }
       return undefined;
     case "content.steps[]":
       return slide.layout === "process" ? slide.content.steps.map(flattenStep) : undefined;
     case "content.proofs[]":
       return slide.layout === "statement" ? slide.content.proofs : undefined;
     case "content.metrics[]":
-      return slide.layout === "quantitative" ? slide.content.metrics.map((metric) => `${metric.label} ${metric.value}${metric.unit}`) : undefined;
+      return slide.layout === "quantitative" ? slide.content.metrics.map(flattenMetric) : undefined;
     case "content.left.label":
       return slide.layout === "comparison" ? slide.content.left.label : undefined;
     case "content.left.items[]":
@@ -306,16 +326,33 @@ export function hasFullSemanticCoverage(slide: SlideSpec, slots: TemplateSlot[])
   const resolves = (binding: SlotBindingPath) => slots.some((slot) => slot.binding === binding && slotCarriesRealContent(slide, slot));
   switch (slide.layout) {
     case "title":
-      return true; // a cover's real payload is legitimately just its headline/subtitle
-    case "statement":
+      // A cover's real payload is legitimately just its headline — but when the slide actually
+      // has a subtitle, that subtitle is part of the "whole" payload this function is answering
+      // for, not an optional nicety a pattern can silently drop.
+      return !slide.content.subtitle || resolves("subhead");
     case "evidence":
+      // caption folds into content.body's flattening (see resolveSlotContent) — a resolved
+      // content.body slot already carries it. assetPath is an image reference with no slot
+      // mechanism at all (SlotBindingPath only carries text); a slide that names one has no
+      // pattern-clone path that preserves it, the same honest "not supported" outcome as
+      // architecture/pipeline/chart below rather than silently shipping without the image.
+      return !slide.content.assetPath && resolves("content.body");
     case "timeline":
-      return resolves("content.body");
+      return resolves("content.body"); // milestone.detail folds into the flattening
+    case "statement":
+      // proofs[] is its own distinct binding (a template's "proof chip" shapes are a different
+      // kind of element than its body paragraph), so it is required independently when present —
+      // not folded into content.body the way evidence's caption is.
+      return resolves("content.body") && (slide.content.proofs.length === 0 || resolves("content.proofs[]"));
     case "process":
-      return resolves("content.body") || resolves("content.steps[]");
+      return resolves("content.body") || resolves("content.steps[]"); // both flatten detail/members
     case "quantitative":
-      return resolves("content.metrics[]");
+      return resolves("content.metrics[]"); // period/comparisonBasis/note fold into the flattening
     case "comparison":
+      // delta only survives through content.body's flattening — the granular left/right slots
+      // have no shape to carry it, so a slide with a delta needs content.body specifically, not
+      // just "both sides independently".
+      if (slide.content.delta) return resolves("content.body");
       return resolves("content.body") || (resolves("content.left.items[]") && resolves("content.right.items[]"));
     case "architecture":
     case "pipeline":

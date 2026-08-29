@@ -216,4 +216,61 @@ describe("patternFitsSlide", () => {
   it("accepts a pattern that resolves comparison content via a single content.body slot — it already flattens both sides", () => {
     expect(patternFitsSlide(withBodySlot, comparisonSlide)).toBe(true);
   });
+
+  it("rejects both-sides-granular coverage when the slide also has a delta — only content.body's flattening carries it", () => {
+    const bothSidesPattern: TemplatePattern = {
+      ...headlineOnlyPattern,
+      skeleton: {
+        ...headlineOnlyPattern.skeleton,
+        replaceableSlots: [
+          ...headlineOnlyPattern.skeleton.replaceableSlots,
+          { id: "slot2", role: "label", binding: "content.left.items[]", shapeId: "Left", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false },
+          { id: "slot3", role: "label", binding: "content.right.items[]", shapeId: "Right", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false },
+        ],
+      },
+    };
+    const withDelta: SlideSpec = { ...comparisonSlide, content: { ...comparisonSlide.content, delta: "3x faster" } } as unknown as SlideSpec;
+    expect(patternFitsSlide(bothSidesPattern, withDelta)).toBe(false);
+    expect(patternFitsSlide(withBodySlot, withDelta)).toBe(true);
+  });
+
+  it("title: a populated subtitle requires a resolved subhead slot, not just the headline", () => {
+    const coverWithSubtitle: SlideSpec = {
+      id: "S01", role: "opener", storyBeat: "opening", headline: "Launch", headlineAlignment: "left",
+      claims: [{ text: "Launch" }], composition: "cover", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+      layout: "title", content: { subtitle: "Q3 2026" },
+    } as unknown as SlideSpec;
+    expect(patternFitsSlide(headlineOnlyPattern, coverWithSubtitle)).toBe(false);
+    const withSubhead: TemplatePattern = {
+      ...headlineOnlyPattern,
+      skeleton: { ...headlineOnlyPattern.skeleton, replaceableSlots: [...headlineOnlyPattern.skeleton.replaceableSlots, { id: "slot2", role: "subtitle", binding: "subhead", shapeId: "Subtitle", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false }] },
+    };
+    expect(patternFitsSlide(withSubhead, coverWithSubtitle)).toBe(true);
+    // No subtitle at all: headline alone is still full coverage.
+    const coverNoSubtitle: SlideSpec = { ...coverWithSubtitle, content: {} } as unknown as SlideSpec;
+    expect(patternFitsSlide(headlineOnlyPattern, coverNoSubtitle)).toBe(true);
+  });
+
+  it("statement: populated proofs[] requires its own resolved slot, not folded into content.body", () => {
+    const statementWithProofs: SlideSpec = {
+      id: "S01", role: "body", storyBeat: "problem", headline: "It works", headlineAlignment: "left",
+      claims: [{ text: "It works" }], composition: "hero_evidence", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+      layout: "statement", content: { body: "The claim.", proofs: ["Proof A", "Proof B"] },
+    } as unknown as SlideSpec;
+    expect(patternFitsSlide(withBodySlot, statementWithProofs)).toBe(false);
+    const withProofsSlot: TemplatePattern = {
+      ...withBodySlot,
+      skeleton: { ...withBodySlot.skeleton, replaceableSlots: [...withBodySlot.skeleton.replaceableSlots, { id: "slot3", role: "annotation", binding: "content.proofs[]", shapeId: "Proofs", bounds: { x: 0, y: 0, w: 1, h: 1 }, required: false }] },
+    };
+    expect(patternFitsSlide(withProofsSlot, statementWithProofs)).toBe(true);
+  });
+
+  it("evidence: a populated assetPath has no slot mechanism to carry it — no pattern can have full coverage, the same honest rejection as architecture/pipeline/chart", () => {
+    const evidenceWithImage: SlideSpec = {
+      id: "S01", role: "body", storyBeat: "evidence", headline: "The chart shows it", headlineAlignment: "left",
+      claims: [{ text: "The chart shows it" }], composition: "evidence_panel", sourceRefs: [{ sourceId: "s", excerptId: "e" }],
+      layout: "evidence", content: { assetPath: "chart.png", bullets: ["Point one"] },
+    } as unknown as SlideSpec;
+    expect(patternFitsSlide(withBodySlot, evidenceWithImage)).toBe(false);
+  });
 });
