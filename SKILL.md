@@ -18,6 +18,21 @@ Claude Code behaviour that existed before them:
 - `PPT_AGENT_TRANSCRIPT_DIR` — directory of host session `.jsonl` transcripts read by `tokens`
   (falls back to Claude Code's `~/.claude/projects/<slug>`).
 
+## Run workspace
+
+Every run is scoped to a hidden directory, never the user's output directory:
+
+```sh
+node dist/cli.js workspace-open --name <presentation-name> [--project-dir <dir>]
+# → { runId, runDir } — runDir is <project-dir>/.ppt-agent/runs/<runId>/, already gitignored.
+```
+
+Use the printed `runDir` as `--run-dir` for every command below. On success, `release` deletes the
+whole run directory automatically — the user's output directory holds only the deliverable(s). On
+any failure the workspace is left in place for debugging, since `release` throws before it ever
+reaches the cleanup step. Pass `--keep-workspace` to `release` to keep a **successful** run's
+workspace too (debugging, or inspecting what a pattern-based render actually preserved).
+
 Confirm audience, slide count, fonts, and delivery environment before rendering. Do not invent source-backed claims or substitute unavailable fonts. Commands below are cross-platform (Windows and macOS); adjust path separators for your shell.
 
 ## Interview: presentation style
@@ -43,7 +58,44 @@ node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
 #   Author compositions against style-context.json; never author palette HEX into the DeckSpec.
 ```
 
-An organisation template pack is selected with `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`). Aspect ratio:
+## Template input: a raw .pptx, or an Organization Pack
+
+Two ways to give the run a template, normalized by `resolveTemplateSourceSpec` (`src/template-source.ts`)
+so both resolve the same way downstream:
+
+- **Raw `.pptx` (default, ChatGPT-shaped)** — `contract.template: { kind: "pptx", path: "<path-to>.pptx" }`.
+  Nothing else is required: no `brand.yaml`, no `template-map.json`. Analyze it straight into the run
+  workspace, never next to the user's own file:
+  ```sh
+  node dist/cli.js template-analyze --input <path-to>.pptx --out <run-dir>/template
+  # → <run-dir>/template/{template-elements,template-grammar}.json, printed strategy:
+  #   "native_layout" | "source_slide_pattern" | "hybrid". Deleted with the rest of the run
+  #   workspace on a successful release — nothing about a raw pptx template is ever cached.
+  ```
+- **Organization Template Pack (advanced/reusable mode)** — `contract.organization: { kind: "directory", path: "organizations/acme" }` (`template.pptx` + `brand.yaml` + `template-map.json`). `contract.template: { kind: "organization", path }` is equivalent; use whichever the contract already carries.
+
+When `template-analyze`'s printed `strategy` is `source_slide_pattern` (design lives in the example
+slide bodies, not the master/layout — GAO is this shape) or `hybrid`, it also writes
+`<out>/template-patterns.json`: one `TemplatePattern` per source slide, with `skeleton.replaceableSlots`
+already bound to real `SlideSpec` fields (`headline`, `content.body`, `content.left.label`, …) and
+`skeleton.preservedShapeIds`/`removableContentIds` already sanitization-classified. A pattern's
+`suitableFor.functions` starts empty — geometry alone cannot prove "this source slide is the cover" —
+so look at the template's own montage and tell it which `SlideFunction` each source slide serves:
+
+```sh
+node dist/cli.js template-preview --input <path-to>.pptx --run-dir <run-dir>
+# → <run-dir>/template/visual/montage.png (the template's own slides, labeled by source slide id).
+
+# Look at the montage, then write <run-dir>/pattern-labels.json:
+# [{ "sourceSlideId": "S01", "functions": ["cover"] }, { "sourceSlideId": "S03", "functions": ["statement"] }]
+
+node dist/cli.js pattern-label --run-dir <run-dir> --labels <run-dir>/pattern-labels.json
+# → merges into <run-dir>/template/template-patterns.json. functions/compositionFamily only —
+#   an invented SlideFunction is rejected, and there is no field here that could ever hold a
+#   coordinate or a shapeId.
+```
+
+Aspect ratio:
 
 - **default / no-organization renderer: 16:9 only** — a plain 4:3 deck is rejected.
 - **Organization Template Pack: 16:9 or 4:3.** A 4:3 pack requires `template-map.json`'s `aspectRatio: "4:3"` **and** a real `template.pptx` sized exactly 10×7.5in.
@@ -85,6 +137,12 @@ node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
 node dist/cli.js composition-resolve --plan <run-dir>/deck-plan.json --style-context <run-dir>/style-context.json --run-dir <run-dir>
 # → <run-dir>/composition-plan.json — a ranked shortlist per slide, not a decision.
 
+# 5.5. Only for a source_slide_pattern/hybrid template (design lives in the example slide bodies,
+#      not the master/layout — see "Template input" above). Skip entirely for native_layout.
+node dist/cli.js pattern-resolve --plan <run-dir>/deck-plan.json --run-dir <run-dir>
+# → <run-dir>/pattern-plan.json — a ranked shortlist per slide, same shape as composition-plan.json.
+#   Requires <run-dir>/template/template-patterns.json (template-analyze) already produced.
+
 # 6. Author the DeckSpec v2 against the plan and the shortlist:
 #    version: 2, planDigest: the digest recorded as deckPlanDigest in artifact-provenance.json,
 #    one candidate chosen per slide from that slide's shortlist (any rank, with a reason).
@@ -92,6 +150,21 @@ node dist/cli.js composition-resolve --plan <run-dir>/deck-plan.json --style-con
 node dist/cli.js validate --spec <deck.json> --run-dir <run-dir>
 node dist/cli.js render --spec <deck.json> --out <draft.pptx> [--run-dir <run-dir>]
 node dist/cli.js qa --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--powerpoint]
+
+# 6.5. If pattern-resolve ran: for each slide, walk its ranked candidate shortlist and clone the
+#      first source-slide pattern that would actually carry the slide's real content and fit its
+#      required slots (patternFitsSlide, src/template-patterns.ts) — not unconditionally rank 1.
+#      --scratch is the generic render from step 6 above; --out replaces it as the deck actually
+#      released.
+node dist/cli.js render-pattern-skeleton --spec <deck.json> --scratch <draft.pptx>     --template <path-to>.pptx --out <draft.pptx> --run-dir <run-dir>
+# → clones the chosen source slide, removes its example content, injects real DeckSpec content
+#   into its slots (never a shapeId or a coordinate — resolveSlotContent in
+#   src/template-patterns.ts), preserves everything the pattern did not touch, and writes
+#   <run-dir>/render-manifest.json ("renderer" | "pattern:<patternId>" per slide) and
+#   <run-dir>/pattern-selection.json (the chosen candidate's rank and every higher-ranked candidate
+#   rejected along the way, with why). A slide with no fitting candidate at any rank falls through
+#   to the generic render at the same position — legitimate for hybrid, and exactly what
+#   TEMPLATE_FIDELITY_UNPROVEN exists to catch on a pure source_slide_pattern template.
 ```
 
 A DeckSpec v2 is verified against its plan on `validate`, `render`, and `qa`: `planDigest` must equal
@@ -181,6 +254,39 @@ Core QA now hard-fails two data-encoding defects, before any render or judgment:
 
 Text budgets are measured in **display columns**, not codepoints, so a Japanese glyph counts as two. Japanese decks (`contract.language` starting `ja`) additionally get `JAPANESE_ORPHAN_PUNCTUATION` and `JAPANESE_AWKWARD_LINE_BREAK` from a kinsoku wrap simulation, and every deck gets `HEADLINE_BAD_WRAP`. These are `risk`, not `hard`: they run against an estimated column budget rather than real font metrics, so live measurement is still `qa --powerpoint`.
 
+## Template fidelity gates
+
+`qa` runs these automatically whenever `<run-dir>/render-manifest.json` exists (i.e. after
+`render-pattern-skeleton`) and the deck used an Organization Pack — no separate command. All are
+deterministic (`src/template-fidelity.ts`); none of them is a judgment call:
+
+- `TEMPLATE_EXAMPLE_CONTENT_LEAK` (hard) — verbatim source example text from a slot the pattern
+  declared replaceable or removable still present in the delivered package. Checked against
+  `template.pptx` directly at check time — the elements/patterns artifacts never persist example
+  strings, so this is the only place the actual text exists to compare against.
+- `TEMPLATE_EXAMPLE_MEDIA_LEAK` (hard) — a picture or graphic frame the pattern declared removable
+  is still present in the delivered slide.
+- `TEMPLATE_PATTERN_STRUCTURE_DRIFT` (hard) — a shape the pattern declared preserved is missing
+  from the delivered slide, by name.
+- `TEMPLATE_FIDELITY_UNPROVEN` (hard) — a `source_slide_pattern` template rendered a slide with the
+  generic renderer instead of a cloned pattern. Never fires for `hybrid`, where mixing both is
+  legitimate.
+- `TEMPLATE_PATTERN_NOT_FOUND` (hard) — `pattern-resolve` produced an empty candidate shortlist for
+  a slide on a `source_slide_pattern` template (surfaced immediately by `pattern-resolve` itself,
+  and re-checked here).
+- `TEMPLATE_SLOT_OVERFLOW` (hard) / `TEMPLATE_SLOT_TRUNCATED` (risk) — injected content exceeds a
+  slot's estimated capacity (`maxChars`, from the slot's own geometry — approximate, same caveat as
+  every other text-budget check above). Hard when the slot is `required`; risk otherwise, since a
+  non-required slot's excess content is truncated rather than blocking the deck.
+
+Three additional codes are **judgment**, not deterministic — read against a template-vs-generated
+montage comparison, same as every other visual finding: `TEMPLATE_STYLE_DRIFT`,
+`TEMPLATE_HIERARCHY_DRIFT`, `TEMPLATE_COMPOSITION_DRIFT` (all `risk` — no calibrated gold set exists
+yet to justify a hard numeric fidelity threshold). Judge cover treatment, body surface rhythm, type
+hierarchy, logo/footer behavior, section numbering, divider behavior, key-message treatment,
+composition variety, whitespace character, and visual density against the template's own render,
+the same rubric the Visual QA section above already uses for everything else.
+
 ## Run metrics
 
 ```sh
@@ -214,3 +320,5 @@ A repair extends the measurement window: `repair-context` opens the repair phase
 Every command that writes a run-dir artifact prints a one-line summary, not the whole blob — the artifact is on disk, and printing it puts a second copy into the conversation for nothing. **Read the file when you need the contents.** Failing QA runs still print their full findings, because that is what you have to act on. `--print` restores full output on any command.
 
 `release` additionally accepts `--visual-qa <path>` and `--accept-risk`: a hard visual finding always blocks; an unresolved risk finding blocks unless `--accept-risk` is passed, in which case the release status is `pass_with_warning` instead of `pass`. Passing `--visual-qa` makes `--run-dir <run-dir>` mandatory alongside it: release reads `visual/render-provenance.json` from that run directory and blocks — missing file, or a digest mismatch against the PPTX being released — rather than silently shipping a file re-rendered after Visual QA last judged it.
+
+`release` also accepts `--pdf` and `--keep-workspace`. `--pdf` requires `--run-dir` and publishes `<run-dir>/visual/deck.pdf` — the exact PDF Visual QA judged — as `<out-basename>.pdf` next to the PPTX; it never re-converts, since a different converter run after judgment is exactly what produced a phantom duplicated headline in a past regression. Without `--pdf`, no PDF is published — the default visible output is the PPTX alone. After a successful release, `--run-dir`'s workspace is deleted unless `--keep-workspace` is passed; a cleanup failure is reported as a warning on the release result and never retracts the already-published deliverable.

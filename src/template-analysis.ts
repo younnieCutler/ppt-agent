@@ -16,15 +16,43 @@ const EMU_PER_INCH = 914400;
 export const semanticRoles = ["title", "subtitle", "heading", "body", "caption", "eyebrow", "label", "key_message", "metric", "metric_label", "annotation", "step", "route", "source", "logo", "footer", "surface", "divider"] as const;
 export type SemanticRole = (typeof semanticRoles)[number];
 export type TemplateTextStyle = { family?: string; sizePt?: number; weight?: number; italic?: boolean; color?: string; lineHeightRatio?: number; alignment?: "left" | "center" | "right" };
-export type TemplateElement = { id: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
+// Which OOXML part physically contains a shape — PowerPoint's own inheritance model: a slide's own
+// body only ever holds what it overrides; anything else a rendered slide shows is inherited from
+// its layout or master, which live in their own parts. Ownership is therefore just "which part was
+// this element walked out of," not an inference over the rendered result.
+export const elementOwnerships = ["master-owned", "layout-owned", "slide-body-owned"] as const;
+export type ElementOwnership = (typeof elementOwnerships)[number];
+export type TemplateElement = { id: string; /** The raw PowerPoint shape name (`cNvPr@name`) — pptx-automizer selects/modifies/removes shapes by this exact name, never by `id` (a composite, JSON-key-safe string derived from it). */ name: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; ownership: ElementOwnership; styleRef?: string; assetRef?: string; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
 // Two independent versions: the extractor that reads a PPTX into elements, and the compiler that
 // turns elements into grammar. Either can change without the other, and a pack whose grammar was
 // compiled by an older compiler is stale even when its elements are current.
-export const TEMPLATE_ANALYZER_VERSION = "1";
+// Bumped to "3": elements now also carry `name`, the raw PowerPoint shape name pptx-automizer
+// needs to select/modify/remove a specific shape when cloning a source slide skeleton (PR D) — an
+// artifact analyzed before this existed cannot drive that renderer path at all.
+// loadOrganizationPack already refuses a pack whose artifacts predate the current analyzer version,
+// so each bump *is* the migration path for any pack analyzed before the new field existed.
+export const TEMPLATE_ANALYZER_VERSION = "3";
 export const TEMPLATE_GRAMMAR_COMPILER_VERSION = "1";
 /** Everything the analysis consumed, so a pack can prove its artifacts describe its current inputs. */
 export type AnalysisInputs = { templateDigest: string; roleOverridesDigest: string; analyzerVersion: string };
-export type TemplateElementsArtifact = { version: 1; source: { sha256: string; slideSize: { w: number; h: number } }; analysisInputs: AnalysisInputs; slides: Array<{ id: string; elements: TemplateElement[] }>; styles: Record<string, TemplateTextStyle> };
+export type TemplateLayoutInfo = { index: number; name: string; masterIndex: number; elements: TemplateElement[] };
+export type TemplateMasterInfo = { index: number; elements: TemplateElement[] };
+// A template whose design lives in its masters/layouts (native_layout) needs no per-slide skeleton
+// reuse; one whose design lives in example slide bodies on a shared, mostly-empty layout
+// (source_slide_pattern — GAO is this shape) needs its actual slide bodies cloned, not redrawn;
+// hybrid splits ownership between the two. See detectTemplateStrategy for the heuristic.
+export const templateStrategies = ["native_layout", "source_slide_pattern", "hybrid"] as const;
+export type TemplateStrategy = (typeof templateStrategies)[number];
+export type TemplateElementsArtifact = {
+  version: 1;
+  source: { sha256: string; slideSize: { w: number; h: number } };
+  analysisInputs: AnalysisInputs;
+  slides: Array<{ id: string; sourceSlidePart: string; nativeLayout: { index: number; name: string; masterIndex: number }; elements: TemplateElement[] }>;
+  layouts: TemplateLayoutInfo[];
+  masters: TemplateMasterInfo[];
+  styles: Record<string, TemplateTextStyle>;
+  strategy: TemplateStrategy;
+};
 export type TemplateGrammar = {
   version: 1;
   compilerVersion: string;
@@ -84,6 +112,20 @@ export function classifyTemplateElement(
   if (/footer/.test(name)) return element.bounds.y + element.bounds.h >= slideSize.h * 0.9 ? { role: "footer", confidence: 0.85 } : { role: "unknown", confidence: 0 };
   if (/logo/.test(name) && element.type === "image") return { role: "logo", confidence: 0.9 };
   if (/divider|line/.test(name) || element.type === "line") return { role: "divider", confidence: 0.8 };
+  // Geometry-only fallbacks for chrome that carries no name signal at all — a real template's
+  // background/divider shapes are very often auto-named ("Rectangle 1") rather than labeled, so
+  // name matching alone misses them entirely. Found via the GAO private E2E run: its cover
+  // background and section-divider rule are both plain filled rectangles named "Rectangle N".
+  if ((element.type === "shape" || element.type === "image") && element.bounds.w >= slideSize.w * 0.95 && element.bounds.h >= slideSize.h * 0.95) {
+    return { role: "surface", confidence: 0.7 };
+  }
+  if (element.type === "shape" && element.bounds.w > 0 && element.bounds.h > 0) {
+    // Extremely thin on one axis relative to the other — a divider/rule drawn as a filled
+    // rectangle. Conservative threshold (30:1) to avoid catching a genuinely thin content bar
+    // (a KPI indicator, a progress fill) that happens to be narrow rather than a rule line.
+    const aspect = Math.max(element.bounds.w / element.bounds.h, element.bounds.h / element.bounds.w);
+    if (aspect >= 30) return { role: "divider", confidence: 0.6 };
+  }
   const named = NAMED_ROLES.find(([pattern]) => pattern.test(name));
   if (named) return { role: named[1], confidence: 0.9 };
 
@@ -106,19 +148,32 @@ export function classifyTemplateElement(
   return { role: "unknown", confidence: 0 };
 }
 
+function median(sorted: number[]): number {
+  const mid = sorted.length / 2;
+  // Standard median: for an even count this is the midpoint between the two central values, not
+  // either one of them alone — Math.floor(length/2) on its own returns the *upper* of the two
+  // central values, which for a 2-element array is simply the max again. That collapsed
+  // maxSizePt === medianSizePt on any 2-text-element slide, which failed the classifier's own
+  // `maxSizePt > medianSizePt` title check and silently misclassified the larger text as "body".
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[Math.floor(mid)];
+}
+
 function typographyContext(element: TemplateElement, siblings: TemplateElement[], styles: Record<string, TemplateTextStyle>): TypographyContext {
   const sizes = siblings.filter((sibling) => sibling.type === "text").map((sibling) => (sibling.styleRef ? styles[sibling.styleRef]?.sizePt : undefined)).filter((size): size is number => Boolean(size)).sort((a, b) => a - b);
   if (sizes.length === 0) return {};
-  return { sizePt: element.styleRef ? styles[element.styleRef]?.sizePt : undefined, maxSizePt: sizes[sizes.length - 1], medianSizePt: sizes[Math.floor(sizes.length / 2)] };
+  return { sizePt: element.styleRef ? styles[element.styleRef]?.sizePt : undefined, maxSizePt: sizes[sizes.length - 1], medianSizePt: median(sizes) };
+}
+
+function classifyElements(elements: TemplateElement[], slideSize: { w: number; h: number }, overrides: Record<string, SemanticRole>, styles: Record<string, TemplateTextStyle>): TemplateElement[] {
+  return elements.map((element) => ({ ...element, ...classifyTemplateElement(element, slideSize, overrides, typographyContext(element, elements, styles)) }));
 }
 
 export function classifyTemplateElements(artifact: TemplateElementsArtifact, overrides: Record<string, SemanticRole> = {}): TemplateElementsArtifact {
   return {
     ...artifact,
-    slides: artifact.slides.map((slide) => ({
-      ...slide,
-      elements: slide.elements.map((element) => ({ ...element, ...classifyTemplateElement(element, artifact.source.slideSize, overrides, typographyContext(element, slide.elements, artifact.styles)) })),
-    })),
+    slides: artifact.slides.map((slide) => ({ ...slide, elements: classifyElements(slide.elements, artifact.source.slideSize, overrides, artifact.styles) })),
+    layouts: artifact.layouts.map((layout) => ({ ...layout, elements: classifyElements(layout.elements, artifact.source.slideSize, overrides, artifact.styles) })),
+    masters: artifact.masters.map((master) => ({ ...master, elements: classifyElements(master.elements, artifact.source.slideSize, overrides, artifact.styles) })),
   };
 }
 
@@ -178,12 +233,35 @@ function first(scope: Document | Element, namespace: string, name: string): Elem
   return all(scope, namespace, name)[0];
 }
 
+type RelEntry = { id: string; type: string; target: string };
+
+function relEntries(xml: string): RelEntry[] {
+  return all(parse(xml), REL_NS, "Relationship").map((node) => ({ id: node.getAttribute("Id") ?? "", type: node.getAttribute("Type") ?? "", target: node.getAttribute("Target") ?? "" }));
+}
+
 function rels(xml: string): Map<string, string> {
-  return new Map(all(parse(xml), REL_NS, "Relationship").map((node) => [node.getAttribute("Id") ?? "", node.getAttribute("Target") ?? ""]));
+  return new Map(relEntries(xml).map((entry) => [entry.id, entry.target]));
+}
+
+/** The slide/layout/master relationship types care about — `Type` is a full URI, this only needs its tail. */
+function relByTypeSuffix(entries: RelEntry[], suffix: string): RelEntry | undefined {
+  return entries.find((entry) => entry.type.endsWith(suffix));
 }
 
 function packagePath(base: string, target: string): string {
   return target.startsWith("/") ? target.slice(1) : path.posix.normalize(path.posix.join(base, target));
+}
+
+/** OOXML parts are always numbered (`slideLayout7.xml`, `slideMaster2.xml`) — that number is the
+ * only stable, cheap identity for de-duplicating layouts/masters shared across many slides. */
+function partNumber(partPath: string): number {
+  return Number(partPath.match(/(\d+)\.xml$/)?.[1] ?? 0);
+}
+
+async function relsForPart(zip: JSZip, partPath: string): Promise<RelEntry[]> {
+  const relsPath = `${path.posix.dirname(partPath)}/_rels/${path.posix.basename(partPath)}.rels`;
+  const xml = await zip.file(relsPath)?.async("string");
+  return xml ? relEntries(xml) : [];
 }
 
 type Transform = { x: number; y: number; sx: number; sy: number };
@@ -262,7 +340,7 @@ function children(node: Element): Element[] {
   return Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1) as Element[];
 }
 
-function extractSlide(xml: string, slideId: string, styles: Record<string, TemplateTextStyle>): TemplateElement[] {
+function extractSlide(xml: string, slideId: string, styles: Record<string, TemplateTextStyle>, ownership: ElementOwnership): TemplateElement[] {
   const root = first(parse(xml), P_NS, "spTree");
   if (!root) return [];
   const elements: TemplateElement[] = [];
@@ -276,11 +354,60 @@ function extractSlide(xml: string, slideId: string, styles: Record<string, Templ
       const type = typeOf(node);
       if (!type) continue;
       const bounds = transform(node, parent).rect;
-      elements.push({ id: elementId(node, slideId, elements.length), slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, styleRef: type === "text" ? styleId(textStyle(node) ?? {}, styles) : undefined, features: feature(node) });
+      const name = first(node, P_NS, "cNvPr")?.getAttribute("name") ?? "";
+      elements.push({ id: elementId(node, slideId, elements.length), name, slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: type === "text" ? styleId(textStyle(node) ?? {}, styles) : undefined, features: feature(node) });
     }
   };
   walk(children(root), { x: 0, y: 0, sx: 1, sy: 1 });
   return elements;
+}
+
+// Named, tunable thresholds rather than inline magic numbers — the upgrade path when a real
+// template misclassifies is to adjust these against a labeled corpus, not to rewrite the heuristic.
+// ponytail: no calibration corpus exists yet; revisit once PR F's GAO run and a few more real
+// templates have run through this.
+const EMPTY_LAYOUT_ELEMENT_THRESHOLD = 2;
+// A real template's "empty" layout still declares zero-sized placeholder metadata (date/footer/
+// slide-number placeholders positioned at 0,0,0,0 — PowerPoint keeps these even on a layout named
+// "Blank"). Counting every element regardless of size treated a real GAO template's genuinely
+// bodyless layout as non-empty (3 raw elements > threshold 2), misdetecting native_layout instead
+// of source_slide_pattern. Only elements with real geometry count toward "this layout has design
+// content" — a placeholder declaration with no size is metadata, not a design element.
+function hasRealGeometry(element: Pick<TemplateElement, "bounds">): boolean {
+  return element.bounds.w > 0 && element.bounds.h > 0;
+}
+const BLANK_LAYOUT_SHARE_THRESHOLD = 0.8;
+const NATIVE_LAYOUT_SHARE_THRESHOLD = 0.2;
+const MIN_MEDIAN_BODY_ELEMENTS = 3;
+const MIN_VISUAL_DIVERSITY = 0.5;
+
+/**
+ * `blankLayoutShare` is measured by how few elements the bound layout itself contributes — never
+ * by the layout's display name. Names are locale- and theme-dependent ("Blank" is English only by
+ * coincidence); emptiness is the actual signal a template author left when the design lives in the
+ * slide bodies instead.
+ */
+export function detectTemplateStrategy(artifact: Pick<TemplateElementsArtifact, "slides" | "layouts">): TemplateStrategy {
+  const totalSlides = artifact.slides.length;
+  if (totalSlides === 0) return "native_layout";
+  const layoutByIndex = new Map(artifact.layouts.map((layout) => [layout.index, layout]));
+  const emptyLayoutSlides = artifact.slides.filter((slide) => (layoutByIndex.get(slide.nativeLayout.index)?.elements.filter(hasRealGeometry).length ?? 0) <= EMPTY_LAYOUT_ELEMENT_THRESHOLD).length;
+  const blankLayoutShare = emptyLayoutSlides / totalSlides;
+  const bodyCounts = artifact.slides.map((slide) => slide.elements.length).sort((a, b) => a - b);
+  const medianSlideBodyElements = bodyCounts[Math.floor(bodyCounts.length / 2)] ?? 0;
+  // Distinct "shape signatures" (sorted type:role multiset) across slide bodies — a template whose
+  // slides are all genuinely different compositions (cover vs. editorial body vs. key-message band)
+  // has high diversity even though every slide sits on the same near-empty layout; a template that
+  // repeats one body shape over and over does not, and that distinction is exactly what separates a
+  // real source_slide_pattern template from a broken/degenerate one.
+  const signatures = new Set(artifact.slides.map((slide) => slide.elements.map((element) => `${element.type}:${element.role}`).sort().join("|")));
+  const visualPatternDiversity = signatures.size / totalSlides;
+
+  if (blankLayoutShare >= BLANK_LAYOUT_SHARE_THRESHOLD && medianSlideBodyElements >= MIN_MEDIAN_BODY_ELEMENTS && visualPatternDiversity >= MIN_VISUAL_DIVERSITY) {
+    return "source_slide_pattern";
+  }
+  if (blankLayoutShare <= NATIVE_LAYOUT_SHARE_THRESHOLD) return "native_layout";
+  return "hybrid";
 }
 
 export async function extractTemplateElements(pptxPath: string, overrides: Record<string, SemanticRole> = {}): Promise<TemplateElementsArtifact> {
@@ -294,21 +421,63 @@ export async function extractTemplateElements(pptxPath: string, overrides: Recor
   const slideSize = { w: number(size, "cx") / EMU_PER_INCH, h: number(size, "cy") / EMU_PER_INCH };
   const targets = rels(presentationRels);
   const styles: Record<string, TemplateTextStyle> = {};
-  const slides = [];
+  const slides: TemplateElementsArtifact["slides"] = [];
+  const layoutCache = new Map<number, TemplateLayoutInfo>();
+  const masterCache = new Map<number, TemplateMasterInfo>();
+
+  async function resolveMaster(layoutPartPath: string): Promise<number> {
+    const layoutRels = await relsForPart(zip, layoutPartPath);
+    const masterRel = relByTypeSuffix(layoutRels, "/slideMaster");
+    if (!masterRel) return 0;
+    const masterPartPath = packagePath(path.posix.dirname(layoutPartPath), masterRel.target);
+    const masterIndex = partNumber(masterPartPath);
+    if (!masterCache.has(masterIndex)) {
+      const masterXml = await zip.file(masterPartPath)?.async("string");
+      const masterElements = masterXml ? extractSlide(masterXml, `master-${masterIndex}`, styles, "master-owned") : [];
+      masterCache.set(masterIndex, { index: masterIndex, elements: masterElements });
+    }
+    return masterIndex;
+  }
+
+  async function resolveLayout(slidePartPath: string): Promise<{ index: number; name: string; masterIndex: number }> {
+    const slideRels = await relsForPart(zip, slidePartPath);
+    const layoutRel = relByTypeSuffix(slideRels, "/slideLayout");
+    if (!layoutRel) return { index: 0, name: "", masterIndex: 0 };
+    const layoutPartPath = packagePath(path.posix.dirname(slidePartPath), layoutRel.target);
+    const layoutIndex = partNumber(layoutPartPath);
+    if (!layoutCache.has(layoutIndex)) {
+      const layoutXml = await zip.file(layoutPartPath)?.async("string");
+      const layoutName = layoutXml ? (first(parse(layoutXml), P_NS, "cSld")?.getAttribute("name") ?? "") : "";
+      const layoutElements = layoutXml ? extractSlide(layoutXml, `layout-${layoutIndex}`, styles, "layout-owned") : [];
+      const masterIndex = await resolveMaster(layoutPartPath);
+      layoutCache.set(layoutIndex, { index: layoutIndex, name: layoutName, masterIndex, elements: layoutElements });
+    }
+    const layout = layoutCache.get(layoutIndex)!;
+    return { index: layout.index, name: layout.name, masterIndex: layout.masterIndex };
+  }
+
   for (const [index, slide] of all(presentation, P_NS, "sldId").entries()) {
     const target = targets.get(slide.getAttributeNS(R_NS, "id") ?? "");
     if (!target) continue;
-    const xml = await zip.file(packagePath("ppt", target))?.async("string");
+    const slidePartPath = packagePath("ppt", target);
+    const xml = await zip.file(slidePartPath)?.async("string");
     if (!xml) throw new Error(`PPTX slide part is missing: ${target}`);
     const id = `S${String(index + 1).padStart(2, "0")}`;
-    slides.push({ id, elements: extractSlide(xml, id, styles) });
+    const nativeLayout = await resolveLayout(slidePartPath);
+    slides.push({ id, sourceSlidePart: slidePartPath, nativeLayout, elements: extractSlide(xml, id, styles, "slide-body-owned") });
   }
+
   const templateDigest = crypto.createHash("sha256").update(bytes).digest("hex");
-  return classifyTemplateElements({
+  const raw: TemplateElementsArtifact = {
     version: 1,
     source: { sha256: templateDigest, slideSize },
     analysisInputs: { templateDigest, roleOverridesDigest: roleOverridesDigest(overrides), analyzerVersion: TEMPLATE_ANALYZER_VERSION },
     slides,
+    layouts: [...layoutCache.values()].sort((a, b) => a.index - b.index),
+    masters: [...masterCache.values()].sort((a, b) => a.index - b.index),
     styles,
-  }, overrides);
+    strategy: "native_layout",
+  };
+  const classified = classifyTemplateElements(raw, overrides);
+  return { ...classified, strategy: detectTemplateStrategy(classified) };
 }

@@ -56,3 +56,17 @@ describe("visualQa", () => {
     expect(report.status).toBe("pass");
   });
 });
+
+describe("visualQa: template drift codes", () => {
+  it("accepts TEMPLATE_STYLE_DRIFT/TEMPLATE_HIERARCHY_DRIFT/TEMPLATE_COMPOSITION_DRIFT as risk, not hard", () => {
+    const report = visualQa(deck, [
+      { slideId: "S01", code: "TEMPLATE_STYLE_DRIFT", message: "cover treatment drifted from the source template" },
+      { slideId: "S02", code: "TEMPLATE_HIERARCHY_DRIFT", message: "type hierarchy drifted" },
+      { slideId: "S02", code: "TEMPLATE_COMPOSITION_DRIFT", message: "composition rhythm drifted" },
+    ]);
+    expect(report.status).toBe("review");
+    for (const code of ["TEMPLATE_STYLE_DRIFT", "TEMPLATE_HIERARCHY_DRIFT", "TEMPLATE_COMPOSITION_DRIFT"]) {
+      expect(report.findings.find((finding) => finding.code === code)?.severity).toBe("risk");
+    }
+  });
+});

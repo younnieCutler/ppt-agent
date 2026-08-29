@@ -18,3 +18,9 @@ output/
 
 # Scratch probes
 probe.tmp.*
+
+# Organization template packs (sensitive brand/layout data)
+organizations/
+
+# Run-scoped scratch output (superseded by the hidden .ppt-agent/runs/ workspace)
+artifacts/

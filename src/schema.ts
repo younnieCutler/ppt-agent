@@ -138,6 +138,15 @@ export const contractSchema = z.object({
     z.object({ kind: z.literal("none") }),
     z.object({ kind: z.literal("directory"), path: z.string().min(1) }),
   ]).default({ kind: "none" }),
+  // A pre-built Organization Pack (brand.yaml + template-map.json, above) is the advanced/reusable
+  // mode. `template` is the first-class ChatGPT-shaped entry point: one raw .pptx and nothing else.
+  // Optional and additive — `organization: {kind:"directory"}` keeps working forever unchanged;
+  // resolveTemplateSourceSpec (src/template-source.ts) is the single place that normalizes both
+  // into one shape so nothing downstream has to know which field the caller used.
+  template: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("pptx"), path: z.string().min(1) }),
+    z.object({ kind: z.literal("organization"), path: z.string().min(1) }),
+  ]).optional(),
   fonts: z.object({ heading: z.string().min(1), body: z.string().min(1) }),
   fontDelivery: z.enum(["managed_device", "portable"]).default("managed_device"),
   editability: z.literal("native_editable").default("native_editable"),
@@ -148,6 +157,12 @@ export const contractSchema = z.object({
   }
   if (contract.organization.kind === "directory" && contract.brand.kind === "file") {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["organization"], message: "Organization packs own brand.yaml; do not combine organization.directory with brand.file." });
+  }
+  if (contract.template?.kind === "organization" && contract.organization.kind === "directory" && contract.template.path !== contract.organization.path) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["template"], message: "contract.template and contract.organization both name an organization pack but disagree on its path." });
+  }
+  if (contract.template?.kind === "pptx" && contract.brand.kind === "file") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["template"], message: "A raw pptx template has no brand.yaml of its own; do not combine template.pptx with brand.file (use brand.default, or use an organization pack)." });
   }
 });
 

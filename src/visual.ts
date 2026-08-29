@@ -167,6 +167,18 @@ export function selectBackend(backends: VisualRenderBackend[] = [powerpointBacke
   throw new Error(`No visual render backend available. ${probes.map(({ backend, probe }) => `${backend.name}: ${probe.detail}`).join(" ")}`);
 }
 
+/** For tests that need to `it.skipIf` a rendered-image assertion on a CI runner with neither
+ * PowerPoint nor LibreOffice installed — mirrors the PowerPoint-COM availability check already
+ * used by tests/integration/render.test.ts, generalized to either backend. */
+export function visualRenderBackendAvailable(): boolean {
+  try {
+    selectBackend();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function escapeXml(text: string): string {
   return text.replace(/[<>&"']/g, (character) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "\"": "&quot;", "'": "&apos;" })[character] ?? character);
 }
@@ -294,6 +306,21 @@ export function verifyRenderProvenance(runDir: string, pptxPath: string, deck: D
     return [{ severity: "hard", code: "ORGANIZATION_GRAMMAR_NOT_APPLIED", message: "Rendered artifacts were not produced with the current Organization Template Grammar. Re-render before visual QA." }];
   }
   return [];
+}
+
+/**
+ * Rasterizes a raw template.pptx's own slides — no DeckSpec, no render provenance, because a
+ * template preview is not a judged deliverable render. Reuses the exact backend selection, PDF
+ * pinning, and montage compositor renderVisual uses below, just without the DeckSpec-shaped
+ * bookkeeping that has nothing to inspect here.
+ */
+export async function renderTemplatePreview(pptxPath: string, outputDir: string, slideCount: number): Promise<{ rendered: RenderedSlide[]; montagePath: string }> {
+  const slideMap: SlideMapEntry[] = Array.from({ length: slideCount }, (_, index) => ({ slideId: `S${String(index + 1).padStart(2, "0")}`, index: index + 1 }));
+  const backend = selectBackend();
+  const rendered = await backend.render(pptxPath, outputDir, slideMap);
+  const renderDir = renderDirFor(outputDir);
+  await writeMontage(renderDir, rendered);
+  return { rendered, montagePath: path.join(renderDir, "montage.png") };
 }
 
 export async function renderVisual(deck: DeckSpec, pptxPath: string, runDir: string, slideIds?: string[], style?: ResolvedPresentationStyle): Promise<RenderedSlide[]> {

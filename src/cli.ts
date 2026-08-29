@@ -8,7 +8,7 @@ import { renderDeck } from "./renderer";
 import { contentModelSchema, contractSchema, deckSchema, type ContentModel } from "./schema";
 import { mergeFindings, mergeQa, ooxmlQa, runPowerPointQa, structuralQa, verifySourceRefs } from "./qa";
 import { loadReferenceIndex, previewPathsFor, queryFromContract, retrieveReferences } from "./reference";
-import { buildDeckContext, renderVisual, verifyRenderProvenance } from "./visual";
+import { buildDeckContext, renderTemplatePreview, renderVisual, verifyRenderProvenance } from "./visual";
 import { visualQa, type ProvenanceFinding } from "./visual-qa";
 import { applyRepair, buildRepairContext, recordRepairAttempt } from "./repair";
 import { resolvePresentationStyle, styleContext } from "./style";
@@ -19,14 +19,19 @@ import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAga
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
 import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
+import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, selectPatternsForSlides, type TemplatePattern } from "./template-patterns";
+import { checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
+import { applyPatternSkeleton } from "./template";
 import { templateMapSchema } from "./organization";
+import { resolveTemplateSourceSpec } from "./template-source";
+import { createRunWorkspace, removeRunWorkspace } from "./workspace";
 
 /**
  * Everything downstream of the plan, and the provenance that describes it. Listed once so an added
  * phase cannot forget to clear its own output.
  */
-const DERIVED_ARTIFACTS = ["reference-selection.json", "resolved-style.json", "style-context.json", "template-grammar.json", "composition-plan.json"] as const;
-const DERIVED_PROVENANCE = ["referenceSelectionDigest", "referenceSelectionSource", "resolvedStyleDigest", "resolvedStyleSource", "templateGrammarDigest", "compositionPlanDigest"] as const;
+const DERIVED_ARTIFACTS = ["reference-selection.json", "resolved-style.json", "style-context.json", "template-grammar.json", "composition-plan.json", "pattern-plan.json"] as const;
+const DERIVED_PROVENANCE = ["referenceSelectionDigest", "referenceSelectionSource", "resolvedStyleDigest", "resolvedStyleSource", "templateGrammarDigest", "compositionPlanDigest", "patternPlanDigest"] as const;
 
 /**
  * Root inputs changed, so everything derived from them is obsolete — including artifacts the new
@@ -195,6 +200,9 @@ export async function release(args: string[]): Promise<void> {
   const visualQaPath = optionalOption(args, "--visual-qa");
   const runDir = optionalOption(args, "--run-dir");
   const acceptRisk = hasFlag(args, "--accept-risk");
+  const publishPdf = hasFlag(args, "--pdf");
+  const keepWorkspace = hasFlag(args, "--keep-workspace");
+  if (publishPdf && !runDir) throw new Error("Release blocked: --pdf requires --run-dir (the PDF is published from <run-dir>/visual/deck.pdf).");
   const qa = readJson(qaPath) as { status?: string; attempts?: number };
   const judgment = fs.readFileSync(path.resolve(judgmentPath), "utf8");
   const repairState = readJson(repairStatePath) as { attempts?: unknown };
@@ -233,20 +241,64 @@ export async function release(args: string[]): Promise<void> {
       throw new Error("Release blocked: the PPTX being released does not match the PPTX visual-qa judged (visual/render-provenance.json digest mismatch). Re-run `visual` and `visual-qa` against the exact file being released.");
     }
   }
-  fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
-  fs.copyFileSync(path.resolve(pptxPath), path.resolve(outPath));
-  print({ status: releaseStatus, outputPath: path.resolve(outPath), attempts: repairState.attempts });
+  // Publish before touching anything else: the deliverable's existence must never depend on
+  // whether cleanup afterward succeeds.
+  const resolvedOutPath = path.resolve(outPath);
+  fs.mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
+  fs.copyFileSync(path.resolve(pptxPath), resolvedOutPath);
+  const publishedSha256 = crypto.createHash("sha256").update(fs.readFileSync(resolvedOutPath)).digest("hex");
+  const sourceSha256 = crypto.createHash("sha256").update(fs.readFileSync(path.resolve(pptxPath))).digest("hex");
+  if (publishedSha256 !== sourceSha256) throw new Error("Release blocked: published PPTX does not match its source after copy (publish integrity check failed).");
+
+  let pdfOutputPath: string | undefined;
+  if (publishPdf) {
+    // The PDF Visual QA actually judged, copied verbatim. Re-converting at release time is exactly
+    // how a Japan Career Agent deliverable ended up with a phantom duplicated headline that neither
+    // the DeckSpec nor the judged montage ever had — a different converter, run again, is a new
+    // artifact nobody re-judged.
+    const judgedPdfPath = path.join(path.resolve(runDir!), "visual", "deck.pdf");
+    if (!fs.existsSync(judgedPdfPath)) throw new Error(`Release blocked: --pdf requires ${judgedPdfPath} to exist. Re-run \`visual\` before releasing.`);
+    pdfOutputPath = `${resolvedOutPath}.pdf`.replace(/\.pptx\.pdf$/, ".pdf");
+    fs.copyFileSync(judgedPdfPath, pdfOutputPath);
+    const publishedPdfSha256 = crypto.createHash("sha256").update(fs.readFileSync(pdfOutputPath)).digest("hex");
+    const sourcePdfSha256 = crypto.createHash("sha256").update(fs.readFileSync(judgedPdfPath)).digest("hex");
+    if (publishedPdfSha256 !== sourcePdfSha256) throw new Error("Release blocked: published PDF does not match visual/deck.pdf after copy (publish integrity check failed).");
+  }
+
+  let workspaceRemoved = false;
+  let cleanupWarning: string | undefined;
+  if (runDir && !keepWorkspace) {
+    // A cleanup failure must never retract or invalidate an already-published deliverable — it is
+    // logged and reported, not thrown, so the caller's success status still reflects reality.
+    try {
+      removeRunWorkspace(runDir);
+      workspaceRemoved = true;
+    } catch (error) {
+      cleanupWarning = `Workspace cleanup failed for ${path.resolve(runDir)}: ${error instanceof Error ? error.message : String(error)}`;
+      process.stderr.write(`Warning: ${cleanupWarning}\n`);
+    }
+  }
+
+  print({ status: releaseStatus, outputPath: resolvedOutPath, pdfOutputPath, attempts: repairState.attempts, workspaceRemoved, cleanupWarning });
 }
 
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|plan-validate|composition-resolve|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|template-preview|pattern-label|plan-validate|composition-resolve|pattern-resolve|render-pattern-skeleton|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
   if (command === "fonts") {
     print(listInstalledFonts());
+    return;
+  }
+
+  if (command === "workspace-open") {
+    const name = option(args, "--name");
+    const projectDir = optionalOption(args, "--project-dir") ?? projectDirectory();
+    const workspace = createRunWorkspace(projectDir, name);
+    print({ status: "pass", ...workspace });
     return;
   }
 
@@ -327,11 +379,43 @@ async function main(): Promise<void> {
     const overrides = map?.version === 2 ? map.elementRoleOverrides : {};
     const elements = await extractTemplateElements(input, overrides);
     const grammar = compileTemplateGrammar(elements);
+    const patterns = compileTemplatePatterns(elements, grammar);
     fs.mkdirSync(out, { recursive: true });
     const outputPath = path.join(out, "template-elements.json");
     const grammarPath = path.join(out, "template-grammar.json");
-    writeArtifactPair([{ path: outputPath, contents: JSON.stringify(elements, null, 2) }, { path: grammarPath, contents: JSON.stringify(grammar, null, 2) }]);
-    print({ status: "pass", outputPath, grammarPath, slides: elements.slides.length, roleOverrides: Object.keys(overrides).length });
+    const patternsPath = path.join(out, "template-patterns.json");
+    writeArtifactPair([
+      { path: outputPath, contents: JSON.stringify(elements, null, 2) },
+      { path: grammarPath, contents: JSON.stringify(grammar, null, 2) },
+      { path: patternsPath, contents: JSON.stringify(patterns, null, 2) },
+    ]);
+    print({ status: "pass", outputPath, grammarPath, patternsPath, slides: elements.slides.length, strategy: elements.strategy, patterns: patterns.patterns.length, roleOverrides: Object.keys(overrides).length });
+    return;
+  }
+
+  if (command === "template-preview") {
+    const input = option(args, "--input");
+    const runDir = option(args, "--run-dir");
+    const templateDir = path.join(path.resolve(runDir), "template");
+    const elementsPath = path.join(templateDir, "template-elements.json");
+    // Reuses template-analyze's own output when it already ran (the documented order), but does
+    // not require it — a montage is legitimately useful before deciding whether to analyze further.
+    const slideCount = fs.existsSync(elementsPath) ? (readJson(elementsPath) as { slides: unknown[] }).slides.length : (await extractTemplateElements(input)).slides.length;
+    const { rendered, montagePath } = await renderTemplatePreview(input, templateDir, slideCount);
+    print({ status: "pass", montagePath, slides: rendered.length });
+    return;
+  }
+
+  if (command === "pattern-label") {
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const labelsPath = option(args, "--labels");
+    const patternsPath = path.join(runDir, "template", "template-patterns.json");
+    if (!fs.existsSync(patternsPath)) throw new Error(`pattern-label requires ${patternsPath}. Run \`template-analyze\` first.`);
+    const labels = patternLabelSchema.parse(readJson(labelsPath));
+    const patterns = readJson(patternsPath) as Parameters<typeof applyPatternLabels>[0];
+    const labeled = applyPatternLabels(patterns, labels);
+    fs.writeFileSync(patternsPath, JSON.stringify(labeled, null, 2));
+    print({ status: "pass", outputPath: patternsPath, labeled: labels.length });
     return;
   }
 
@@ -404,8 +488,73 @@ async function main(): Promise<void> {
     const compositionPlan = resolveCompositionPlan(readJson(planPath), styleContext as never, grammar as never);
     const outputPath = path.join(runDir, "composition-plan.json");
     fs.writeFileSync(outputPath, JSON.stringify(compositionPlan, null, 2));
-    recordProvenance(runDir, { compositionPlanDigest: sha256(JSON.stringify(compositionPlan)) });
+    // Hash the bytes actually on disk, not a re-serialization of the in-memory object: JSON.stringify
+    // without the pretty-print arguments produces different bytes than what was just written, so a
+    // digest computed either way never matches a later sha256File() freshness check against the file.
+    recordProvenance(runDir, { compositionPlanDigest: sha256File(outputPath) });
     emit({ status: "pass", outputPath, slides: compositionPlan.slides.length }, compositionPlan);
+    return;
+  }
+
+  if (command === "pattern-resolve") {
+    const planPath = option(args, "--plan");
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const provenancePath = path.join(runDir, "artifact-provenance.json");
+    const compositionPlanPath = path.join(runDir, "composition-plan.json");
+    if (!fs.existsSync(provenancePath)) throw new Error("Pattern resolution requires artifact-provenance.json.");
+    const provenance = readJson(provenancePath) as ArtifactProvenance & Record<string, string>;
+    if (!provenance.compositionPlanDigest) throw new Error("Pattern resolution requires composition-plan.json. Run `composition-resolve` first.");
+    if (!fs.existsSync(compositionPlanPath) || sha256File(compositionPlanPath) !== provenance.compositionPlanDigest) {
+      throw new Error("Pattern resolution blocked: composition-plan.json changed after composition resolution (artifact-provenance.json digest mismatch). Re-run `composition-resolve`.");
+    }
+    if (provenance.deckPlanDigest !== deckPlanDigest(readJson(planPath))) throw new Error("Pattern resolution blocked: deck plan digest is stale.");
+    const patternsPath = optionalOption(args, "--patterns") ?? path.join(runDir, "template", "template-patterns.json");
+    if (!fs.existsSync(patternsPath)) {
+      throw new Error(`Pattern resolution requires ${patternsPath}. Run \`template-analyze\` first — or skip pattern-resolve entirely for a native_layout template, which has no source-slide patterns to rank.`);
+    }
+    const patterns = readJson(patternsPath) as Parameters<typeof resolvePatternPlan>[2];
+    const compositionPlan = readJson(compositionPlanPath) as Parameters<typeof resolvePatternPlan>[1];
+    const patternPlan = resolvePatternPlan(readJson(planPath) as never, compositionPlan, patterns);
+    const outputPath = path.join(runDir, "pattern-plan.json");
+    fs.writeFileSync(outputPath, JSON.stringify(patternPlan, null, 2));
+    recordProvenance(runDir, { templatePatternsDigest: sha256File(patternsPath), patternPlanDigest: sha256File(outputPath) });
+    const elementsPath = path.join(runDir, "template", "template-elements.json");
+    const strategy = fs.existsSync(elementsPath) ? (readJson(elementsPath) as { strategy: Parameters<typeof checkTemplatePatternNotFound>[0] }).strategy : "native_layout";
+    const notFoundFindings = checkTemplatePatternNotFound(strategy, patternPlan);
+    if (notFoundFindings.length > 0) process.exitCode = 2;
+    emit({ status: notFoundFindings.length > 0 ? "fail" : "pass", outputPath, slides: patternPlan.slides.length, findings: notFoundFindings }, { ...patternPlan, findings: notFoundFindings });
+    return;
+  }
+
+  if (command === "render-pattern-skeleton") {
+    const specPath = option(args, "--spec");
+    const scratchPath = option(args, "--scratch");
+    const templatePath = option(args, "--template");
+    const outPath = option(args, "--out");
+    const runDir = path.resolve(option(args, "--run-dir"));
+    const deck = deckSchema.parse(readJson(specPath));
+    const patternPlanPath = path.join(runDir, "pattern-plan.json");
+    if (!fs.existsSync(patternPlanPath)) throw new Error(`Skeleton render requires ${patternPlanPath}. Run \`pattern-resolve\` first.`);
+    const patternsPath = path.join(runDir, "template", "template-patterns.json");
+    if (!fs.existsSync(patternsPath)) throw new Error(`Skeleton render requires ${patternsPath}. Run \`template-analyze\` first.`);
+    const patternPlan = readJson(patternPlanPath) as { slides: Array<{ id: string; candidates: Array<{ patternId: string; rank: number }> }> };
+    const patternsById = new Map<string, TemplatePattern>((readJson(patternsPath) as { patterns: TemplatePattern[] }).patterns.map((pattern) => [pattern.id, pattern]));
+    // Walk each slide's shortlist in rank order and take the first candidate that would actually
+    // carry the slide's real content and fit its required slots — not unconditionally rank 1. A
+    // rank-1 pattern that would silently drop a process's steps, or overflow its headline slot, is
+    // exactly the candidate rank 2/3 exist to fall back from. If no candidate fits, the slide gets
+    // no resolved pattern at all and falls through to the generic renderer (recorded as such in
+    // render-manifest.json) rather than clone a pattern that loses content.
+    const deckSlidesById = new Map(deck.slides.map((slide) => [slide.id, slide]));
+    const { resolvedPatterns, selectionLog } = selectPatternsForSlides(patternPlan, patternsById, deckSlidesById);
+    const manifest = await applyPatternSkeleton(templatePath, scratchPath, outPath, deck.slides, resolvedPatterns);
+    // The record of which candidate was actually chosen (and why the ones ranked above it were
+    // skipped) — render-manifest.json's mode already names the chosen pattern per slide, but not
+    // its rank or what was rejected along the way.
+    fs.writeFileSync(path.join(runDir, "pattern-selection.json"), JSON.stringify(selectionLog, null, 2));
+    const manifestPath = path.join(runDir, "render-manifest.json");
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    emit({ status: "pass", outputPath: path.resolve(outPath), manifestPath, slides: manifest.length }, manifest);
     return;
   }
 
@@ -649,10 +798,52 @@ async function main(): Promise<void> {
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
     const canonicalDeck = { ...deck, theme: { schemaVersion: style.schemaVersion, id: style.themeId, palette: style.palette, data: style.data } };
     const structural = structuralQa(canonicalDeck, projectDir, contentModelPath, referenceSelectionPath);
+    const renderManifestPath = path.join(path.resolve(runDir), "render-manifest.json");
+    const renderManifest = fs.existsSync(renderManifestPath) ? (readJson(renderManifestPath) as import("./template-fidelity").RenderManifestEntry[]) : undefined;
+    const patternRenderedSlideIds = new Set((renderManifest ?? []).filter((entry) => entry.mode.startsWith("pattern:")).map((entry) => entry.slideId));
+    // style.templateGrammar only exists for a v2 Organization Pack (its own cached grammar). A run
+    // that just analyzed a v1 pack's template.pptx (or a raw pptx with no pack at all) still has a
+    // fresh <run-dir>/template/template-grammar.json — read it directly rather than requiring the
+    // pack to be "promoted" to v2 before its own fonts are recognized as its own.
+    const runGrammarPath = path.join(path.resolve(runDir), "template", "template-grammar.json");
+    const runTemplateFonts = fs.existsSync(runGrammarPath) ? ((readJson(runGrammarPath) as { typography?: { families?: string[] } }).typography?.families ?? []) : [];
+    const styleForFonts = runTemplateFonts.length > 0
+      ? { ...style, templateGrammar: { ...style.templateGrammar, typography: { ...style.templateGrammar?.typography, families: [...(style.templateGrammar?.typography.families ?? []), ...runTemplateFonts] } } }
+      : style;
     const ooxmlFindings = fs.existsSync(path.resolve(pptxPath))
-      ? await ooxmlQa(pptxPath, canonicalDeck, undefined, style)
+      ? await ooxmlQa(pptxPath, canonicalDeck, undefined, styleForFonts as never, patternRenderedSlideIds)
       : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
     let report = mergeFindings(structural, ooxmlFindings);
+    // style.organization is only populated for contract.organization (a pre-built Organization
+    // Pack) — the raw-pptx entry point (contract.template: {kind:"pptx"}) has no organization pack
+    // at all, and leakage/fidelity checking was silently skipped for it. resolveTemplateSourceSpec
+    // is the one place both input shapes normalize to a template.pptx path.
+    const templateSource = resolveTemplateSourceSpec(canonicalDeck.contract);
+    const sourceTemplatePath = templateSource
+      ? path.resolve(projectDir, templateSource.kind === "organization" ? path.join(templateSource.path, "template.pptx") : templateSource.path)
+      : undefined;
+    if (renderManifest && sourceTemplatePath && fs.existsSync(sourceTemplatePath) && fs.existsSync(path.resolve(pptxPath))) {
+      const manifest = renderManifest;
+      const patternsPath = path.join(path.resolve(runDir), "template", "template-patterns.json");
+      const elementsPath = path.join(path.resolve(runDir), "template", "template-elements.json");
+      if (fs.existsSync(patternsPath) && fs.existsSync(elementsPath)) {
+        const patterns = (readJson(patternsPath) as { patterns: Parameters<typeof templateFidelityQa>[4] }).patterns;
+        const strategy = (readJson(elementsPath) as { strategy: Parameters<typeof templateFidelityQa>[5] }).strategy;
+        const fidelityFindings = await templateFidelityQa(pptxPath, sourceTemplatePath, canonicalDeck, manifest, patterns, strategy);
+        const patternsById = new Map(patterns.map((pattern) => [pattern.id, pattern]));
+        const chosenPatterns = new Map(
+          manifest
+            .map((entry) => [entry.slideId, patternsById.get((entry.mode.startsWith("pattern:") ? entry.mode.slice(8) : "") as string)] as const)
+            .filter((tuple): tuple is [string, (typeof patterns)[number]] => Boolean(tuple[1])),
+        );
+        const capacityFindings = checkTemplateSlotCapacity(canonicalDeck, chosenPatterns);
+        // Independent of, and never covered by, the REQUIRED_NATIVE_OBJECT_MISSING exemption for
+        // pattern-rendered slides above (that exemption is about connector/shape geometry; this is
+        // about whether the slide's actual grounded content reached a slot at all).
+        const semanticContentFindings = checkTemplateSemanticContentDropped(canonicalDeck, chosenPatterns);
+        report = mergeFindings(report, [...fidelityFindings, ...capacityFindings, ...semanticContentFindings]);
+      }
+    }
     if (usePowerPoint && process.platform === "win32") {
       const powerpoint = runPowerPointQa(pptxPath, canonicalDeck, runDir);
       report = mergeQa(report, powerpoint);
