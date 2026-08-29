@@ -49,7 +49,7 @@ export const templateMapSchema = z.union([templateMapV1Schema, templateMapV2Sche
 
 export type TemplateMap = z.infer<typeof templateMapSchema>;
 export type LayoutBinding = z.infer<typeof layoutBindingSchema>;
-export type OrganizationPack = { id: string; root: string; templatePath: string; map: TemplateMap; brand: BrandFile; templateGrammar?: TemplateGrammar };
+export type OrganizationPack = { id: string; root: string; templatePath: string; map: TemplateMap; brand: BrandFile; templateGrammar?: TemplateGrammar; templateGrammarDigest?: string };
 
 export function loadOrganizationPack(directory: string): OrganizationPack {
   const root = path.resolve(directory);
@@ -61,6 +61,7 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
   }
   const map = templateMapSchema.parse(JSON.parse(fs.readFileSync(mapPath, "utf8")));
   let templateGrammar: TemplateGrammar | undefined;
+  let templateGrammarDigest: string | undefined;
   if (map.version === 2) {
     const elementsPath = path.join(root, map.elementsFile);
     const grammarPath = path.join(root, map.grammarFile);
@@ -70,10 +71,11 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
     const grammar = JSON.parse(fs.readFileSync(grammarPath, "utf8")) as TemplateGrammar;
     if (elements.source?.sha256 !== templateDigest || grammar.sourceDigest !== templateDigest) throw new Error("Organization Pack v2 generated artifacts are stale for template.pptx.");
     templateGrammar = grammar;
+    templateGrammarDigest = crypto.createHash("sha256").update(fs.readFileSync(grammarPath)).digest("hex");
   }
   const brand = loadBrandFile(brandPath);
   validateMapGeometry(map);
-  return { id: path.basename(root), root, templatePath, map, brand, templateGrammar };
+  return { id: path.basename(root), root, templatePath, map, brand, templateGrammar, templateGrammarDigest };
 }
 
 function validateMapGeometry(map: TemplateMap): void {

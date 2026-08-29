@@ -298,7 +298,7 @@ async function main(): Promise<void> {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const referenceSelection = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection, legacyTheme: deck.theme });
-    const index = await renderVisual(deck, pptxPath, runDir, slideIds);
+    const index = await renderVisual(deck, pptxPath, runDir, slideIds, style);
     const deckContext = buildDeckContext(deck, index.map((entry) => entry.slideId), style);
     fs.writeFileSync(path.join(path.resolve(runDir), "visual", "deck-context.json"), JSON.stringify(deckContext, null, 2));
     emit({ status: "pass", rendered: index.length, montage: path.join(path.resolve(runDir), "visual", "montage.png"), deckContext: path.join(path.resolve(runDir), "visual", "deck-context.json") }, { status: "pass", index });
@@ -318,7 +318,7 @@ async function main(): Promise<void> {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const references = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
-    const provenance: ProvenanceFinding[] = verifyRenderProvenance(runDir, pptxPath, deck).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId }));
+    const provenance: ProvenanceFinding[] = verifyRenderProvenance(runDir, pptxPath, deck, style).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId }));
     const backendPath = path.join(path.resolve(runDir), "visual", "backend.json");
     if (fs.existsSync(backendPath)) {
       const backendInfo = JSON.parse(fs.readFileSync(backendPath, "utf8")) as { substitutedFonts?: string[] | "unknown" };

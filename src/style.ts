@@ -54,6 +54,7 @@ export type ResolvedPresentationStyle = {
     map: TemplateMap;
   };
   templateGrammar?: TemplateGrammar;
+  templateGrammarDigest?: string;
   grammar: ResolvedGrammar;
   reference?: ReferenceGrammar;
   locks: { palette: string[]; fonts: boolean };
@@ -334,6 +335,7 @@ export function resolvePresentationStyle(
     footer: brand.footer,
     organization: organization ? { id: organization.id, root: organization.root, templatePath: organization.templatePath, map: organization.map } : undefined,
     templateGrammar: organization?.templateGrammar,
+    templateGrammarDigest: organization?.templateGrammarDigest,
     grammar: applyTemplateGrammar(resolveGrammar(contract, themeId, reference), organization?.templateGrammar),
     reference,
     locks: brand.locks,
@@ -352,7 +354,7 @@ export function styleContext(style: ResolvedPresentationStyle): Record<string, u
   return {
     themeId: style.themeId,
     designDirection: style.designDirection,
-    organization: style.organization ? { id: style.organization.id, templatePath: style.organization.templatePath, grammarDigest: style.templateGrammar?.sourceDigest } : undefined,
+    organization: style.organization ? { id: style.organization.id, templatePath: style.organization.templatePath, grammarDigest: style.templateGrammarDigest } : undefined,
     provenance: style.provenance,
     grammar: {
       density: style.grammar.copyBudget > 1.05 ? "dense" : style.grammar.copyBudget < 0.75 ? "sparse" : "balanced",
