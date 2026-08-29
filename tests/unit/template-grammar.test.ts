@@ -25,3 +25,24 @@ describe("template grammar compiler", () => {
     expect(JSON.stringify(grammar)).not.toContain("Confidential example sentence");
   });
 });
+
+describe("template grammar geometry", () => {
+  it("keeps the content frame inside the slide when the template parks shapes off canvas", () => {
+    // Observed on a real organization template: a group whose extents reach past the canvas made
+    // contentFrame 16.67in wide on a 13.33in slide, and outerMargins went negative.
+    const offCanvas = {
+      ...elements,
+      slides: [{ id: "S01", elements: [
+        ...elements.slides[0].elements,
+        { id: "S01-parked-1", slideId: "S01", type: "shape", role: "body", confidence: 0.5, bounds: { x: -2, y: -1, w: 18.5, h: 9 }, zIndex: 3, features: {} },
+      ] }],
+    } as unknown as typeof elements;
+    const { contentFrame, outerMargins } = compileTemplateGrammar(offCanvas).geometry;
+    expect(contentFrame.x).toBeGreaterThanOrEqual(0);
+    expect(contentFrame.y).toBeGreaterThanOrEqual(0);
+    expect(contentFrame.x + contentFrame.w).toBeLessThanOrEqual(elements.source.slideSize.w);
+    expect(contentFrame.y + contentFrame.h).toBeLessThanOrEqual(elements.source.slideSize.h);
+    expect(outerMargins.w).toBeGreaterThanOrEqual(0);
+    expect(outerMargins.h).toBeGreaterThanOrEqual(0);
+  });
+});
