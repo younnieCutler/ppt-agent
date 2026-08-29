@@ -222,4 +222,46 @@ describe("ooxmlQa: template-native exemptions for pattern-rendered slides", () =
     },
     30000,
   );
+
+  it(
+    "EAST_ASIAN_FONT_MISSING fires normally, but is exempted for a slide recorded as pattern-rendered",
+    async () => {
+      const { templatePath, coverPattern } = await compiledPatterns();
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-ooxml-ea-"));
+      try {
+        // Real templates (GAO's included) often declare CJK text with only a run-level <a:latin>
+        // override, relying on the theme's <a:ea> for East Asian glyph rendering — authentic,
+        // correctly-rendering authoring that a pattern clone preserves verbatim.
+        const deck = deckWithSlides([deckSlide({ id: "S01", layout: "title", headline: "日本語のタイトル", content: { subtitle: "x" } })]);
+        const scratchPath = path.join(workDir, "scratch.pptx");
+        await renderDeck(deck, scratchPath, repoRoot);
+        const outputPath = path.join(workDir, "final.pptx");
+        await applyPatternSkeleton(templatePath, scratchPath, outputPath, deck.slides as never, new Map([["S01", coverPattern]]));
+
+        const { ooxmlQa } = await import("../../src/qa");
+        const { deckSchema } = await import("../../src/schema");
+        const parsedDeck = deckSchema.parse(deck);
+
+        // pptxgenjs always mirrors fontFace into an explicit run-level <a:ea>, so the synthetic
+        // fixture can't reproduce the gap by itself. Strip it the way a real template author
+        // (GAO's own slides do exactly this) can legitimately leave it unset, relying on the
+        // theme's <a:ea> instead.
+        const zip = await JSZip.loadAsync(fs.readFileSync(outputPath));
+        const slidePart = Object.keys(zip.files).find((name) => /ppt\/slides\/slide\d+\.xml$/.test(name))!;
+        const originalXml = await zip.file(slidePart)!.async("string");
+        zip.file(slidePart, originalXml.replace(/<a:ea[^/]*\/>/g, ""));
+        fs.writeFileSync(outputPath, await zip.generateAsync({ type: "nodebuffer" }));
+
+        const withoutExemption = await ooxmlQa(outputPath, parsedDeck);
+        expect(withoutExemption.some((finding) => finding.code === "EAST_ASIAN_FONT_MISSING" && finding.slideId === "S01")).toBe(true);
+
+        const withExemption = await ooxmlQa(outputPath, parsedDeck, undefined, undefined, new Set(["S01"]));
+        expect(withExemption.some((finding) => finding.code === "EAST_ASIAN_FONT_MISSING" && finding.slideId === "S01")).toBe(false);
+      } finally {
+        fs.rmSync(workDir, { recursive: true, force: true });
+        fs.rmSync(path.dirname(templatePath), { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
 });

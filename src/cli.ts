@@ -797,8 +797,17 @@ async function main(): Promise<void> {
     const renderManifestPath = path.join(path.resolve(runDir), "render-manifest.json");
     const renderManifest = fs.existsSync(renderManifestPath) ? (readJson(renderManifestPath) as import("./template-fidelity").RenderManifestEntry[]) : undefined;
     const patternRenderedSlideIds = new Set((renderManifest ?? []).filter((entry) => entry.mode.startsWith("pattern:")).map((entry) => entry.slideId));
+    // style.templateGrammar only exists for a v2 Organization Pack (its own cached grammar). A run
+    // that just analyzed a v1 pack's template.pptx (or a raw pptx with no pack at all) still has a
+    // fresh <run-dir>/template/template-grammar.json — read it directly rather than requiring the
+    // pack to be "promoted" to v2 before its own fonts are recognized as its own.
+    const runGrammarPath = path.join(path.resolve(runDir), "template", "template-grammar.json");
+    const runTemplateFonts = fs.existsSync(runGrammarPath) ? ((readJson(runGrammarPath) as { typography?: { families?: string[] } }).typography?.families ?? []) : [];
+    const styleForFonts = runTemplateFonts.length > 0
+      ? { ...style, templateGrammar: { ...style.templateGrammar, typography: { ...style.templateGrammar?.typography, families: [...(style.templateGrammar?.typography.families ?? []), ...runTemplateFonts] } } }
+      : style;
     const ooxmlFindings = fs.existsSync(path.resolve(pptxPath))
-      ? await ooxmlQa(pptxPath, canonicalDeck, undefined, style, patternRenderedSlideIds)
+      ? await ooxmlQa(pptxPath, canonicalDeck, undefined, styleForFonts as never, patternRenderedSlideIds)
       : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
     let report = mergeFindings(structural, ooxmlFindings);
     if (renderManifest && style.organization?.templatePath && fs.existsSync(path.resolve(pptxPath))) {

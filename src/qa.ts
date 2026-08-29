@@ -804,7 +804,12 @@ export async function ooxmlQa(
     if (slideFacts.fullSlideImage) {
       findings.push({ severity: "hard", code: "FULL_SLIDE_RASTERIZATION", slideId: slide.id, message: "Slide is a full-bleed image with no editable text; a PPTX page must not be a rasterized image." });
     }
-    if (slideFacts.hasEastAsianText && !slideFacts.hasEastAsianTypeface) {
+    // A pattern-cloned slide keeps the template's own runs verbatim. A real template author may
+    // rely on the theme's <a:ea> (inherited, not overridden per-run) the way GAO's slides do —
+    // that already renders correctly in PowerPoint. This check was only ever exercised against
+    // the generic renderer, which always emits an explicit per-run <a:ea>; it checks a promise
+    // pattern-cloned text never made.
+    if (!patternRenderedSlideIds.has(slide.id) && slideFacts.hasEastAsianText && !slideFacts.hasEastAsianTypeface) {
       findings.push({ severity: "hard", code: "EAST_ASIAN_FONT_MISSING", slideId: slide.id, message: "Slide contains East Asian text but no East Asian typeface is declared on any run." });
     }
     if (slideFacts.gradientFills > 0) {
