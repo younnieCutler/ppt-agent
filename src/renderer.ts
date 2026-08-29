@@ -73,11 +73,13 @@ function styleScaleFor(theme: ResolvedPresentationStyle): StyleScale {
 // for arbitrary content regions. A circle (gauge arc) can end up a slight ellipse when a
 // template's region aspect ratio diverges sharply from canonical — acceptable given no
 // organization fixture requires exact circularity; revisit if one ever does.
-function contextFor(theme: ResolvedPresentationStyle, layout: (typeof semanticLayouts)[number]): RenderContext {
+export function contextFor(theme: ResolvedPresentationStyle, layout: (typeof semanticLayouts)[number]): RenderContext {
   const style = styleScaleFor(theme);
   const organization = theme.organization;
   if (!organization) return { style, transform: (rect) => rect };
-  const region = bindingForLayout(organization.map, layout).contentRegion;
+  const region = organization.map.layouts[layout]?.contentRegion
+    ?? theme.templateGrammar?.geometry.contentFrame
+    ?? bindingForLayout(organization.map, layout).contentRegion;
   // Bypass the arithmetic entirely for the declared-identity case: floating-point round-trip
   // through a mathematically-1.0 scale and mathematically-0 offset can still perturb the last bit,
   // and a template that explicitly asked for the renderer's own geometry should get it exactly.
@@ -88,12 +90,14 @@ function contextFor(theme: ResolvedPresentationStyle, layout: (typeof semanticLa
   const scaleY = region.h / CANON_H;
   return {
     style,
-    transform: ({ x, y, w, h }) => ({
-      x: region.x + (x - CANON_X) * scaleX,
-      y: region.y + (y - CANON_TOP) * scaleY,
-      w: w * scaleX,
-      h: h * scaleY,
-    }),
+    transform: ({ x, y, w, h }) => x === CANON_X && y === CANON_TOP && w === CANON_W && h === CANON_H
+      ? { ...region }
+      : {
+          x: region.x + (x - CANON_X) * scaleX,
+          y: region.y + (y - CANON_TOP) * scaleY,
+          w: w * scaleX,
+          h: h * scaleY,
+        },
   };
 }
 

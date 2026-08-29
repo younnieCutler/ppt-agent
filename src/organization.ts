@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import { loadBrandFile } from "./brand";
 import type { BrandFile } from "./schema";
+import type { TemplateGrammar } from "./template-analysis";
 
 const rectSchema = z.object({ x: z.number().nonnegative(), y: z.number().nonnegative(), w: z.number().positive(), h: z.number().positive() });
 export const semanticLayouts = ["title", "statement", "comparison", "process", "pipeline", "architecture", "quantitative", "timeline", "evidence", "chart"] as const;
@@ -48,7 +49,7 @@ export const templateMapSchema = z.union([templateMapV1Schema, templateMapV2Sche
 
 export type TemplateMap = z.infer<typeof templateMapSchema>;
 export type LayoutBinding = z.infer<typeof layoutBindingSchema>;
-export type OrganizationPack = { id: string; root: string; templatePath: string; map: TemplateMap; brand: BrandFile };
+export type OrganizationPack = { id: string; root: string; templatePath: string; map: TemplateMap; brand: BrandFile; templateGrammar?: TemplateGrammar };
 
 export function loadOrganizationPack(directory: string): OrganizationPack {
   const root = path.resolve(directory);
@@ -59,18 +60,20 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
     if (!fs.existsSync(required)) throw new Error(`Organization pack is incomplete; required file is missing: ${required}`);
   }
   const map = templateMapSchema.parse(JSON.parse(fs.readFileSync(mapPath, "utf8")));
+  let templateGrammar: TemplateGrammar | undefined;
   if (map.version === 2) {
     const elementsPath = path.join(root, map.elementsFile);
     const grammarPath = path.join(root, map.grammarFile);
     if (!fs.existsSync(elementsPath) || !fs.existsSync(grammarPath)) throw new Error("Organization Pack v2 requires template-elements.json and template-grammar.json.");
     const templateDigest = crypto.createHash("sha256").update(fs.readFileSync(templatePath)).digest("hex");
     const elements = JSON.parse(fs.readFileSync(elementsPath, "utf8")) as { source?: { sha256?: string } };
-    const grammar = JSON.parse(fs.readFileSync(grammarPath, "utf8")) as { sourceDigest?: string };
+    const grammar = JSON.parse(fs.readFileSync(grammarPath, "utf8")) as TemplateGrammar;
     if (elements.source?.sha256 !== templateDigest || grammar.sourceDigest !== templateDigest) throw new Error("Organization Pack v2 generated artifacts are stale for template.pptx.");
+    templateGrammar = grammar;
   }
   const brand = loadBrandFile(brandPath);
   validateMapGeometry(map);
-  return { id: path.basename(root), root, templatePath, map, brand };
+  return { id: path.basename(root), root, templatePath, map, brand, templateGrammar };
 }
 
 function validateMapGeometry(map: TemplateMap): void {
