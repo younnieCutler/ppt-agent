@@ -612,7 +612,7 @@ async function main(): Promise<void> {
     const outputPath = path.resolve(option(args, "--out"));
     const planPath = path.resolve(optionalOption(args, "--plan-out") ?? `${outputPath}.adaptive-slide-plan.json`);
     const qaPath = path.resolve(optionalOption(args, "--qa-out") ?? `${outputPath}.adaptive-qa.json`);
-    const outputTargets = [templatePath, outputPath, planPath, qaPath].map(physicalPath);
+    const outputTargets = [templatePath, elementsPath, designSystemPath, componentsPath, intentPath, outputPath, planPath, qaPath].map(physicalPath);
     if (new Set(outputTargets).size !== outputTargets.length) throw new Error("ADAPTIVE_STATEMENT_OUTPUT_ALIAS: template, PPTX output, plan output, and QA output must be distinct physical paths.");
     const result = await renderAdaptiveStatement(
       templatePath,
