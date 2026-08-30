@@ -104,4 +104,29 @@ describe("content-first adaptive composition planning", () => {
     const noMetrics = { ...components, components: components.components.filter((candidate) => candidate.kind !== "metric") };
     expect(() => planAdaptiveSlide({ templateDigest, designSystem, components: noMetrics, intent: intent("metric_row", [block("m1", "metric", "10")]) })).toThrow(/template-native component capability/);
   });
+
+  it("rejects observed spacing that would create non-positive placement cells", () => {
+    const cramped = { ...designSystem, spacing: { rhythm: [10] } };
+    expect(() => planAdaptiveSlide({ templateDigest, designSystem: cramped, components, intent: intent("stack", [block("one", "body", "One"), block("two", "body", "Two")]) })).toThrow(/positive placement cell/);
+  });
+
+  it("rejects artifacts whose compiler or element provenance does not match", () => {
+    const stale = { ...components, elementsDigest: "d".repeat(64) };
+    expect(() => planAdaptiveSlide({ templateDigest, designSystem, components: stale, intent: intent("stack", [block("one", "body", "One")]) })).toThrow(/artifacts are stale/);
+  });
+
+  it("rejects a component that cannot safely resize into its calculated placement", () => {
+    const unsafe = { ...components, components: components.components.map((candidate) => candidate.kind === "card" ? { ...candidate, resizeFeasibility: { horizontal: "unknown" as const, vertical: "unknown" as const } } : candidate) };
+    expect(() => planAdaptiveSlide({ templateDigest, designSystem, components: unsafe, intent: intent("repeated_cards", [block("card", "item", "Card")]) })).toThrow(/lacks a safe resize capability/);
+  });
+
+  it("keeps arbitrary semantic groups together and uses priority/emphasis in ordering", () => {
+    const columns = planAdaptiveSlide({ templateDigest, designSystem, components, intent: intent("two_column", [block("a1", "item", "A1", "alpha"), block("b1", "item", "B1", "beta"), block("a2", "item", "A2", "alpha"), block("b2", "item", "B2", "beta")]) });
+    expect(columns.placements.find((placement) => placement.blockId === "a1")!.x).toBe(columns.placements.find((placement) => placement.blockId === "a2")!.x);
+    expect(columns.placements.find((placement) => placement.blockId === "b1")!.x).toBe(columns.placements.find((placement) => placement.blockId === "b2")!.x);
+    expect(columns.placements.find((placement) => placement.blockId === "a1")!.x).not.toBe(columns.placements.find((placement) => placement.blockId === "b1")!.x);
+
+    const ordered = planAdaptiveSlide({ templateDigest, designSystem, components, intent: { ...intent("stack", [block("low", "body", "Low"), { ...block("high", "body", "High"), priority: 100, emphasis: "primary" }]) } });
+    expect(ordered.placements.find((placement) => placement.blockId === "high")!.y).toBeLessThan(ordered.placements.find((placement) => placement.blockId === "low")!.y);
+  });
 });

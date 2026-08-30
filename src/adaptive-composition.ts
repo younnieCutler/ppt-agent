@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { displayWidth } from "./typography";
-import { componentKinds, type ComponentKind, type TemplateComponent, type TemplateComponentsArtifact } from "./template-components";
-import type { TemplateDesignSystemArtifact } from "./template-design-system";
+import { assertTemplateCoordinateSpace } from "./template-analysis";
+import { componentKinds, TEMPLATE_COMPONENTS_COMPILER_VERSION, type ComponentKind, type TemplateComponent, type TemplateComponentsArtifact } from "./template-components";
+import { TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION, type TemplateDesignSystemArtifact } from "./template-design-system";
 
 export const adaptiveCompositionFamilies = ["stack", "two_column", "metric_row", "repeated_cards"] as const;
 export type AdaptiveCompositionFamily = (typeof adaptiveCompositionFamilies)[number];
@@ -96,7 +97,7 @@ function usableComponents(components: TemplateComponentsArtifact): TemplateCompo
 
 function rankedCandidates(block: AdaptiveSlideIntent["blocks"][number], family: AdaptiveCompositionFamily, preferred: ComponentKind | undefined, components: TemplateComponent[]): TemplateComponent[] {
   const familySet = new Set(familyKinds[family]);
-  const kinds = preferred ? [preferred] : [...roleKinds[block.role], ...familyKinds[family]];
+  const kinds = preferred ? [preferred, ...roleKinds[block.role], ...familyKinds[family]] : [...roleKinds[block.role], ...familyKinds[family]];
   return components.filter((component) => kinds.includes(component.kind) && familySet.has(component.kind)).sort((left, right) => {
     const leftRank = kinds.indexOf(left.kind);
     const rightRank = kinds.indexOf(right.kind);
@@ -119,11 +120,20 @@ function chooseComponents(intent: AdaptiveSlideIntent, components: TemplateCompo
 }
 
 function splitTwoColumns(blocks: AdaptiveSlideIntent["blocks"]): [AdaptiveSlideIntent["blocks"], AdaptiveSlideIntent["blocks"]] {
-  const left = blocks.filter((block) => block.group?.toLowerCase() === "left");
-  const right = blocks.filter((block) => block.group?.toLowerCase() === "right");
-  const explicit = left.length > 0 || right.length > 0;
-  const remaining = blocks.filter((block) => !left.includes(block) && !right.includes(block));
-  if (!explicit) return [blocks.slice(0, Math.ceil(blocks.length / 2)), blocks.slice(Math.ceil(blocks.length / 2))];
+  const groups = new Map<string, AdaptiveSlideIntent["blocks"]>();
+  blocks.forEach((block) => {
+    if (!block.group) return;
+    const members = groups.get(block.group) ?? [];
+    members.push(block);
+    groups.set(block.group, members);
+  });
+  if (groups.size === 0) return [blocks.slice(0, Math.ceil(blocks.length / 2)), blocks.slice(Math.ceil(blocks.length / 2))];
+  const named = [...groups.values()];
+  const left = [...(named.shift() ?? [])];
+  const right = [...(named.shift() ?? [])];
+  const weight = (items: AdaptiveSlideIntent["blocks"]) => items.reduce((sum, block) => sum + displayWidth(block.text) * (1 + block.priority / 100), 0);
+  named.forEach((members) => (weight(left) <= weight(right) ? left : right).push(...members));
+  const remaining = blocks.filter((block) => !block.group);
   while (remaining.length > 0) (left.length <= right.length ? left : right).push(remaining.shift()!);
   if (left.length === 0 || right.length === 0) throw new Error("ADAPTIVE_COMPOSITION_UNSUPPORTED: two_column requires content in both semantic groups.");
   return [left, right];
@@ -135,25 +145,32 @@ function cell(frame: Rect, gap: number, column: number, row: number, columns: nu
   const widths = columnWidths ?? Array.from({ length: columns }, () => (frame.w - totalGapX) / columns);
   const width = widths[column];
   const height = (frame.h - totalGapY) / rows;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error("ADAPTIVE_COMPOSITION_UNSUPPORTED: observed spacing leaves no positive placement cell inside the content frame.");
   const x = frame.x + widths.slice(0, column).reduce((sum, value) => sum + value, 0) + gap * column;
   return { x, y: frame.y + (height + gap) * row, w: width, h: height };
+}
+
+function layoutOrder(blocks: AdaptiveSlideIntent["blocks"]): AdaptiveSlideIntent["blocks"] {
+  const emphasisRank: Record<(typeof adaptiveEmphasis)[number], number> = { primary: 0, secondary: 1, supporting: 2 };
+  return blocks.map((block, index) => ({ block, index })).sort((left, right) => emphasisRank[left.block.emphasis] - emphasisRank[right.block.emphasis] || right.block.priority - left.block.priority || left.index - right.index).map(({ block }) => block);
 }
 
 function placementsFor(intent: AdaptiveSlideIntent, frame: Rect, gap: number): { rows: number; columns: number; bounds: Map<string, Rect> } {
   const bounds = new Map<string, Rect>();
   if (intent.family === "stack") {
-    const rows = intent.blocks.length;
-    intent.blocks.forEach((block, index) => bounds.set(block.id, cell(frame, gap, 0, index, 1, rows)));
+    const ordered = layoutOrder(intent.blocks);
+    const rows = ordered.length;
+    ordered.forEach((block, index) => bounds.set(block.id, cell(frame, gap, 0, index, 1, rows)));
     return { rows, columns: 1, bounds };
   }
   if (intent.family === "two_column") {
     const [left, right] = splitTwoColumns(intent.blocks);
-    const weight = (items: AdaptiveSlideIntent["blocks"]) => items.reduce((sum, block) => sum + displayWidth(block.text), 0);
+    const weight = (items: AdaptiveSlideIntent["blocks"]) => items.reduce((sum, block) => sum + displayWidth(block.text) * (1 + block.priority / 100), 0);
     const total = weight(left) + weight(right);
     const available = frame.w - gap;
     const leftWidth = total > 0 ? available * weight(left) / total : available / 2;
-    left.forEach((block, index) => bounds.set(block.id, cell(frame, gap, 0, index, 1, left.length, [leftWidth])));
-    right.forEach((block, index) => bounds.set(block.id, cell({ ...frame, x: frame.x + leftWidth + gap, w: frame.w - leftWidth - gap }, gap, 0, index, 1, right.length)));
+    layoutOrder(left).forEach((block, index) => bounds.set(block.id, cell(frame, gap, 0, index, 1, left.length, [leftWidth])));
+    layoutOrder(right).forEach((block, index) => bounds.set(block.id, cell({ ...frame, x: frame.x + leftWidth + gap, w: frame.w - leftWidth - gap }, gap, 0, index, 1, right.length)));
     return { rows: Math.max(left.length, right.length), columns: 2, bounds };
   }
   if (intent.family === "metric_row") {
@@ -161,9 +178,10 @@ function placementsFor(intent: AdaptiveSlideIntent, frame: Rect, gap: number): {
     intent.blocks.forEach((block, index) => bounds.set(block.id, cell(frame, gap, index, 0, columns, 1)));
     return { rows: 1, columns, bounds };
   }
-  const columns = Math.max(1, Math.ceil(Math.sqrt(intent.blocks.length)));
-  const rows = Math.ceil(intent.blocks.length / columns);
-  intent.blocks.forEach((block, index) => bounds.set(block.id, cell(frame, gap, index % columns, Math.floor(index / columns), columns, rows)));
+  const ordered = layoutOrder(intent.blocks);
+  const columns = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
+  const rows = Math.ceil(ordered.length / columns);
+  ordered.forEach((block, index) => bounds.set(block.id, cell(frame, gap, index % columns, Math.floor(index / columns), columns, rows)));
   return { rows, columns, bounds };
 }
 
@@ -173,7 +191,8 @@ function textAllocation(block: AdaptiveSlideIntent["blocks"][number], placement:
   const charCount = displayWidth(block.text);
   if (!size) return { blockId: block.id, componentId: component.id, text: block.text, charCount, fits: "unknown" };
   const columnsPerLine = Math.max(1, Math.floor(placement.w / ((size / 72) * 0.55)));
-  const maxLines = Math.max(1, Math.floor(placement.h / ((size / 72) * 1.2)));
+  const lineHeightRatio = role ? designSystem.typography.roles[role]?.lineHeightRatios?.values[0] : undefined;
+  const maxLines = Math.max(1, Math.floor(placement.h / ((size / 72) * (lineHeightRatio ?? 1.2))));
   const maxChars = columnsPerLine * maxLines;
   return { blockId: block.id, componentId: component.id, text: block.text, charCount, maxChars, maxLines, fits: charCount <= maxChars ? "yes" : "no" };
 }
@@ -182,7 +201,10 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
   const parsed = planningInputSchema.parse(input);
   const { templateDigest, intent, designSystem, components } = parsed as unknown as PlanningInput;
   if (designSystem.sourceDigest !== templateDigest || components.sourceDigest !== templateDigest) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog must describe the requested template digest.");
+  if (designSystem.compilerVersion !== TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION || components.compilerVersion !== TEMPLATE_COMPONENTS_COMPILER_VERSION || designSystem.elementsDigest !== components.elementsDigest || !/^[a-f0-9]{64}$/.test(components.sourceGeometryDigest)) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog artifacts are stale or compiled by different versions.");
   if (!designSystem.coordinateSpace || !components.coordinateSpace) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: canonical coordinate-space metadata is required for adaptive planning.");
+  assertTemplateCoordinateSpace(designSystem.coordinateSpace, designSystem.canvas);
+  assertTemplateCoordinateSpace(components.coordinateSpace, components.canvas);
   if (Math.abs(designSystem.canvas.w - components.canvas.w) > 2 / 914400 || Math.abs(designSystem.canvas.h - components.canvas.h) > 2 / 914400) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog canvases differ.");
   const contentFrame = finiteRect(designSystem.geometry.contentFrame, designSystem.canvas);
   const spacing = observedGap(designSystem);
@@ -194,6 +216,12 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
     return { ...bounds, blockId: block.id, componentId: component.id, componentKind: component.kind, priority: block.priority, emphasis: block.emphasis, order, resize: { horizontal: component.resizeFeasibility.horizontal === "safe", vertical: component.resizeFeasibility.vertical === "safe" } };
   });
   if (placements.some((placement) => placement.x < contentFrame.x || placement.y < contentFrame.y || placement.x + placement.w > contentFrame.x + contentFrame.w || placement.y + placement.h > contentFrame.y + contentFrame.h)) throw new Error("ADAPTIVE_COMPOSITION_INVALID: calculated placement escaped the Design System contentFrame.");
+  placements.forEach((placement) => {
+    const component = selected.get(placement.blockId)!;
+    const needsHorizontalResize = Math.abs(placement.w - component.sourceBounds.w) > 2 / 914400;
+    const needsVerticalResize = Math.abs(placement.h - component.sourceBounds.h) > 2 / 914400;
+    if ((needsHorizontalResize && component.resizeFeasibility.horizontal !== "safe") || (needsVerticalResize && component.resizeFeasibility.vertical !== "safe")) throw new Error(`ADAPTIVE_COMPOSITION_UNSUPPORTED: component '${component.id}' lacks a safe resize capability for its calculated placement.`);
+  });
   return {
     version: 1,
     templateDigest,
