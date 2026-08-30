@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
+import { DOMParser } from "@xmldom/xmldom";
 import pptxgen from "pptxgenjs";
 import { describe, expect, it } from "vitest";
 import { compileTemplateGrammar, extractTemplateElements } from "../../src/template-analysis";
@@ -21,6 +22,7 @@ async function coordinateMismatchFixture(): Promise<{ dir: string; path: string 
     slide.background = { color: "FFFFFF" };
     slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 7.5, fill: { color: "FFFFFF" }, line: { color: "FFFFFF" }, name: `Canvas ${index}` });
     slide.addText(`EXAMPLE CONTENT ${index}`, { x: 0.85, y: 1, w: 15.816, h: 0.5, fontFace: "Arial", fontSize: 20, color: "111111", name: `Body ${index}` });
+    slide.addShape(pptx.ShapeType.line, { x: 0.85, y: 6, w: 15.816, h: 0, line: { color: "111111", width: 1 }, name: `Divider ${index}` });
     slide.addShape(pptx.ShapeType.rect, { x: -2, y: -1, w: 18.5, h: 9, fill: { color: "FF0000" }, line: { color: "FF0000" }, name: `Off-canvas helper ${index}` });
   }
   await pptx.writeFile({ fileName: output });
@@ -64,7 +66,9 @@ describe("template coordinate-space canonicalization", () => {
       const elements = await extractTemplateElements(source.path);
       const components = compileTemplateComponents(elements);
       const body = components.components.find((component) => component.kind === "body_block");
+      const dividerName = elements.slides.flatMap((slide) => slide.elements).find((element) => element.type === "line")?.name;
       expect(body).toBeDefined();
+      expect(dividerName).toBeTruthy();
       await transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId: body!.id, text: "CANONICAL CONTENT" }]);
 
       const rendered = await extractTemplateElements(output);
@@ -75,6 +79,13 @@ describe("template coordinate-space canonicalization", () => {
       const outputZip = await JSZip.loadAsync(fs.readFileSync(output));
       const slideXml = await Promise.all(Object.keys(outputZip.files).filter((file) => /^ppt\/slides\/.*\.xml$/.test(file)).map((file) => outputZip.file(file)!.async("string")));
       expect(slideXml.join("\n")).toContain("CANONICAL CONTENT");
+      const dividerXml = slideXml.find((xml) => xml.includes(`name="${dividerName}"`))!;
+      const divider = new DOMParser().parseFromString(dividerXml, "text/xml") as unknown as Document;
+      const dividerShape = Array.from(divider.getElementsByTagNameNS("http://schemas.openxmlformats.org/presentationml/2006/main", "sp") as unknown as Element[]).find((shape) => shape.getElementsByTagNameNS("http://schemas.openxmlformats.org/presentationml/2006/main", "cNvPr")[0]?.getAttribute("name") === dividerName)!;
+      const xfrm = dividerShape.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "xfrm")[0];
+      const off = xfrm.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "off")[0];
+      const ext = xfrm.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "ext")[0];
+      expect(Number(off.getAttribute("x")) + Number(ext.getAttribute("cx"))).toBeLessThanOrEqual(Math.round(canvas.w * 914400));
     } finally {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }
@@ -87,6 +98,7 @@ describe("template coordinate-space canonicalization", () => {
       const elements = await extractTemplateElements(source.path);
       const grammar = compileTemplateGrammar(elements);
       const patterns = compileTemplatePatterns(elements, grammar);
+      const dividerName = elements.slides.flatMap((slide) => slide.elements).find((element) => element.type === "line")?.name;
       const slides = elements.slides.map((slide) => ({
         id: slide.id,
         role: "body",
@@ -106,6 +118,32 @@ describe("template coordinate-space canonicalization", () => {
       const content = rendered.slides.flatMap((slide) => slide.elements).filter((element) => element.type === "text");
       expect(content.every((element) => element.bounds.x + element.bounds.w <= canvas.w && element.bounds.y + element.bounds.h <= canvas.h)).toBe(true);
       expect(rendered.slides.flatMap((slide) => slide.elements).filter((element) => element.offCanvasHelper)).toHaveLength(2);
+      const outputZip = await JSZip.loadAsync(fs.readFileSync(output));
+      const slideXml = await Promise.all(Object.keys(outputZip.files).filter((file) => /^ppt\/slides\/.*\.xml$/.test(file)).map((file) => outputZip.file(file)!.async("string")));
+      const dividerXml = slideXml.find((xml) => xml.includes(`name="${dividerName}"`))!;
+      const divider = new DOMParser().parseFromString(dividerXml, "text/xml") as unknown as Document;
+      const dividerShape = Array.from(divider.getElementsByTagNameNS("http://schemas.openxmlformats.org/presentationml/2006/main", "sp") as unknown as Element[]).find((shape) => shape.getElementsByTagNameNS("http://schemas.openxmlformats.org/presentationml/2006/main", "cNvPr")[0]?.getAttribute("name") === dividerName)!;
+      const xfrm = dividerShape.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "xfrm")[0];
+      const off = xfrm.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "off")[0];
+      const ext = xfrm.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "ext")[0];
+      expect(Number(off.getAttribute("x")) + Number(ext.getAttribute("cx"))).toBeLessThanOrEqual(Math.round(canvas.w * 914400));
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects stale or missing coordinate metadata at downstream boundaries", async () => {
+    const source = await coordinateMismatchFixture();
+    const output = path.join(source.dir, "stale-output.pptx");
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const malformed = { ...elements, coordinateSpace: { ...elements.coordinateSpace!, mode: "identity" as const } };
+      expect(() => compileTemplateGrammar(malformed)).toThrow(/TEMPLATE_COORDINATE_SPACE_INVALID/);
+
+      const components = compileTemplateComponents(elements);
+      const { coordinateSpace: _coordinateSpace, ...withoutCoordinateSpace } = components;
+      await expect(transformTemplateComponents(source.path, output, withoutCoordinateSpace as typeof components, [])).rejects.toThrow(/TEMPLATE_COORDINATE_SPACE_METADATA_MISSING/);
+      expect(fs.existsSync(output)).toBe(false);
     } finally {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }

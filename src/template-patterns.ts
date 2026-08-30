@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { slideFunctionSchema, type CompositionFamily, type DeckPlan, type SlideFunction, type SlideSpec } from "./schema";
 import type { CompositionPlan } from "./planning";
-import { elementsDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
+import { assertCanonicalTemplateElements, assertTemplateCoordinateSpace, elementsDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
 import { displayWidth } from "./typography";
 
 /**
@@ -65,6 +65,8 @@ export type TemplatePattern = {
     removableContentIds: string[];
     /** Legitimate design-time helper shapes; kept separate from adaptive content and untouched. */
     offCanvasHelperIds?: string[];
+    /** Canonical bounds for uniquely named top-level shapes that survive or receive content. */
+    canonicalBoundsByShape?: Record<string, { x: number; y: number; w: number; h: number }>;
     /** Keyed by our own element id (template-analysis.ts), not shape name — bookkeeping only. */
     assetClasses: Record<string, AssetClass>;
   };
@@ -84,6 +86,21 @@ export type TemplatePatternsArtifact = {
   coordinateSpace?: TemplateCoordinateSpace;
   patterns: TemplatePattern[];
 };
+
+export function assertTemplatePattern(pattern: TemplatePattern, canvas: { w: number; h: number }): void {
+  assertTemplateCoordinateSpace(pattern.coordinateSpace, canvas);
+  const bounds = [
+    ...pattern.skeleton.replaceableSlots.map((slot) => slot.bounds),
+    ...Object.values(pattern.skeleton.canonicalBoundsByShape ?? {}),
+  ];
+  if (bounds.some((rect) => rect.x < 0 || rect.y < 0 || rect.w < 0 || rect.h < 0 || rect.x + rect.w > canvas.w || rect.y + rect.h > canvas.h)) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: pattern '${pattern.id}' contains non-canonical bounds outside p:sldSz.`);
+}
+
+export function assertTemplatePatternsArtifact(artifact: TemplatePatternsArtifact, canvas: { w: number; h: number }): void {
+  if (artifact.version !== 1 || artifact.compilerVersion !== TEMPLATE_PATTERN_COMPILER_VERSION) throw new Error(`TEMPLATE_PATTERN_ARTIFACT_STALE: expected template pattern compiler version ${TEMPLATE_PATTERN_COMPILER_VERSION}. Re-run template-analyze.`);
+  assertTemplateCoordinateSpace(artifact.coordinateSpace, canvas);
+  artifact.patterns.forEach((pattern) => assertTemplatePattern(pattern, canvas));
+}
 
 // The canonical "preserve" roles (PRD §10): background, logo/watermark, dividers, surfaces/bands,
 // footer structure. Everything else that carries a classified role is content a template author put
@@ -157,10 +174,12 @@ function densityOf(elementCount: number): "low" | "medium" | "high" {
  * montage, never a coordinate or a shapeId.
  */
 export function compileTemplatePatterns(elements: TemplateElementsArtifact, _grammar: TemplateGrammar): TemplatePatternsArtifact {
+  if (elements.coordinateSpace || elements.analysisInputs?.analyzerVersion === "5") assertCanonicalTemplateElements(elements);
   const patterns: TemplatePattern[] = elements.slides.map((slide) => {
     const preservedShapeIds: string[] = [];
     const removableContentIds: string[] = [];
     const offCanvasHelperIds: string[] = [];
+    const canonicalBoundsByShape: Record<string, { x: number; y: number; w: number; h: number }> = {};
     const replaceableSlots: TemplateSlot[] = [];
     const elementAssetClasses: Record<string, AssetClass> = {};
     const nameOccurrences = new Map<string, number>();
@@ -172,11 +191,13 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
         if (element.name) offCanvasHelperIds.push(element.name);
         continue;
       }
+      if (elements.coordinateSpace?.mode === "scaled" && element.grouped && element.role !== "unknown" && !["footer", "logo", "surface", "divider"].includes(element.role)) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: grouped adaptive element '${element.id}' cannot be canonicalized losslessly.`);
       const reliablyNamed = hasReliableName(element);
       const assetClass = reliablyNamed ? classifyTemplateAsset(element, elements.source.slideSize) : "unknown";
       elementAssetClasses[element.id] = assetClass;
       if (assetClass === "structural" || assetClass === "brand") {
         preservedShapeIds.push(element.name);
+        if (!element.grouped && element.name) canonicalBoundsByShape[element.name] = element.bounds;
         continue;
       }
       if (assetClass === "unknown") {
@@ -208,6 +229,7 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
         required: binding === "headline",
         repeatable: binding.endsWith("[]") ? true : undefined,
       });
+      if (!element.grouped && element.name) canonicalBoundsByShape[element.name] = element.bounds;
     }
 
     const adaptiveElements = slide.elements.filter((element) => !element.offCanvasHelper);
@@ -221,7 +243,7 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
       sourceSlideId: slide.id,
       sourceSlideNumber: Number(slide.id.replace(/^S/, "")),
       suitableFor: { functions: [], compositions: [], densities: [density], confidence: 0.5 },
-      skeleton: { sourceSlidePart: slide.sourceSlidePart, preservedShapeIds: [...new Set(preservedShapeIds)], replaceableSlots, removableContentIds: [...new Set(removableContentIds)], ...(offCanvasHelperIds.length > 0 ? { offCanvasHelperIds: [...new Set(offCanvasHelperIds)] } : {}), assetClasses: elementAssetClasses },
+      skeleton: { sourceSlidePart: slide.sourceSlidePart, preservedShapeIds: [...new Set(preservedShapeIds)], replaceableSlots, removableContentIds: [...new Set(removableContentIds)], ...(offCanvasHelperIds.length > 0 ? { offCanvasHelperIds: [...new Set(offCanvasHelperIds)] } : {}), ...(Object.keys(canonicalBoundsByShape).length > 0 ? { canonicalBoundsByShape } : {}), assetClasses: elementAssetClasses },
       coordinateSpace: elements.coordinateSpace,
       visualSignature: {
         backgroundTreatment: adaptiveElements.some((element) => element.role === "surface") ? "surface" : "plain",

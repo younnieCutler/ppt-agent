@@ -1,4 +1,4 @@
-import { compileTemplateGrammar, elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar, type TemplateTextStyle } from "./template-analysis";
+import { assertCanonicalTemplateElements, compileTemplateGrammar, elementsDigest, TEMPLATE_ANALYZER_VERSION, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar, type TemplateTextStyle } from "./template-analysis";
 
 export const TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION = "2";
 
@@ -17,6 +17,7 @@ export type TemplateDesignSystemArtifact = {
   compilerVersion: string;
   sourceDigest: string;
   elementsDigest: string;
+  coordinateSpace?: TemplateCoordinateSpace;
   canvas: { w: number; h: number };
   typography: {
     roles: Partial<Record<SemanticRole, TypographyRole>>;
@@ -119,6 +120,7 @@ function typography(elements: TemplateElement[], artifact: TemplateElementsArtif
 }
 
 export function compileTemplateDesignSystem(artifact: TemplateElementsArtifact, grammar: TemplateGrammar = compileTemplateGrammar(artifact)): TemplateDesignSystemArtifact {
+  if (artifact.coordinateSpace || artifact.analysisInputs?.analyzerVersion === TEMPLATE_ANALYZER_VERSION) assertCanonicalTemplateElements(artifact);
   const elements = elementsOf(artifact);
   const textElements = elements.filter((element) => element.type === "text");
   const styleValues = elements.map((element) => styleOf(element, artifact));
@@ -136,6 +138,7 @@ export function compileTemplateDesignSystem(artifact: TemplateElementsArtifact, 
     compilerVersion: TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION,
     sourceDigest: artifact.source.sha256,
     elementsDigest: elementsDigest(artifact),
+    coordinateSpace: artifact.coordinateSpace,
     canvas: artifact.source.slideSize,
     typography: typography(elements, artifact),
     colors: {

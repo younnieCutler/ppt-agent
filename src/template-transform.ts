@@ -4,8 +4,8 @@ import path from "node:path";
 import JSZip from "jszip";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { pruneUnreachablePptxParts } from "./ooxml";
-import type { TemplateComponent, TemplateComponentsArtifact } from "./template-components";
-import { canonicalizeRect } from "./template-analysis";
+import { TEMPLATE_COMPONENTS_COMPILER_VERSION, type TemplateComponent, type TemplateComponentsArtifact } from "./template-components";
+import { assertTemplateCoordinateSpace, canonicalizeRect } from "./template-analysis";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -396,6 +396,7 @@ export async function transformTemplateComponents(
   operations: ComponentTransformOperation[],
 ): Promise<ComponentTransformResult> {
   if (!Array.isArray(operations)) throw new Error("COMPONENT_TRANSFORM_INVALID: operations must be an array.");
+  if (artifact.version !== 1 || artifact.compilerVersion !== TEMPLATE_COMPONENTS_COMPILER_VERSION) throw new Error(`COMPONENT_CATALOG_STALE: expected template component compiler version ${TEMPLATE_COMPONENTS_COMPILER_VERSION}. Re-run template-analyze.`);
   const checkedOperations = operations.map(validateOperation);
   const sourcePath = path.resolve(templatePath);
   const resolvedOutput = path.resolve(outputPath);
@@ -411,6 +412,7 @@ export async function transformTemplateComponents(
   const presentationRelationshipsXml = await zip.file("ppt/_rels/presentation.xml.rels")?.async("string");
   if (!presentationRelationshipsXml) throw new Error("Component transform requires ppt/_rels/presentation.xml.rels.");
   const canvas = canvasFromPresentation(parseXml(presentationXml));
+  assertTemplateCoordinateSpace(artifact.coordinateSpace, canvas);
   const slidesById = slidesFromPresentation(presentationXml, presentationRelationshipsXml);
   const states = new Map<string, SlideState>();
   const getState = async (slideId: string): Promise<SlideState> => {
@@ -451,9 +453,9 @@ export async function transformTemplateComponents(
     handles.set(alias, { componentId: alias, slideId: state.id, partPath: state.partPath, node });
     createdComponents.push(alias);
   };
-  if (artifact.coordinateSpace?.mode === "scaled") {
+  if (artifact.coordinateSpace.mode === "scaled") {
     for (const component of artifact.components) {
-      if (component.offCanvasHelper) continue;
+      if (component.offCanvasHelper || component.grouped) continue;
       const handle = resolve(component.id);
       const state = states.get(handle.slideId)!;
       const node = findHandleNode(handle);

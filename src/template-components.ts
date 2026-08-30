@@ -1,4 +1,4 @@
-import { elementsDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
+import { assertCanonicalTemplateElements, elementsDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
 
 export const TEMPLATE_COMPONENTS_COMPILER_VERSION = "2";
 export const componentKinds = ["title_block", "subtitle_block", "body_block", "label", "metric", "surface", "card", "divider", "key_message", "list_item", "footer", "logo", "media_frame", "unknown"] as const;
@@ -20,6 +20,7 @@ export type TemplateComponent = {
   styleRefs: string[];
   assetProvenance: { kind: "none" | "image" | "chart" | "table"; sourceSlidePart: string; sourceElementId: string; ref?: string };
   offCanvasHelper?: boolean;
+  grouped?: boolean;
   repeatability: { signal: "single" | "repeatable"; count: number; groupId?: string; index?: number };
   resizeFeasibility: { horizontal: ResizeFeasibility; vertical: ResizeFeasibility };
   observedSiblings: string[];
@@ -97,6 +98,7 @@ function componentFor(element: TemplateElement, slidePart: string, canvas: { w: 
     styleRefs: element.styleRef ? [element.styleRef] : [],
     assetProvenance: { kind: assetKind, sourceSlidePart: slidePart, sourceElementId: element.id, ...(element.assetRef ? { ref: element.assetRef } : {}) },
     ...(element.offCanvasHelper ? { offCanvasHelper: true } : {}),
+    ...(element.grouped ? { grouped: true } : {}),
     repeatability: { signal: "single", count: 1 },
     resizeFeasibility: resizeFor(element),
     observedSiblings: [],
@@ -152,6 +154,7 @@ function repeatGroupsForSlide(slideComponents: TemplateComponent[]): Array<{ com
 }
 
 export function compileTemplateComponents(artifact: TemplateElementsArtifact): TemplateComponentsArtifact {
+  if (artifact.coordinateSpace || artifact.analysisInputs?.analyzerVersion === "5") assertCanonicalTemplateElements(artifact);
   const components = artifact.slides.flatMap((slide) => slide.elements.map((element) => componentFor(element, slide.sourceSlidePart, artifact.source.slideSize)));
   const repeatGroups: TemplateRepeatGroup[] = [];
   for (const slide of artifact.slides) {
