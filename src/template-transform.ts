@@ -5,7 +5,7 @@ import JSZip from "jszip";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { pruneUnreachablePptxParts } from "./ooxml";
 import { compileTemplateComponents, TEMPLATE_COMPONENTS_COMPILER_VERSION, type TemplateComponent, type TemplateComponentsArtifact } from "./template-components";
-import { assertTemplateCoordinateSpace, canonicalizeRect, extractTemplateElements } from "./template-analysis";
+import { assertTemplateCoordinateSpace, canonicalizeRect, elementsGeometryDigest, extractTemplateElements } from "./template-analysis";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -424,6 +424,7 @@ export async function transformTemplateComponents(
   assertTemplateCoordinateSpace(artifact.coordinateSpace, canvas);
   const sourceElements = await extractTemplateElements(sourcePath);
   if (!sameCoordinateSpace(artifact.coordinateSpace, sourceElements.coordinateSpace!)) throw new Error("COMPONENT_CATALOG_STALE: component catalog coordinate space does not match the current template extraction. Re-run template-analyze.");
+  if (artifact.sourceGeometryDigest !== elementsGeometryDigest(sourceElements)) throw new Error("COMPONENT_CATALOG_STALE: component catalog geometry digest does not match the current template extraction. Re-run template-analyze.");
   const expectedComponentIds = new Set(compileTemplateComponents(sourceElements).components.map((component) => component.id));
   const actualComponentIds = new Set(artifact.components.map((component) => component.id));
   if (expectedComponentIds.size !== actualComponentIds.size || [...expectedComponentIds].some((componentId) => !actualComponentIds.has(componentId))) throw new Error("COMPONENT_CATALOG_STALE: component catalog is missing or has extra components for the current template extraction. Re-run template-analyze.");
@@ -432,7 +433,7 @@ export async function transformTemplateComponents(
     const shapeName = component.shapeNames.length === 1 ? component.shapeNames[0] : undefined;
     const actual = actualSlide && shapeName ? actualSlide.elements.filter((element) => element.name === shapeName) : [];
     const matched = actual.length === 1 ? actual[0] : undefined;
-    if (!matched || !sameBounds(component.sourceBounds, matched.bounds) || Boolean(component.offCanvasHelper) !== Boolean(matched.offCanvasHelper) || Boolean(component.grouped) !== Boolean(matched.grouped)) throw new Error(`COMPONENT_CATALOG_STALE: component '${component.id}' does not match the current template extraction. Re-run template-analyze.`);
+    if (!matched || component.elementIds.length !== 1 || component.elementIds[0] !== matched.id || component.sourceSlidePart !== actualSlide?.sourceSlidePart || !sameBounds(component.sourceBounds, matched.bounds) || Boolean(component.offCanvasHelper) !== Boolean(matched.offCanvasHelper) || Boolean(component.grouped) !== Boolean(matched.grouped)) throw new Error(`COMPONENT_CATALOG_STALE: component '${component.id}' does not match the current template extraction. Re-run template-analyze.`);
   }
   const slidesById = slidesFromPresentation(presentationXml, presentationRelationshipsXml);
   const states = new Map<string, SlideState>();

@@ -167,6 +167,28 @@ describe("template coordinate-space canonicalization", () => {
     }
   });
 
+  it("supports mixed-width adaptive content when the source-frame edge repeats across slides", async () => {
+    const source = await coordinateMismatchFixture();
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const mixed = {
+        ...elements,
+        coordinateSpace: undefined,
+        slides: elements.slides.map((slide) => {
+          const text = slide.elements.find((element) => element.type === "text")!;
+          const rawText = { ...text, bounds: { ...text.bounds, x: text.bounds.x / elements.coordinateSpace!.scale.x, w: text.bounds.w / elements.coordinateSpace!.scale.x } };
+          return {
+            ...slide,
+            elements: [...slide.elements.map((element) => element.id === text.id ? rawText : element), { ...text, id: `${text.id}-narrow`, name: `${text.name}-narrow`, bounds: { ...text.bounds, w: 4 } }],
+          };
+        }),
+      };
+      expect(canonicalizeTemplateElements(mixed).coordinateSpace?.mode).toBe("scaled");
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects duplicate structural selectors before scaled output can retain raw bounds", async () => {
     const source = await coordinateMismatchFixture();
     try {

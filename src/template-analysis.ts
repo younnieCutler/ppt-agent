@@ -98,6 +98,15 @@ export function elementsDigest(artifact: TemplateElementsArtifact): string {
   return crypto.createHash("sha256").update(JSON.stringify(artifact)).digest("hex");
 }
 
+export function elementsGeometryDigest(artifact: TemplateElementsArtifact): string {
+  const elements = [
+    ...artifact.slides.flatMap((slide) => slide.elements),
+    ...artifact.layouts.flatMap((layout) => layout.elements),
+    ...artifact.masters.flatMap((master) => master.elements),
+  ].map(({ id, name, slideId, type, bounds, zIndex, ownership, styleRef, assetRef, offCanvasHelper, grouped }) => ({ id, name, slideId, type, bounds, zIndex, ownership, styleRef, assetRef, offCanvasHelper, grouped }));
+  return crypto.createHash("sha256").update(JSON.stringify(elements)).digest("hex");
+}
+
 export function classifyTemplateElement(
   element: Pick<TemplateElement, "id" | "type" | "bounds" | "features">,
   slideSize: { w: number; h: number },
@@ -214,10 +223,10 @@ function repeatedOverflow(values: CoordinateObservation[], limit: number, direct
   const edge = direction === "max" ? Math.max(...overflowing.map(({ value }) => value)) : Math.min(...overflowing.map(({ value }) => value));
   const tolerance = Math.max(COORDINATE_EPSILON, Math.abs(edge) * 0.002);
   const matching = overflowing.filter(({ value }) => Math.abs(value - edge) <= tolerance);
-  // A source-frame transform is accepted only when every adaptive element shares the same
-  // overflowing edge across every active slide. A single oversized/bleeding box is not enough
-  // evidence to rescale a template, so ambiguous cases fail instead of being silently changed.
-  return matching.length === values.length && new Set(matching.map(({ slideId }) => slideId)).size === activeSlideIds.size ? edge : undefined;
+  // A source-frame transform is accepted only when the same overflowing edge recurs on every
+  // active slide. Other adaptive elements may legitimately use narrower widths, so mixed-width
+  // compositions are scaled by the shared frame edge rather than rejected as one-off overflow.
+  return matching.length >= 2 && new Set(matching.map(({ slideId }) => slideId)).size === activeSlideIds.size ? edge : undefined;
 }
 
 function axisCoordinateFrame(lefts: CoordinateObservation[], rights: CoordinateObservation[], limit: number, axis: "x" | "y", activeSlideIds: Set<string>): { start: number; size: number; scale: number } {

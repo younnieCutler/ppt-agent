@@ -1,4 +1,4 @@
-import { assertCanonicalTemplateElements, elementsDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
+import { assertCanonicalTemplateElements, elementsDigest, elementsGeometryDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
 
 export const TEMPLATE_COMPONENTS_COMPILER_VERSION = "2";
 export const componentKinds = ["title_block", "subtitle_block", "body_block", "label", "metric", "surface", "card", "divider", "key_message", "list_item", "footer", "logo", "media_frame", "unknown"] as const;
@@ -42,6 +42,7 @@ export type TemplateComponentsArtifact = {
   compilerVersion: string;
   sourceDigest: string;
   elementsDigest: string;
+  sourceGeometryDigest: string;
   canvas: { w: number; h: number };
   coordinateSpace?: TemplateCoordinateSpace;
   components: TemplateComponent[];
@@ -180,6 +181,7 @@ export function compileTemplateComponents(artifact: TemplateElementsArtifact): T
     compilerVersion: TEMPLATE_COMPONENTS_COMPILER_VERSION,
     sourceDigest: artifact.source.sha256,
     elementsDigest: elementsDigest(artifact),
+    sourceGeometryDigest: elementsGeometryDigest(artifact),
     canvas: artifact.source.slideSize,
     coordinateSpace: artifact.coordinateSpace,
     components,
