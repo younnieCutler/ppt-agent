@@ -217,7 +217,36 @@ describe("template component transformation engine", () => {
       const components = compileTemplateComponents(await extractTemplateElements(source.path));
       const textId = components.components.find((component) => component.kind === "body_block")?.id;
       expect(textId).toBeDefined();
-      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId: textId!, text: "LOSSLESS ONLY" }])).rejects.toThrow(/mixed text-run styles/);
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId: textId!, text: "LOSSLESS ONLY" }])).rejects.toThrow(/rich or multiline text/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects malformed replace_text input before writing a package", async () => {
+    const source = await fixture();
+    const output = path.join(source.dir, "malformed.pptx");
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const components = compileTemplateComponents(elements);
+      const componentId = components.components.find((component) => component.kind === "body_block")?.id;
+      expect(componentId).toBeDefined();
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId } as never])).rejects.toThrow(/requires a string text/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects text replacement on a non-text graphic component", async () => {
+    const source = await fixture(false, true);
+    const output = path.join(source.dir, "table-text.pptx");
+    try {
+      const components = compileTemplateComponents(await extractTemplateElements(source.path));
+      const tableId = components.components.find((component) => component.assetProvenance.kind === "table")?.id;
+      expect(tableId).toBeDefined();
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId: tableId!, text: "NO DATA LOSS" }])).rejects.toThrow(/not a text shape/);
       expect(fs.existsSync(output)).toBe(false);
     } finally {
       fs.rmSync(source.dir, { recursive: true, force: true });
@@ -274,6 +303,34 @@ describe("template component transformation engine", () => {
       expect(textId).toBeDefined();
       fs.writeFileSync(output, "existing output");
       await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId: textId!, text: "VALIDATION FAILURE" }])).rejects.toThrow(/COMPONENT_RELATION_MISSING/);
+      expect(fs.readFileSync(output, "utf8")).toBe("existing output");
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates every presentation-listed slide part, not only numeric slide filenames", async () => {
+    const source = await fixture();
+    const output = path.join(source.dir, "custom-slide-validation.pptx");
+    try {
+      const zip = await JSZip.loadAsync(fs.readFileSync(source.path));
+      const slideXml = await zip.file("ppt/slides/slide1.xml")?.async("string");
+      const slideRels = await zip.file("ppt/slides/_rels/slide1.xml.rels")?.async("string");
+      const presentationRels = await zip.file("ppt/_rels/presentation.xml.rels")?.async("string");
+      const contentTypes = await zip.file("[Content_Types].xml")?.async("string");
+      zip.file("ppt/slides/custom.xml", slideXml!);
+      zip.file("ppt/slides/_rels/custom.xml.rels", slideRels!);
+      zip.file("ppt/_rels/presentation.xml.rels", presentationRels!.replace("slides/slide1.xml", "slides/custom.xml"));
+      zip.file("[Content_Types].xml", contentTypes!.replace("/ppt/slides/slide1.xml", "/ppt/slides/custom.xml"));
+      zip.remove("ppt/slides/slide1.xml");
+      zip.remove("ppt/slides/_rels/slide1.xml.rels");
+      Object.keys(zip.files).filter((name) => name.startsWith("ppt/media/") && !name.endsWith("/")).forEach((name) => zip.remove(name));
+      fs.writeFileSync(source.path, await zip.generateAsync({ type: "nodebuffer" }));
+      const components = compileTemplateComponents(await extractTemplateElements(source.path));
+      const textId = components.components.find((component) => component.kind === "body_block")?.id;
+      expect(textId).toBeDefined();
+      fs.writeFileSync(output, "existing output");
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId: textId!, text: "CUSTOM PART" }])).rejects.toThrow(/COMPONENT_RELATION_MISSING/);
       expect(fs.readFileSync(output, "utf8")).toBe("existing output");
     } finally {
       fs.rmSync(source.dir, { recursive: true, force: true });

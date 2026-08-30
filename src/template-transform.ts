@@ -35,6 +35,49 @@ export type ComponentTransformOperation =
 
 export type ComponentTransformResult = { outputPath: string; appliedOperations: number; createdComponents: string[] };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function finiteField(value: unknown, field: string, index: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} requires a finite numeric '${field}'.`);
+  return value;
+}
+
+function optionalString(value: unknown, field: string, index: number): void {
+  if (value !== undefined && (typeof value !== "string" || value.length === 0)) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} requires '${field}' to be a non-empty string when provided.`);
+}
+
+function validateOperation(input: unknown, index: number): ComponentTransformOperation {
+  if (!isRecord(input) || typeof input.operation !== "string" || typeof input.componentId !== "string" || input.componentId.length === 0) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} requires an operation name and semantic componentId.`);
+  optionalString(input.targetSlideId, "targetSlideId", index);
+  optionalString(input.as, "as", index);
+  switch (input.operation) {
+    case "clone":
+    case "remove":
+      return input as ComponentTransformOperation;
+    case "move":
+      finiteField(input.x, "x", index);
+      finiteField(input.y, "y", index);
+      return input as ComponentTransformOperation;
+    case "resize":
+      finiteField(input.w, "w", index);
+      finiteField(input.h, "h", index);
+      return input as ComponentTransformOperation;
+    case "repeat":
+      if (typeof input.count !== "number" || !Number.isInteger(input.count) || input.count < 1 || input.count > 100) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} repeat count must be an integer from 1 to 100.`);
+      if (!isRecord(input.offset)) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} repeat requires an offset object.`);
+      finiteField(input.offset.x, "offset.x", index);
+      finiteField(input.offset.y, "offset.y", index);
+      return input as ComponentTransformOperation;
+    case "replace_text":
+      if (typeof input.text !== "string") throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} replace_text requires a string text.`);
+      return input as ComponentTransformOperation;
+    default:
+      throw new Error(`COMPONENT_TRANSFORM_INVALID: unsupported operation '${input.operation}'.`);
+  }
+}
+
 function parseXml(xml: string): Document {
   return new DOMParser().parseFromString(xml, "text/xml") as unknown as Document;
 }
@@ -298,8 +341,12 @@ function slidesFromPresentation(presentationXml: string, relationshipsXml: strin
 }
 
 function replaceText(node: Element, text: string, componentId: string): void {
+  if (node.namespaceURI !== P_NS || node.localName !== "sp") throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' is not a text shape.`);
   const runs = all(node, A_NS, "t");
   if (runs.length === 0) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' has no text runs.`);
+  if (all(node, A_NS, "r").length !== 1 || all(node, A_NS, "p").length !== 1 || all(node, A_NS, "fld").length > 0 || all(node, A_NS, "br").length > 0 || all(node, A_NS, "tab").length > 0) {
+    throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' has rich or multiline text that cannot be replaced losslessly.`);
+  }
   const runStyles = new Set(all(node, A_NS, "r").map((run) => {
     const properties = first(run, A_NS, "rPr");
     return properties ? new XMLSerializer().serializeToString(properties as unknown as Parameters<XMLSerializer["serializeToString"]>[0]) : "";
@@ -311,7 +358,11 @@ function replaceText(node: Element, text: string, componentId: string): void {
 
 async function validatePackageRelationships(pptxPath: string): Promise<void> {
   const zip = await JSZip.loadAsync(fs.readFileSync(pptxPath));
-  for (const partPath of Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))) {
+  const presentationXml = await zip.file("ppt/presentation.xml")?.async("string");
+  const presentationRelationshipsXml = await zip.file("ppt/_rels/presentation.xml.rels")?.async("string");
+  if (!presentationXml || !presentationRelationshipsXml) throw new Error("COMPONENT_RELATION_MISSING: presentation package is incomplete.");
+  const partPaths = [...slidesFromPresentation(presentationXml, presentationRelationshipsXml).values()].map((slide) => slide.sourceSlidePart);
+  for (const partPath of partPaths) {
     const xml = await zip.file(partPath)?.async("string");
     const relXml = await zip.file(relationshipPath(partPath))?.async("string");
     if (!xml || !relXml) throw new Error(`COMPONENT_RELATION_MISSING: slide package is incomplete for ${partPath}.`);
@@ -332,6 +383,8 @@ export async function transformTemplateComponents(
   artifact: TemplateComponentsArtifact,
   operations: ComponentTransformOperation[],
 ): Promise<ComponentTransformResult> {
+  if (!Array.isArray(operations)) throw new Error("COMPONENT_TRANSFORM_INVALID: operations must be an array.");
+  const checkedOperations = operations.map(validateOperation);
   const sourcePath = path.resolve(templatePath);
   const resolvedOutput = path.resolve(outputPath);
   if (!fs.existsSync(sourcePath)) throw new Error(`Template not found: ${sourcePath}`);
@@ -407,14 +460,13 @@ export async function transformTemplateComponents(
     return createdId;
   };
 
-  for (const operation of operations) {
+  for (const operation of checkedOperations) {
     if (operation.operation === "clone") {
       const source = resolve(operation.componentId);
       await clone(source, operation.targetSlideId ?? source.slideId, operation.as);
       continue;
     }
     if (operation.operation === "repeat") {
-      if (!Number.isInteger(operation.count) || operation.count < 1 || operation.count > 100) throw new Error("COMPONENT_TRANSFORM_INVALID: repeat count must be an integer from 1 to 100.");
       const source = resolve(operation.componentId);
       const targetSlideId = operation.targetSlideId ?? source.slideId;
       const base = operation.as ?? `${operation.componentId}.repeat`;
@@ -460,5 +512,5 @@ export async function transformTemplateComponents(
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-  return { outputPath: resolvedOutput, appliedOperations: operations.length, createdComponents };
+  return { outputPath: resolvedOutput, appliedOperations: checkedOperations.length, createdComponents };
 }
