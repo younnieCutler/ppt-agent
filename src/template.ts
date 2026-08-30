@@ -87,9 +87,10 @@ async function validateTemplateContract(templatePath: string, map: TemplateMap, 
   }
   const presentationXml = await zip.file("ppt/presentation.xml")?.async("string");
   if (!presentationXml) throw new Error(`Organization template is missing ppt/presentation.xml: ${templatePath}`);
-  const sizeTag = presentationXml.match(/<p:sldSz\b[^>]*>/)?.[0];
-  const cx = Number(sizeTag?.match(/\bcx="(\d+)"/)?.[1] ?? 0);
-  const cy = Number(sizeTag?.match(/\bcy="(\d+)"/)?.[1] ?? 0);
+  const presentation = new DOMParser().parseFromString(presentationXml, "text/xml") as unknown as Document;
+  const size = Array.from(presentation.getElementsByTagNameNS(P_NS, "sldSz"))[0] as Element | undefined;
+  const cx = Number(size?.getAttribute("cx") ?? 0);
+  const cy = Number(size?.getAttribute("cy") ?? 0);
   const expected = CANVAS_DIMENSIONS[map.aspectRatio];
   const actualW = cx / EMU_PER_INCH;
   const actualH = cy / EMU_PER_INCH;

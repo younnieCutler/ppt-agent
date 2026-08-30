@@ -189,6 +189,13 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
     const nameOccurrences = new Map<string, number>();
     for (const element of slide.elements) nameOccurrences.set(element.name, (nameOccurrences.get(element.name) ?? 0) + 1);
     const hasReliableName = (element: TemplateElement) => Boolean(element.name) && nameOccurrences.get(element.name) === 1;
+    const ambiguousPreservedName = [...nameOccurrences.keys()].find((name) => {
+      if (!name || nameOccurrences.get(name)! < 2) return false;
+      const members = slide.elements.filter((element) => element.name === name);
+      return members.some((element) => element.offCanvasHelper || preservedRoles.has(element.role as SemanticRole))
+        && members.some((element) => !element.offCanvasHelper && !preservedRoles.has(element.role as SemanticRole));
+    });
+    if (ambiguousPreservedName) throw new Error(`TEMPLATE_COMPONENT_PROVENANCE_AMBIGUOUS: preserved shape name '${ambiguousPreservedName}' is shared with removable content on slide '${slide.id}'.`);
 
     for (const element of slide.elements) {
       if (element.offCanvasHelper) {

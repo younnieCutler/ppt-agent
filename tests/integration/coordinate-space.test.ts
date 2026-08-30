@@ -247,4 +247,19 @@ describe("template coordinate-space canonicalization", () => {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }
   });
+
+  it("rejects component IDs bound to a different source shape", async () => {
+    const source = await coordinateMismatchFixture();
+    const output = path.join(source.dir, "swapped-component.pptx");
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const components = compileTemplateComponents(elements);
+      const [first, second, ...rest] = components.components;
+      const swapped = { ...components, components: [{ ...first, id: second.id }, { ...second, id: first.id }, ...rest] };
+      await expect(transformTemplateComponents(source.path, output, swapped, [])).rejects.toThrow(/does not match the current template extraction/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
 });
