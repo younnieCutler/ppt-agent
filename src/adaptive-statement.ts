@@ -5,8 +5,9 @@ import { DOMParser } from "@xmldom/xmldom";
 import { readPptxOoxml } from "./ooxml";
 import { adaptiveSlideIntentSchema, planAdaptiveSlide, type AdaptiveSlideIntent, type AdaptiveSlidePlan } from "./adaptive-composition";
 import { transformTemplateComponents } from "./template-transform";
-import type { TemplateComponentsArtifact, TemplateComponent } from "./template-components";
-import type { TemplateDesignSystemArtifact } from "./template-design-system";
+import { assertCanonicalTemplateElements, compileTemplateGrammar, elementsDigest, extractTemplateElements, type TemplateElementsArtifact } from "./template-analysis";
+import { compileTemplateComponents, type TemplateComponentsArtifact, type TemplateComponent } from "./template-components";
+import { compileTemplateDesignSystem, type TemplateDesignSystemArtifact } from "./template-design-system";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -64,6 +65,15 @@ function styleTokens(root: Element): Set<string> {
 
 function structural(component: TemplateComponent): boolean {
   return Boolean(component.offCanvasHelper) || component.semanticRoles.some((role) => STRUCTURAL_ROLES.has(role));
+}
+
+function physicalPath(filePath: string): string {
+  const absolute = path.resolve(filePath);
+  try {
+    return fs.realpathSync(absolute);
+  } catch {
+    return path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+  }
 }
 
 function operationsFor(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact): Parameters<typeof transformTemplateComponents>[3] {
@@ -131,17 +141,31 @@ async function qaAdaptiveStatement(templatePath: string, outputPath: string, pla
   return { status: findings.length > 0 ? "fail" : "pass", findings };
 }
 
-export async function renderAdaptiveStatement(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, intentInput: unknown): Promise<AdaptiveStatementResult> {
+export async function renderAdaptiveStatement(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, elements: TemplateElementsArtifact, intentInput: unknown): Promise<AdaptiveStatementResult> {
   const intent = adaptiveSlideIntentSchema.parse(intentInput);
   if (intent.blocks.some((block) => !["headline", "body", "support"].includes(block.role))) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement vertical slice supports headline, body, and support blocks only.");
   if (intent.blocks.some((block) => /[\r\n]/.test(block.text))) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement content must fit the single-run text replacement contract and must not contain newlines.");
+  if (intent.family === "metric_row" || !intent.blocks.some((block) => block.role === "headline") || !intent.blocks.some((block) => block.role === "body")) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement requires headline and body content and does not support metric_row.");
+  assertCanonicalTemplateElements(elements);
+  if (elements.source.sha256 !== components.sourceDigest || elements.source.sha256 !== designSystem.sourceDigest || components.elementsDigest !== elementsDigest(elements) || designSystem.elementsDigest !== elementsDigest(elements)) throw new Error("ADAPTIVE_STATEMENT_PROVENANCE_MISMATCH: template artifacts do not describe the same analyzed elements.");
+  if (JSON.stringify(components) !== JSON.stringify(compileTemplateComponents(elements)) || JSON.stringify(designSystem) !== JSON.stringify(compileTemplateDesignSystem(elements, compileTemplateGrammar(elements)))) throw new Error("ADAPTIVE_STATEMENT_PROVENANCE_MISMATCH: Design System or Component Catalog is not the compiler output for the supplied template elements.");
   const sourceSlideIds = new Set(components.components.map((component) => component.sourceSlideId));
   if (sourceSlideIds.size !== 1 || !sourceSlideIds.has(intent.slideId)) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement vertical slice requires a single source slide in the component catalog.");
   const sourceKinds = new Set(components.components.filter((component) => !component.offCanvasHelper && !component.grouped).map((component) => component.kind));
   if (!sourceKinds.has("title_block") || (intent.blocks.some((block) => block.role === "body") && !sourceKinds.has("body_block"))) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement requires template-native title_block and body_block capability.");
   const plan = planAdaptiveSlide({ templateDigest: components.sourceDigest, designSystem, components, intent });
+  if (plan.textAllocation.some((allocation) => allocation.fits === "no")) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement text does not fit the calculated native component placement.");
   const operations = operationsFor(plan, components);
-  await transformTemplateComponents(templatePath, outputPath, components, operations);
-  const qa = await qaAdaptiveStatement(templatePath, outputPath, plan, components);
-  return { outputPath: path.resolve(outputPath), plan, qa };
+  const resolvedOutput = path.resolve(outputPath);
+  fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
+  if (physicalPath(templatePath) === physicalPath(resolvedOutput)) throw new Error("ADAPTIVE_STATEMENT_SOURCE_IMMUTABLE: outputPath must differ from the source template path.");
+  const temporary = `${resolvedOutput}.${process.pid}.adaptive.tmp`;
+  try {
+    await transformTemplateComponents(templatePath, temporary, components, operations);
+    const qa = await qaAdaptiveStatement(templatePath, temporary, plan, components);
+    if (qa.status === "pass") fs.renameSync(temporary, resolvedOutput);
+    return { outputPath: resolvedOutput, plan, qa };
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }

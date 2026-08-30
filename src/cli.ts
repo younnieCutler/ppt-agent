@@ -127,6 +127,15 @@ function readJson(filePath: string): unknown {
   return JSON.parse(fs.readFileSync(path.resolve(filePath), "utf8"));
 }
 
+function physicalPath(filePath: string): string {
+  const absolute = path.resolve(filePath);
+  try {
+    return fs.realpathSync(absolute);
+  } catch {
+    return path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+  }
+}
+
 function loadContentModelIfExists(filePath: string): ContentModel | undefined {
   if (!fs.existsSync(filePath)) return undefined;
   return contentModelSchema.parse(readJson(filePath));
@@ -596,17 +605,21 @@ async function main(): Promise<void> {
 
   if (command === "adaptive-statement") {
     const templatePath = option(args, "--template");
+    const elementsPath = option(args, "--elements");
     const designSystemPath = option(args, "--design-system");
     const componentsPath = option(args, "--components");
     const intentPath = option(args, "--intent");
     const outputPath = path.resolve(option(args, "--out"));
     const planPath = path.resolve(optionalOption(args, "--plan-out") ?? `${outputPath}.adaptive-slide-plan.json`);
     const qaPath = path.resolve(optionalOption(args, "--qa-out") ?? `${outputPath}.adaptive-qa.json`);
+    const outputTargets = [templatePath, outputPath, planPath, qaPath].map(physicalPath);
+    if (new Set(outputTargets).size !== outputTargets.length) throw new Error("ADAPTIVE_STATEMENT_OUTPUT_ALIAS: template, PPTX output, plan output, and QA output must be distinct physical paths.");
     const result = await renderAdaptiveStatement(
       templatePath,
       outputPath,
       readJson(designSystemPath) as Parameters<typeof renderAdaptiveStatement>[2],
       readJson(componentsPath) as Parameters<typeof renderAdaptiveStatement>[3],
+      readJson(elementsPath) as Parameters<typeof renderAdaptiveStatement>[4],
       readJson(intentPath),
     );
     fs.mkdirSync(path.dirname(planPath), { recursive: true });

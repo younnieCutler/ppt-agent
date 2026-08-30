@@ -25,6 +25,7 @@ async function statementFixture(): Promise<{ dir: string; template: string }> {
   slide.addText("SOURCE EXAMPLE HEADLINE", { x: 0.85, y: 0.6, w: 6, h: 0.7, fontFace: "Arial", fontSize: 28, bold: true, color: "1A1A1A" });
   slide.addText("SOURCE EXAMPLE BODY", { x: 0.85, y: 1.8, w: 7, h: 1.2, fontFace: "Arial", fontSize: 16, color: "333333" });
   slide.addText("SOURCE EXAMPLE PROOF", { x: 0.85, y: 3.4, w: 5, h: 0.4, fontFace: "Arial", fontSize: 14, color: "666666" });
+  slide.addImage({ data: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mNk+M/wHwAF/gL+QyaA5AAAAABJRU5ErkJggg==", x: 9, y: 1, w: 1, h: 1 });
   slide.addShape(pptx.ShapeType.line, { x: 0.85, y: 5.8, w: 8, h: 0, line: { color: "1A1A1A", width: 1 } });
   await pptx.writeFile({ fileName: template });
   return { dir, template };
@@ -44,6 +45,7 @@ describe("adaptive statement vertical slice", () => {
       const intentPath = path.join(source.dir, "statement-intent.json");
       const designSystemPath = path.join(source.dir, "template-design-system.json");
       const componentsPath = path.join(source.dir, "template-components.json");
+      const elementsPath = path.join(source.dir, "template-elements.json");
       fs.writeFileSync(intentPath, JSON.stringify({
         slideId: "S01",
         family: "stack",
@@ -55,8 +57,9 @@ describe("adaptive statement vertical slice", () => {
       }, null, 2));
       fs.writeFileSync(designSystemPath, JSON.stringify(designSystem, null, 2));
       fs.writeFileSync(componentsPath, JSON.stringify(components, null, 2));
+      fs.writeFileSync(elementsPath, JSON.stringify(elements, null, 2));
 
-      const result = JSON.parse(execFileSync(process.execPath, [tsxCli, path.join(repoRoot, "src/cli.ts"), "adaptive-statement", "--template", source.template, "--design-system", designSystemPath, "--components", componentsPath, "--intent", intentPath, "--out", outputPath, "--plan-out", planPath, "--qa-out", qaPath], { cwd: repoRoot, encoding: "utf8" }));
+      const result = JSON.parse(execFileSync(process.execPath, [tsxCli, path.join(repoRoot, "src/cli.ts"), "adaptive-statement", "--template", source.template, "--elements", elementsPath, "--design-system", designSystemPath, "--components", componentsPath, "--intent", intentPath, "--out", outputPath, "--plan-out", planPath, "--qa-out", qaPath], { cwd: repoRoot, encoding: "utf8" }));
       expect(result.status).toBe("pass");
       expect(fs.existsSync(outputPath)).toBe(true);
       expect(JSON.parse(fs.readFileSync(qaPath, "utf8"))).toMatchObject({ status: "pass", findings: [] });
