@@ -11,11 +11,19 @@ const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
 const EMU_PER_INCH = 914400;
-const BOUNDS_TOLERANCE_EMU = 1;
 
 type Rect = { x: number; y: number; w: number; h: number };
 type SlideState = { id: string; partPath: string; document: Document; relationships: Document };
 type ComponentHandle = { componentId: string; slideId: string; partPath: string; node?: Element; component?: TemplateComponent };
+
+function physicalPath(filePath: string): string {
+  const absolute = path.resolve(filePath);
+  try {
+    return fs.realpathSync(absolute);
+  } catch {
+    return path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+  }
+}
 
 export type ComponentTransformOperation =
   | { operation: "clone"; componentId: string; targetSlideId?: string; as?: string }
@@ -103,7 +111,7 @@ function slideTree(document: Document, partPath: string): Element {
 }
 
 function xfrmFor(node: Element, partPath: string): Element {
-  const xfrm = first(node, A_NS, "xfrm");
+  const xfrm = first(node, A_NS, "xfrm") ?? first(node, P_NS, "xfrm");
   if (!xfrm || !first(xfrm, A_NS, "off") || !first(xfrm, A_NS, "ext")) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component shape has no transformable bounds in ${partPath}.`);
   return xfrm;
 }
@@ -138,7 +146,13 @@ function ensureFiniteRect(rect: Rect, operation: string): void {
 
 function ensureInsideCanvas(rect: Rect, canvas: Rect, operation: string): void {
   ensureFiniteRect(rect, operation);
-  if (rect.x + rect.w > canvas.w + BOUNDS_TOLERANCE_EMU / EMU_PER_INCH || rect.y + rect.h > canvas.h + BOUNDS_TOLERANCE_EMU / EMU_PER_INCH) {
+  const x = Math.round(rect.x * EMU_PER_INCH);
+  const y = Math.round(rect.y * EMU_PER_INCH);
+  const w = Math.round(rect.w * EMU_PER_INCH);
+  const h = Math.round(rect.h * EMU_PER_INCH);
+  const canvasW = Math.round(canvas.w * EMU_PER_INCH);
+  const canvasH = Math.round(canvas.h * EMU_PER_INCH);
+  if (x < 0 || y < 0 || w < 0 || h < 0 || x + w > canvasW || y + h > canvasH) {
     throw new Error(`COMPONENT_TRANSFORM_OUT_OF_BOUNDS: ${operation} produced ${JSON.stringify(rect)} outside the ${canvas.w}x${canvas.h}in canvas.`);
   }
 }
@@ -271,9 +285,26 @@ function canvasFromPresentation(document: Document): Rect {
   return { x: 0, y: 0, w, h };
 }
 
+function slidesFromPresentation(presentationXml: string, relationshipsXml: string): Map<string, { id: string; sourceSlidePart: string }> {
+  const presentation = parseXml(presentationXml);
+  const relationships = parseXml(relationshipsXml);
+  const targets = new Map(all(relationships, REL_NS, "Relationship").map((relationship) => [relationship.getAttribute("Id") ?? "", relationship.getAttribute("Target") ?? ""]));
+  return new Map(all(presentation, P_NS, "sldId").map((slideId, index) => {
+    const target = targets.get(slideId.getAttributeNS(R_NS, "id") ?? "");
+    if (!target) throw new Error(`ADAPTIVE_COMPONENT_PROVENANCE_MISSING: presentation slide ${index + 1} has no relationship target.`);
+    const id = `S${String(index + 1).padStart(2, "0")}`;
+    return [id, { id, sourceSlidePart: packagePath("ppt", target) }] as const;
+  }));
+}
+
 function replaceText(node: Element, text: string, componentId: string): void {
   const runs = all(node, A_NS, "t");
   if (runs.length === 0) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' has no text runs.`);
+  const runStyles = new Set(all(node, A_NS, "r").map((run) => {
+    const properties = first(run, A_NS, "rPr");
+    return properties ? new XMLSerializer().serializeToString(properties as unknown as Parameters<XMLSerializer["serializeToString"]>[0]) : "";
+  }));
+  if (runStyles.size > 1) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' has mixed text-run styles; rich-text replacement is not lossless.`);
   runs[0].textContent = text;
   runs.slice(1).forEach((run) => { run.textContent = ""; });
 }
@@ -303,16 +334,19 @@ export async function transformTemplateComponents(
 ): Promise<ComponentTransformResult> {
   const sourcePath = path.resolve(templatePath);
   const resolvedOutput = path.resolve(outputPath);
-  if (sourcePath === resolvedOutput) throw new Error("COMPONENT_TRANSFORM_SOURCE_IMMUTABLE: outputPath must differ from the source template path.");
   if (!fs.existsSync(sourcePath)) throw new Error(`Template not found: ${sourcePath}`);
+  fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
+  if (physicalPath(sourcePath) === physicalPath(resolvedOutput)) throw new Error("COMPONENT_TRANSFORM_SOURCE_IMMUTABLE: outputPath must differ from the source template path.");
   const sourceDigest = crypto.createHash("sha256").update(fs.readFileSync(sourcePath)).digest("hex");
   if (sourceDigest !== artifact.sourceDigest) throw new Error(`COMPONENT_CATALOG_SOURCE_MISMATCH: catalog describes ${artifact.sourceDigest}, but template is ${sourceDigest}.`);
 
   const zip = await JSZip.loadAsync(fs.readFileSync(sourcePath));
   const presentationXml = await zip.file("ppt/presentation.xml")?.async("string");
   if (!presentationXml) throw new Error("Component transform requires ppt/presentation.xml.");
+  const presentationRelationshipsXml = await zip.file("ppt/_rels/presentation.xml.rels")?.async("string");
+  if (!presentationRelationshipsXml) throw new Error("Component transform requires ppt/_rels/presentation.xml.rels.");
   const canvas = canvasFromPresentation(parseXml(presentationXml));
-  const slidesById = new Map<string, { id: string; sourceSlidePart: string }>();
+  const slidesById = slidesFromPresentation(presentationXml, presentationRelationshipsXml);
   const states = new Map<string, SlideState>();
   const getState = async (slideId: string): Promise<SlideState> => {
     const cached = states.get(slideId);
@@ -328,8 +362,7 @@ export async function transformTemplateComponents(
   for (const component of artifact.components) {
     if (componentsById.has(component.id)) throw new Error(`ADAPTIVE_COMPONENT_PROVENANCE_MISSING: duplicate component id '${component.id}'.`);
     const existingSlide = slidesById.get(component.sourceSlideId);
-    if (existingSlide && existingSlide.sourceSlidePart !== component.sourceSlidePart) throw new Error(`ADAPTIVE_COMPONENT_PROVENANCE_MISSING: slide '${component.sourceSlideId}' has conflicting source parts in the component catalog.`);
-    slidesById.set(component.sourceSlideId, { id: component.sourceSlideId, sourceSlidePart: component.sourceSlidePart });
+    if (!existingSlide || existingSlide.sourceSlidePart !== component.sourceSlidePart) throw new Error(`ADAPTIVE_COMPONENT_PROVENANCE_MISSING: component '${component.id}' does not match the source presentation slide part.`);
     componentsById.set(component.id, component);
     const state = await getState(component.sourceSlideId);
     handles.set(component.id, { componentId: component.id, slideId: component.sourceSlideId, partPath: state.partPath, component });
@@ -405,9 +438,11 @@ export async function transformTemplateComponents(
       setRect(node, state.partPath, next);
     } else if (operation.operation === "replace_text") {
       replaceText(node, operation.text, operation.componentId);
-    } else {
+    } else if (operation.operation === "remove") {
       node.parentNode?.removeChild(node);
       handles.delete(operation.componentId);
+    } else {
+      throw new Error(`COMPONENT_TRANSFORM_INVALID: unsupported operation '${String((operation as { operation?: unknown }).operation)}'.`);
     }
   }
 
@@ -416,11 +451,14 @@ export async function transformTemplateComponents(
     zip.file(state.partPath, serializeXml(state.document));
     zip.file(relationshipPath(state.partPath), serializeXml(state.relationships));
   }
-  fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
   const temporary = `${resolvedOutput}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, await zip.generateAsync({ type: "nodebuffer" }));
-  fs.renameSync(temporary, resolvedOutput);
-  await pruneUnreachablePptxParts(resolvedOutput);
-  await validatePackageRelationships(resolvedOutput);
+  try {
+    fs.writeFileSync(temporary, await zip.generateAsync({ type: "nodebuffer" }));
+    await pruneUnreachablePptxParts(temporary);
+    await validatePackageRelationships(temporary);
+    fs.renameSync(temporary, resolvedOutput);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
   return { outputPath: resolvedOutput, appliedOperations: operations.length, createdComponents };
 }

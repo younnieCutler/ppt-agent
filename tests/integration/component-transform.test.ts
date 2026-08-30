@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
-import { DOMParser } from "@xmldom/xmldom";
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import pptxgen from "pptxgenjs";
 import { describe, expect, it } from "vitest";
 import { extractTemplateElements } from "../../src/template-analysis";
@@ -15,7 +15,7 @@ const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
 const EMU_PER_INCH = 914400;
 
-async function fixture(withTarget = false): Promise<{ path: string; dir: string }> {
+async function fixture(withTarget = false, withGraphicFrame = false, blankTarget = false): Promise<{ path: string; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-component-transform-"));
   const output = path.join(dir, "template.pptx");
   const pptx = new pptxgen();
@@ -25,9 +25,10 @@ async function fixture(withTarget = false): Promise<{ path: string; dir: string 
   slide.addText("SOURCE EXAMPLE", { x: 1, y: 1, w: 4, h: 0.6, fontFace: "Noto Sans KR", fontSize: 24, bold: true, color: "14181C", name: "Transform Title" });
   slide.addShape(pptx.ShapeType.line, { x: 1, y: 2, w: 4, h: 0, line: { color: "2F6FD0", width: 1 }, name: "Transform Divider" });
   slide.addImage({ data: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mNk+M/wHwAF/gL+QyaA5AAAAABJRU5ErkJggg==", x: 8, y: 1, w: 2, h: 2, name: "Transform Image" });
+  if (withGraphicFrame) slide.addTable([[{ text: "TABLE" }]], { x: 2, y: 4, w: 3, h: 1 });
   if (withTarget) {
     const target = pptx.addSlide();
-    target.addText("TARGET", { x: 1, y: 1, w: 3, h: 0.5, fontFace: "Noto Sans KR", fontSize: 18, color: "14181C" });
+    if (!blankTarget) target.addText("TARGET", { x: 1, y: 1, w: 3, h: 0.5, fontFace: "Noto Sans KR", fontSize: 18, color: "14181C" });
   }
   await pptx.writeFile({ fileName: output });
   return { path: output, dir };
@@ -141,6 +142,88 @@ describe("template component transformation engine", () => {
     }
   });
 
+  it("rejects an output path that aliases the source through a symlinked directory", async () => {
+    const source = await fixture();
+    const aliasDir = path.join(source.dir, "source-alias");
+    fs.symlinkSync(source.dir, aliasDir, "dir");
+    try {
+      const sourceHash = crypto.createHash("sha256").update(fs.readFileSync(source.path)).digest("hex");
+      const elements = await extractTemplateElements(source.path);
+      const titleElement = elements.slides[0].elements.find((element) => element.type === "text");
+      if (titleElement) titleElement.role = "title";
+      const components = compileTemplateComponents(elements);
+      const titleId = components.components.find((component) => component.kind === "title_block")?.id;
+      await expect(transformTemplateComponents(source.path, path.join(aliasDir, "template.pptx"), components, [{ operation: "replace_text", componentId: titleId!, text: "ALIAS SAFE" }])).rejects.toThrow(/COMPONENT_TRANSFORM_SOURCE_IMMUTABLE/);
+      expect(crypto.createHash("sha256").update(fs.readFileSync(source.path)).digest("hex")).toBe(sourceHash);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("transforms a graphic-frame component through its p:xfrm bounds", async () => {
+    const source = await fixture(false, true);
+    const output = path.join(source.dir, "graphic-frame.pptx");
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const components = compileTemplateComponents(elements);
+      const tableId = components.components.find((component) => component.assetProvenance.kind === "table")?.id;
+      expect(tableId).toBeDefined();
+      await transformTemplateComponents(source.path, output, components, [
+        { operation: "resize", componentId: tableId!, w: 4, h: 1.5 },
+        { operation: "move", componentId: tableId!, x: 4, y: 4.5 },
+      ]);
+      const zip = await JSZip.loadAsync(fs.readFileSync(output));
+      const slide = parse((await zip.file("ppt/slides/slide1.xml")?.async("string"))!);
+      const table = all(slide, P_NS, "graphicFrame").find((frame) => all(frame, A_NS, "tbl").length > 0);
+      const transform = first(table!, P_NS, "xfrm");
+      expect(first(transform!, A_NS, "off")?.getAttribute("x")).toBe(String(Math.round(4 * EMU_PER_INCH)));
+      expect(first(transform!, A_NS, "off")?.getAttribute("y")).toBe(String(Math.round(4.5 * EMU_PER_INCH)));
+      expect(first(transform!, A_NS, "ext")?.getAttribute("cx")).toBe(String(Math.round(4 * EMU_PER_INCH)));
+      expect(first(transform!, A_NS, "ext")?.getAttribute("cy")).toBe(String(Math.round(1.5 * EMU_PER_INCH)));
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unknown operation instead of treating it as remove", async () => {
+    const source = await fixture();
+    const output = path.join(source.dir, "unknown-operation.pptx");
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const components = compileTemplateComponents(elements);
+      const componentId = components.components.find((component) => component.kind === "media_frame")?.id;
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "bogus", componentId } as never])).rejects.toThrow(/COMPONENT_TRANSFORM_INVALID/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a lossy replacement when the source text has mixed run styles", async () => {
+    const source = await fixture();
+    const output = path.join(source.dir, "rich-text.pptx");
+    try {
+      const zip = await JSZip.loadAsync(fs.readFileSync(source.path));
+      const document = parse((await zip.file("ppt/slides/slide1.xml")?.async("string"))!);
+      const textShape = all(document, P_NS, "sp").find((shape) => all(shape, A_NS, "t").length > 0)!;
+      const originalRun = all(textShape, A_NS, "r")[0];
+      const secondRun = originalRun.cloneNode(true) as Element;
+      first(secondRun, A_NS, "t")!.textContent = "SECOND";
+      first(secondRun, A_NS, "srgbClr")!.setAttribute("val", "2F6FD0");
+      first(originalRun, A_NS, "t")!.textContent = "FIRST";
+      originalRun.parentNode?.appendChild(secondRun);
+      zip.file("ppt/slides/slide1.xml", new XMLSerializer().serializeToString(document as unknown as Parameters<XMLSerializer["serializeToString"]>[0]));
+      fs.writeFileSync(source.path, await zip.generateAsync({ type: "nodebuffer" }));
+      const components = compileTemplateComponents(await extractTemplateElements(source.path));
+      const textId = components.components.find((component) => component.kind === "body_block")?.id;
+      expect(textId).toBeDefined();
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId: textId!, text: "LOSSLESS ONLY" }])).rejects.toThrow(/mixed text-run styles/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
   it("remaps media relationships when cloning a component to another slide", async () => {
     const source = await fixture(true);
     const output = path.join(source.dir, "cross-slide.pptx");
@@ -159,6 +242,39 @@ describe("template component transformation engine", () => {
       const relationship = all(rels, REL_NS, "Relationship").find((candidate) => candidate.getAttribute("Id") === embed);
       expect(relationship?.getAttribute("Type")).toMatch(/\/image$/);
       expect(Object.keys(zip.files).some((name) => name.startsWith("ppt/media/") && !name.endsWith("/"))).toBe(true);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("can clone onto a blank target slide that has no catalog component", async () => {
+    const source = await fixture(true, false, true);
+    const output = path.join(source.dir, "blank-target.pptx");
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const components = compileTemplateComponents(elements);
+      const mediaId = components.components.find((component) => component.kind === "media_frame" && component.sourceSlideId === "S01")?.id;
+      expect(mediaId).toBeDefined();
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "clone", componentId: mediaId!, targetSlideId: "S02", as: "blank-target-image" }])).resolves.toMatchObject({ createdComponents: ["blank-target-image"] });
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not publish an output until package validation finishes", async () => {
+    const source = await fixture();
+    const output = path.join(source.dir, "validation-failure.pptx");
+    try {
+      const sourceZip = await JSZip.loadAsync(fs.readFileSync(source.path));
+      Object.keys(sourceZip.files).filter((name) => name.startsWith("ppt/media/") && !name.endsWith("/")).forEach((name) => sourceZip.remove(name));
+      fs.writeFileSync(source.path, await sourceZip.generateAsync({ type: "nodebuffer" }));
+      const elements = await extractTemplateElements(source.path);
+      const components = compileTemplateComponents(elements);
+      const textId = components.components.find((component) => component.kind === "body_block")?.id;
+      expect(textId).toBeDefined();
+      fs.writeFileSync(output, "existing output");
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId: textId!, text: "VALIDATION FAILURE" }])).rejects.toThrow(/COMPONENT_RELATION_MISSING/);
+      expect(fs.readFileSync(output, "utf8")).toBe("existing output");
     } finally {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }
