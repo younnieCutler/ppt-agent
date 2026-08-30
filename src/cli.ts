@@ -19,6 +19,7 @@ import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAga
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
 import { writeArtifactPair } from "./artifacts";
 import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
+import { compileTemplateDesignSystem } from "./template-design-system";
 import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, selectPatternsForSlides, type TemplatePattern } from "./template-patterns";
 import { checkTemplateFidelityUnproven, checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
 import { applyPatternSkeleton } from "./template";
@@ -379,17 +380,20 @@ async function main(): Promise<void> {
     const overrides = map?.version === 2 ? map.elementRoleOverrides : {};
     const elements = await extractTemplateElements(input, overrides);
     const grammar = compileTemplateGrammar(elements);
+    const designSystem = compileTemplateDesignSystem(elements, grammar);
     const patterns = compileTemplatePatterns(elements, grammar);
     fs.mkdirSync(out, { recursive: true });
     const outputPath = path.join(out, "template-elements.json");
     const grammarPath = path.join(out, "template-grammar.json");
+    const designSystemPath = path.join(out, "template-design-system.json");
     const patternsPath = path.join(out, "template-patterns.json");
     writeArtifactPair([
       { path: outputPath, contents: JSON.stringify(elements, null, 2) },
       { path: grammarPath, contents: JSON.stringify(grammar, null, 2) },
+      { path: designSystemPath, contents: JSON.stringify(designSystem, null, 2) },
       { path: patternsPath, contents: JSON.stringify(patterns, null, 2) },
     ]);
-    print({ status: "pass", outputPath, grammarPath, patternsPath, slides: elements.slides.length, strategy: elements.strategy, patterns: patterns.patterns.length, roleOverrides: Object.keys(overrides).length });
+    print({ status: "pass", outputPath, grammarPath, designSystemPath, patternsPath, slides: elements.slides.length, strategy: elements.strategy, patterns: patterns.patterns.length, roleOverrides: Object.keys(overrides).length });
     return;
   }
 

@@ -15,7 +15,7 @@ const EMU_PER_INCH = 914400;
 
 export const semanticRoles = ["title", "subtitle", "heading", "body", "caption", "eyebrow", "label", "key_message", "metric", "metric_label", "annotation", "step", "route", "source", "logo", "footer", "surface", "divider"] as const;
 export type SemanticRole = (typeof semanticRoles)[number];
-export type TemplateTextStyle = { family?: string; sizePt?: number; weight?: number; italic?: boolean; color?: string; lineHeightRatio?: number; alignment?: "left" | "center" | "right" };
+export type TemplateTextStyle = { family?: string; sizePt?: number; weight?: number; italic?: boolean; color?: string; lineHeightRatio?: number; alignment?: "left" | "center" | "right"; fill?: string; stroke?: string; strokeWidthPt?: number };
 // Which OOXML part physically contains a shape — PowerPoint's own inheritance model: a slide's own
 // body only ever holds what it overrides; anything else a rendered slide shows is inherited from
 // its layout or master, which live in their own parts. Ownership is therefore just "which part was
@@ -26,17 +26,18 @@ export type TemplateElement = { id: string; /** The raw PowerPoint shape name (`
 // Two independent versions: the extractor that reads a PPTX into elements, and the compiler that
 // turns elements into grammar. Either can change without the other, and a pack whose grammar was
 // compiled by an older compiler is stale even when its elements are current.
-// Bumped to "3": elements now also carry `name`, the raw PowerPoint shape name pptx-automizer
+// Bumped to "4": elements now also retain observed shape fill/stroke and slide backgrounds for the
+// Design System artifact, in addition to `name`, the raw PowerPoint shape name pptx-automizer
 // needs to select/modify/remove a specific shape when cloning a source slide skeleton (PR D) — an
 // artifact analyzed before this existed cannot drive that renderer path at all.
 // loadOrganizationPack already refuses a pack whose artifacts predate the current analyzer version,
 // so each bump *is* the migration path for any pack analyzed before the new field existed.
-export const TEMPLATE_ANALYZER_VERSION = "3";
+export const TEMPLATE_ANALYZER_VERSION = "4";
 export const TEMPLATE_GRAMMAR_COMPILER_VERSION = "1";
 /** Everything the analysis consumed, so a pack can prove its artifacts describe its current inputs. */
 export type AnalysisInputs = { templateDigest: string; roleOverridesDigest: string; analyzerVersion: string };
-export type TemplateLayoutInfo = { index: number; name: string; masterIndex: number; elements: TemplateElement[] };
-export type TemplateMasterInfo = { index: number; elements: TemplateElement[] };
+export type TemplateLayoutInfo = { index: number; name: string; masterIndex: number; elements: TemplateElement[]; background?: string };
+export type TemplateMasterInfo = { index: number; elements: TemplateElement[]; background?: string };
 // A template whose design lives in its masters/layouts (native_layout) needs no per-slide skeleton
 // reuse; one whose design lives in example slide bodies on a shared, mostly-empty layout
 // (source_slide_pattern — GAO is this shape) needs its actual slide bodies cloned, not redrawn;
@@ -47,7 +48,7 @@ export type TemplateElementsArtifact = {
   version: 1;
   source: { sha256: string; slideSize: { w: number; h: number } };
   analysisInputs: AnalysisInputs;
-  slides: Array<{ id: string; sourceSlidePart: string; nativeLayout: { index: number; name: string; masterIndex: number }; elements: TemplateElement[] }>;
+  slides: Array<{ id: string; sourceSlidePart: string; nativeLayout: { index: number; name: string; masterIndex: number }; elements: TemplateElement[]; background?: string }>;
   layouts: TemplateLayoutInfo[];
   masters: TemplateMasterInfo[];
   styles: Record<string, TemplateTextStyle>;
@@ -289,12 +290,37 @@ function transform(node: Element, parent: Transform): { rect: Rect; child: Trans
 
 function textStyle(node: Element): TemplateTextStyle | undefined {
   const run = first(node, A_NS, "rPr") ?? first(node, A_NS, "defRPr");
-  if (!run) return undefined;
-  const family = first(run, A_NS, "ea")?.getAttribute("typeface") ?? first(run, A_NS, "latin")?.getAttribute("typeface") ?? undefined;
-  const color = first(first(run, A_NS, "solidFill") ?? run, A_NS, "srgbClr")?.getAttribute("val")?.toUpperCase();
-  const size = Number(run.getAttribute("sz") ?? "0");
-  const weight = run.getAttribute("b") === "1" ? 700 : undefined;
-  return { family, sizePt: size ? size / 100 : undefined, weight, italic: run.getAttribute("i") === "1" || undefined, color };
+  const paragraph = first(node, A_NS, "pPr");
+  if (!run && !paragraph) return undefined;
+  const family = first(run ?? node, A_NS, "ea")?.getAttribute("typeface") ?? first(run ?? node, A_NS, "latin")?.getAttribute("typeface") ?? undefined;
+  const color = run ? first(first(run, A_NS, "solidFill") ?? run, A_NS, "srgbClr")?.getAttribute("val")?.toUpperCase() : undefined;
+  const size = Number(run?.getAttribute("sz") ?? "0");
+  const weight = run?.getAttribute("b") === "1" ? 700 : undefined;
+  const alignmentName = paragraph?.getAttribute("algn");
+  const alignment = alignmentName === "l" ? "left" : alignmentName === "ctr" ? "center" : alignmentName === "r" ? "right" : undefined;
+  const lineSpacing = first(paragraph ?? node, A_NS, "spcPct")?.getAttribute("val");
+  const lineHeightRatio = lineSpacing ? Number(lineSpacing) / 100000 : undefined;
+  return { family, sizePt: size ? size / 100 : undefined, weight, italic: run?.getAttribute("i") === "1" || undefined, color, alignment, lineHeightRatio };
+}
+
+function solidColor(node: Element | undefined): string | undefined {
+  if (!node) return undefined;
+  return first(node, A_NS, "srgbClr")?.getAttribute("val")?.toUpperCase() || undefined;
+}
+
+function elementStyle(node: Element, type: TemplateElement["type"]): TemplateTextStyle | undefined {
+  const text = type === "text" ? textStyle(node) : undefined;
+  const fill = type === "text" ? undefined : solidColor(first(node, A_NS, "solidFill"));
+  const line = type === "text" ? undefined : first(node, A_NS, "ln");
+  const stroke = solidColor(line);
+  const strokeWidth = Number(line?.getAttribute("w") ?? "0");
+  const style: TemplateTextStyle = {
+    ...text,
+    ...(fill ? { fill } : {}),
+    ...(stroke ? { stroke } : {}),
+    ...(strokeWidth > 0 ? { strokeWidthPt: strokeWidth / 12700 } : {}),
+  };
+  return Object.values(style).some((value) => value !== undefined) ? style : undefined;
 }
 
 function styleId(style: TemplateTextStyle, styles: Record<string, TemplateTextStyle>): string | undefined {
@@ -340,6 +366,12 @@ function children(node: Element): Element[] {
   return Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1) as Element[];
 }
 
+function backgroundColor(xml: string): string | undefined {
+  const root = parse(xml);
+  const background = first(root, P_NS, "bg");
+  return solidColor(background ? first(background, A_NS, "solidFill") : undefined);
+}
+
 function extractSlide(xml: string, slideId: string, styles: Record<string, TemplateTextStyle>, ownership: ElementOwnership): TemplateElement[] {
   const root = first(parse(xml), P_NS, "spTree");
   if (!root) return [];
@@ -355,7 +387,7 @@ function extractSlide(xml: string, slideId: string, styles: Record<string, Templ
       if (!type) continue;
       const bounds = transform(node, parent).rect;
       const name = first(node, P_NS, "cNvPr")?.getAttribute("name") ?? "";
-      elements.push({ id: elementId(node, slideId, elements.length), name, slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: type === "text" ? styleId(textStyle(node) ?? {}, styles) : undefined, features: feature(node) });
+      elements.push({ id: elementId(node, slideId, elements.length), name, slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: styleId(elementStyle(node, type) ?? {}, styles), features: feature(node) });
     }
   };
   walk(children(root), { x: 0, y: 0, sx: 1, sy: 1 });
@@ -434,7 +466,7 @@ export async function extractTemplateElements(pptxPath: string, overrides: Recor
     if (!masterCache.has(masterIndex)) {
       const masterXml = await zip.file(masterPartPath)?.async("string");
       const masterElements = masterXml ? extractSlide(masterXml, `master-${masterIndex}`, styles, "master-owned") : [];
-      masterCache.set(masterIndex, { index: masterIndex, elements: masterElements });
+      masterCache.set(masterIndex, { index: masterIndex, elements: masterElements, background: masterXml ? backgroundColor(masterXml) : undefined });
     }
     return masterIndex;
   }
@@ -450,7 +482,7 @@ export async function extractTemplateElements(pptxPath: string, overrides: Recor
       const layoutName = layoutXml ? (first(parse(layoutXml), P_NS, "cSld")?.getAttribute("name") ?? "") : "";
       const layoutElements = layoutXml ? extractSlide(layoutXml, `layout-${layoutIndex}`, styles, "layout-owned") : [];
       const masterIndex = await resolveMaster(layoutPartPath);
-      layoutCache.set(layoutIndex, { index: layoutIndex, name: layoutName, masterIndex, elements: layoutElements });
+      layoutCache.set(layoutIndex, { index: layoutIndex, name: layoutName, masterIndex, elements: layoutElements, background: layoutXml ? backgroundColor(layoutXml) : undefined });
     }
     const layout = layoutCache.get(layoutIndex)!;
     return { index: layout.index, name: layout.name, masterIndex: layout.masterIndex };
@@ -464,7 +496,7 @@ export async function extractTemplateElements(pptxPath: string, overrides: Recor
     if (!xml) throw new Error(`PPTX slide part is missing: ${target}`);
     const id = `S${String(index + 1).padStart(2, "0")}`;
     const nativeLayout = await resolveLayout(slidePartPath);
-    slides.push({ id, sourceSlidePart: slidePartPath, nativeLayout, elements: extractSlide(xml, id, styles, "slide-body-owned") });
+    slides.push({ id, sourceSlidePart: slidePartPath, nativeLayout, elements: extractSlide(xml, id, styles, "slide-body-owned"), background: backgroundColor(xml) });
   }
 
   const templateDigest = crypto.createHash("sha256").update(bytes).digest("hex");
