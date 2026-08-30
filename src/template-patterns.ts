@@ -94,6 +94,9 @@ export function assertTemplatePattern(pattern: TemplatePattern, canvas: { w: num
     ...Object.values(pattern.skeleton.canonicalBoundsByShape ?? {}),
   ];
   if (bounds.some((rect) => rect.x < 0 || rect.y < 0 || rect.w < 0 || rect.h < 0 || rect.x + rect.w > canvas.w || rect.y + rect.h > canvas.h)) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: pattern '${pattern.id}' contains non-canonical bounds outside p:sldSz.`);
+  const helperIds = new Set(pattern.skeleton.offCanvasHelperIds ?? []);
+  const missingPreservedBounds = pattern.skeleton.preservedShapeIds.filter((shapeId) => shapeId && !helperIds.has(shapeId) && !pattern.skeleton.canonicalBoundsByShape?.[shapeId]);
+  if (missingPreservedBounds.length > 0) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: pattern '${pattern.id}' has preserved shapes without canonical bounds: ${missingPreservedBounds.join(", ")}.`);
 }
 
 export function assertTemplatePatternsArtifact(artifact: TemplatePatternsArtifact, canvas: { w: number; h: number }): void {
@@ -175,6 +178,7 @@ function densityOf(elementCount: number): "low" | "medium" | "high" {
  */
 export function compileTemplatePatterns(elements: TemplateElementsArtifact, _grammar: TemplateGrammar): TemplatePatternsArtifact {
   if (elements.coordinateSpace || elements.analysisInputs?.analyzerVersion === "5") assertCanonicalTemplateElements(elements);
+  if (elements.coordinateSpace?.mode === "scaled" && elements.slides.some((slide) => slide.elements.some((element) => element.grouped && !element.offCanvasHelper))) throw new Error("ADAPTIVE_COMPONENT_UNSUPPORTED: grouped components cannot be canonicalized losslessly in a scaled source coordinate space.");
   const patterns: TemplatePattern[] = elements.slides.map((slide) => {
     const preservedShapeIds: string[] = [];
     const removableContentIds: string[] = [];

@@ -5,7 +5,7 @@ import JSZip from "jszip";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { pruneUnreachablePptxParts } from "./ooxml";
 import { TEMPLATE_COMPONENTS_COMPILER_VERSION, type TemplateComponent, type TemplateComponentsArtifact } from "./template-components";
-import { assertTemplateCoordinateSpace, canonicalizeRect } from "./template-analysis";
+import { assertTemplateCoordinateSpace, canonicalizeRect, extractTemplateElements } from "./template-analysis";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -216,6 +216,15 @@ function ensureInsideCanvas(rect: Rect, canvas: Rect, operation: string): void {
   }
 }
 
+function sameCoordinateSpace(left: NonNullable<TemplateComponentsArtifact["coordinateSpace"]>, right: NonNullable<TemplateComponentsArtifact["coordinateSpace"]>): boolean {
+  return left.mode === right.mode && [left.canvas.w, left.canvas.h, left.sourceFrame.x, left.sourceFrame.y, left.sourceFrame.w, left.sourceFrame.h, left.scale.x, left.scale.y]
+    .every((value, index) => Math.abs(value - [right.canvas.w, right.canvas.h, right.sourceFrame.x, right.sourceFrame.y, right.sourceFrame.w, right.sourceFrame.h, right.scale.x, right.scale.y][index]) <= 2 / EMU_PER_INCH);
+}
+
+function sameBounds(left: Rect, right: { x: number; y: number; w: number; h: number }): boolean {
+  return [left.x, left.y, left.w, left.h].every((value, index) => Math.abs(value - [right.x, right.y, right.w, right.h][index]) <= 2 / EMU_PER_INCH);
+}
+
 function nextShapeId(document: Document | Element): number {
   return Math.max(1, ...all(document, P_NS, "cNvPr").map((node) => Number(node.getAttribute("id") ?? 0)).filter(Number.isFinite)) + 1;
 }
@@ -413,6 +422,15 @@ export async function transformTemplateComponents(
   if (!presentationRelationshipsXml) throw new Error("Component transform requires ppt/_rels/presentation.xml.rels.");
   const canvas = canvasFromPresentation(parseXml(presentationXml));
   assertTemplateCoordinateSpace(artifact.coordinateSpace, canvas);
+  const sourceElements = await extractTemplateElements(sourcePath);
+  if (!sameCoordinateSpace(artifact.coordinateSpace, sourceElements.coordinateSpace!)) throw new Error("COMPONENT_CATALOG_STALE: component catalog coordinate space does not match the current template extraction. Re-run template-analyze.");
+  for (const component of artifact.components) {
+    const actualSlide = sourceElements.slides.find((slide) => slide.id === component.sourceSlideId);
+    const shapeName = component.shapeNames.length === 1 ? component.shapeNames[0] : undefined;
+    const actual = actualSlide && shapeName ? actualSlide.elements.filter((element) => element.name === shapeName) : [];
+    const matched = actual.length === 1 ? actual[0] : undefined;
+    if (!matched || !sameBounds(component.sourceBounds, matched.bounds) || Boolean(component.offCanvasHelper) !== Boolean(matched.offCanvasHelper) || Boolean(component.grouped) !== Boolean(matched.grouped)) throw new Error(`COMPONENT_CATALOG_STALE: component '${component.id}' does not match the current template extraction. Re-run template-analyze.`);
+  }
   const slidesById = slidesFromPresentation(presentationXml, presentationRelationshipsXml);
   const states = new Map<string, SlideState>();
   const getState = async (slideId: string): Promise<SlideState> => {

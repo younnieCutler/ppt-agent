@@ -5,7 +5,7 @@ import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
 import pptxgen from "pptxgenjs";
 import { describe, expect, it } from "vitest";
-import { compileTemplateGrammar, extractTemplateElements } from "../../src/template-analysis";
+import { canonicalizeTemplateElements, compileTemplateGrammar, extractTemplateElements } from "../../src/template-analysis";
 import { compileTemplateComponents } from "../../src/template-components";
 import { compileTemplatePatterns } from "../../src/template-patterns";
 import { transformTemplateComponents } from "../../src/template-transform";
@@ -144,6 +144,24 @@ describe("template coordinate-space canonicalization", () => {
       const { coordinateSpace: _coordinateSpace, ...withoutCoordinateSpace } = components;
       await expect(transformTemplateComponents(source.path, output, withoutCoordinateSpace as typeof components, [])).rejects.toThrow(/TEMPLATE_COORDINATE_SPACE_METADATA_MISSING/);
       expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not infer a global source frame from a one-slide overflow", async () => {
+    const source = await coordinateMismatchFixture();
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const firstSlide = elements.slides[0];
+      const text = firstSlide.elements.find((element) => element.type === "text")!;
+      const rawText = { ...text, bounds: { ...text.bounds, x: text.bounds.x / elements.coordinateSpace!.scale.x, w: text.bounds.w / elements.coordinateSpace!.scale.x } };
+      const inconsistent = {
+        ...elements,
+        coordinateSpace: undefined,
+        slides: elements.slides.map((slide, index) => index === 0 ? { ...slide, elements: slide.elements.map((element) => element.id === text.id ? rawText : element) } : slide),
+      };
+      expect(() => canonicalizeTemplateElements(inconsistent)).toThrow(/cross-slide source-frame evidence/);
     } finally {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }

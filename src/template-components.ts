@@ -155,6 +155,7 @@ function repeatGroupsForSlide(slideComponents: TemplateComponent[]): Array<{ com
 
 export function compileTemplateComponents(artifact: TemplateElementsArtifact): TemplateComponentsArtifact {
   if (artifact.coordinateSpace || artifact.analysisInputs?.analyzerVersion === "5") assertCanonicalTemplateElements(artifact);
+  if (artifact.coordinateSpace?.mode === "scaled" && artifact.slides.some((slide) => slide.elements.some((element) => element.grouped && !element.offCanvasHelper))) throw new Error("ADAPTIVE_COMPONENT_UNSUPPORTED: grouped components cannot be canonicalized losslessly in a scaled source coordinate space.");
   const components = artifact.slides.flatMap((slide) => slide.elements.map((element) => componentFor(element, slide.sourceSlidePart, artifact.source.slideSize)));
   const repeatGroups: TemplateRepeatGroup[] = [];
   for (const slide of artifact.slides) {

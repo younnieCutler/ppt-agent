@@ -4,6 +4,7 @@ import Automizer, { ModifyShapeHelper, ModifyTextHelper } from "pptx-automizer";
 import JSZip from "jszip";
 import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
 import { pruneUnreachablePptxParts } from "./ooxml";
+import { extractTemplateElements } from "./template-analysis";
 import { assertTemplatePattern, resolveSlotAssignments, type TemplatePattern } from "./template-patterns";
 import type { TemplateStrategy } from "./template-analysis";
 
@@ -168,6 +169,28 @@ async function templateCanvas(templatePath: string): Promise<{ w: number; h: num
   return { w, h };
 }
 
+function sameBounds(left: { x: number; y: number; w: number; h: number }, right: { x: number; y: number; w: number; h: number }): boolean {
+  return [left.x, left.y, left.w, left.h].every((value, index) => Math.abs(value - [right.x, right.y, right.w, right.h][index]) <= 2 / EMU_PER_INCH);
+}
+
+function sameCoordinateSpace(left: NonNullable<TemplatePattern["coordinateSpace"]>, right: NonNullable<TemplatePattern["coordinateSpace"]>): boolean {
+  return left.mode === right.mode && [left.canvas.w, left.canvas.h, left.sourceFrame.x, left.sourceFrame.y, left.sourceFrame.w, left.sourceFrame.h, left.scale.x, left.scale.y]
+    .every((value, index) => Math.abs(value - [right.canvas.w, right.canvas.h, right.sourceFrame.x, right.sourceFrame.y, right.sourceFrame.w, right.sourceFrame.h, right.scale.x, right.scale.y][index]) <= 2 / EMU_PER_INCH);
+}
+
+async function assertPatternsMatchTemplate(templatePath: string, patterns: TemplatePattern[], canvas: { w: number; h: number }): Promise<void> {
+  const actual = await extractTemplateElements(templatePath);
+  for (const pattern of patterns) {
+    assertTemplatePattern(pattern, canvas);
+    const actualSlide = actual.slides.find((slide) => slide.id === pattern.sourceSlideId);
+    if (!actualSlide || actualSlide.sourceSlidePart !== pattern.skeleton.sourceSlidePart || !sameCoordinateSpace(pattern.coordinateSpace!, actual.coordinateSpace!)) throw new Error(`TEMPLATE_PATTERN_STALE: pattern '${pattern.id}' does not match the current template coordinate extraction. Re-run template-analyze.`);
+    for (const [shapeId, bounds] of Object.entries(pattern.skeleton.canonicalBoundsByShape ?? {})) {
+      const matches = actualSlide.elements.filter((element) => element.name === shapeId && !element.grouped);
+      if (matches.length !== 1 || !sameBounds(bounds, matches[0].bounds)) throw new Error(`TEMPLATE_PATTERN_STALE: pattern '${pattern.id}' has stale canonical bounds for '${shapeId}'. Re-run template-analyze.`);
+    }
+  }
+}
+
 /**
  * For source_slide_pattern / hybrid strategies: clones each pattern-bound slide directly out of
  * the template's own package (never the renderer's scratch deck), removes its example content,
@@ -200,9 +223,7 @@ export async function applyPatternSkeleton(
   const outputDir = path.dirname(resolvedOutput);
   fs.mkdirSync(outputDir, { recursive: true });
   const canvas = await templateCanvas(templatePath);
-  for (const pattern of resolvedPatterns.values()) {
-    assertTemplatePattern(pattern, canvas);
-  }
+  await assertPatternsMatchTemplate(templatePath, [...resolvedPatterns.values()], canvas);
   const staging = fs.mkdtempSync(path.join(outputDir, `.ppt-agent-pattern-${process.pid}-`));
   const rootName = "org-source.pptx";
   const generatedName = "semantic-render.pptx";

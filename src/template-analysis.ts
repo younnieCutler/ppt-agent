@@ -189,6 +189,12 @@ function isAdaptiveCoordinateElement(element: TemplateElement): boolean {
   return element.role !== "unknown" && !STRUCTURAL_COORDINATE_ROLES.has(element.role);
 }
 
+function explicitlyNamesHelper(element: Element): boolean {
+  const metadata = first(element, P_NS, "cNvPr");
+  const label = `${metadata?.getAttribute("name") ?? ""} ${metadata?.getAttribute("descr") ?? ""}`.toLowerCase();
+  return metadata?.getAttribute("hidden") === "1" || /off[-_ ]?canvas|helper/.test(label);
+}
+
 function outsideCanvas(bounds: TemplateElement["bounds"], canvas: { w: number; h: number }, epsilon = CANVAS_PRECISION_EPSILON): boolean {
   return bounds.x < -epsilon || bounds.y < -epsilon || bounds.x + bounds.w > canvas.w + epsilon || bounds.y + bounds.h > canvas.h + epsilon;
 }
@@ -202,17 +208,18 @@ function insideSourceFrame(bounds: TemplateElement["bounds"], space: TemplateCoo
 
 type CoordinateObservation = { slideId: string; value: number };
 
-function repeatedOverflow(values: CoordinateObservation[], limit: number, direction: "min" | "max"): number | undefined {
+function repeatedOverflow(values: CoordinateObservation[], limit: number, direction: "min" | "max", activeSlideIds: Set<string>): number | undefined {
   const overflowing = values.filter(({ value }) => direction === "max" ? value > limit + COORDINATE_EPSILON : value < limit - COORDINATE_EPSILON);
   if (overflowing.length < 2 || new Set(overflowing.map(({ slideId }) => slideId)).size < 2) return undefined;
   const edge = direction === "max" ? Math.max(...overflowing.map(({ value }) => value)) : Math.min(...overflowing.map(({ value }) => value));
   const tolerance = Math.max(COORDINATE_EPSILON, Math.abs(edge) * 0.002);
-  return overflowing.filter(({ value }) => Math.abs(value - edge) <= tolerance).length >= 2 ? edge : undefined;
+  const matching = overflowing.filter(({ value }) => Math.abs(value - edge) <= tolerance);
+  return matching.length >= 2 && new Set(matching.map(({ slideId }) => slideId)).size === activeSlideIds.size ? edge : undefined;
 }
 
-function axisCoordinateFrame(lefts: CoordinateObservation[], rights: CoordinateObservation[], limit: number, axis: "x" | "y"): { start: number; size: number; scale: number } {
-  const maxOverflow = repeatedOverflow(rights, limit, "max");
-  const minOverflow = repeatedOverflow(lefts, 0, "min");
+function axisCoordinateFrame(lefts: CoordinateObservation[], rights: CoordinateObservation[], limit: number, axis: "x" | "y", activeSlideIds: Set<string>): { start: number; size: number; scale: number } {
+  const maxOverflow = repeatedOverflow(rights, limit, "max", activeSlideIds);
+  const minOverflow = repeatedOverflow(lefts, 0, "min", activeSlideIds);
   if (rights.some(({ value }) => value > limit + COORDINATE_EPSILON) && maxOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds exceed the p:sldSz canvas without repeated cross-slide source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
   if (lefts.some(({ value }) => value < -COORDINATE_EPSILON) && minOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds start before the p:sldSz canvas without repeated cross-slide source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
   const start = minOverflow ?? 0;
@@ -224,8 +231,9 @@ function axisCoordinateFrame(lefts: CoordinateObservation[], rights: CoordinateO
 
 function inferCoordinateSpace(slides: TemplateElementsArtifact["slides"], canvas: { w: number; h: number }): TemplateCoordinateSpace {
   const adaptive = slides.flatMap((slide) => slide.elements.filter(isAdaptiveCoordinateElement).filter((element) => [element.bounds.x, element.bounds.y, element.bounds.w, element.bounds.h].every(Number.isFinite)).map((element) => ({ slideId: slide.id, element })));
-  const xFrame = axisCoordinateFrame(adaptive.map(({ slideId, element }) => ({ slideId, value: element.bounds.x })), adaptive.map(({ slideId, element }) => ({ slideId, value: element.bounds.x + element.bounds.w })), canvas.w, "x");
-  const yFrame = axisCoordinateFrame(adaptive.map(({ slideId, element }) => ({ slideId, value: element.bounds.y })), adaptive.map(({ slideId, element }) => ({ slideId, value: element.bounds.y + element.bounds.h })), canvas.h, "y");
+  const activeSlideIds = new Set(adaptive.map(({ slideId }) => slideId));
+  const xFrame = axisCoordinateFrame(adaptive.map(({ slideId, element }) => ({ slideId, value: element.bounds.x })), adaptive.map(({ slideId, element }) => ({ slideId, value: element.bounds.x + element.bounds.w })), canvas.w, "x", activeSlideIds);
+  const yFrame = axisCoordinateFrame(adaptive.map(({ slideId, element }) => ({ slideId, value: element.bounds.y })), adaptive.map(({ slideId, element }) => ({ slideId, value: element.bounds.y + element.bounds.h })), canvas.h, "y", activeSlideIds);
   const mode = xFrame.scale === 1 && yFrame.scale === 1 && xFrame.start === 0 && yFrame.start === 0 ? "identity" : "scaled";
   return { mode, canvas, sourceFrame: { x: xFrame.start, y: yFrame.start, w: xFrame.size, h: yFrame.size }, scale: { x: xFrame.scale, y: yFrame.scale } };
 }
@@ -252,6 +260,7 @@ export function canonicalizeTemplateElements(artifact: TemplateElementsArtifact)
   }
   const coordinateSpace = inferCoordinateSpace(artifact.slides, artifact.source.slideSize);
   const normalize = (element: TemplateElement): TemplateElement => {
+    if (element.offCanvasHelper && !isAdaptiveCoordinateElement(element)) return element;
     if (isAdaptiveCoordinateElement(element)) {
       const bounds = canonicalizeRect(element.bounds, coordinateSpace);
       if (outsideCanvas(bounds as TemplateElement["bounds"], artifact.source.slideSize)) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: adaptive element '${element.id}' remains outside the p:sldSz canvas after source-frame normalization.`);
@@ -291,7 +300,7 @@ export function assertCanonicalTemplateElements(artifact: TemplateElementsArtifa
     ...artifact.layouts.flatMap((layout) => layout.elements),
     ...artifact.masters.flatMap((master) => master.elements),
   ];
-  const invalid = elements.find((element) => !element.offCanvasHelper && outsideCanvas(element.bounds, artifact.source.slideSize));
+  const invalid = elements.find((element) => (element.offCanvasHelper && isAdaptiveCoordinateElement(element)) || (!element.offCanvasHelper && outsideCanvas(element.bounds, artifact.source.slideSize)));
   if (invalid) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: element '${invalid.id}' is outside the canonical p:sldSz canvas.`);
 }
 
@@ -500,7 +509,7 @@ function extractSlide(xml: string, slideId: string, styles: Record<string, Templ
       if (!type) continue;
       const bounds = transform(node, parent).rect;
       const name = first(node, P_NS, "cNvPr")?.getAttribute("name") ?? "";
-      elements.push({ id: elementId(node, slideId, elements.length), name, slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: styleId(elementStyle(node, type) ?? {}, styles), ...(grouped ? { grouped: true } : {}), features: feature(node) });
+      elements.push({ id: elementId(node, slideId, elements.length), name, slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: styleId(elementStyle(node, type) ?? {}, styles), ...(explicitlyNamesHelper(node) ? { offCanvasHelper: true } : {}), ...(grouped ? { grouped: true } : {}), features: feature(node) });
     }
   };
   walk(children(root), { x: 0, y: 0, sx: 1, sy: 1 });
