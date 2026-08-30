@@ -48,30 +48,45 @@ function optionalString(value: unknown, field: string, index: number): void {
   if (value !== undefined && (typeof value !== "string" || value.length === 0)) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} requires '${field}' to be a non-empty string when provided.`);
 }
 
+function assertOperationFields(input: Record<string, unknown>, allowed: readonly string[], index: number): void {
+  const unsupported = Object.keys(input).find((field) => !allowed.includes(field));
+  if (unsupported) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} has unsupported field '${unsupported}'.`);
+}
+
 function validateOperation(input: unknown, index: number): ComponentTransformOperation {
   if (!isRecord(input) || typeof input.operation !== "string" || typeof input.componentId !== "string" || input.componentId.length === 0) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} requires an operation name and semantic componentId.`);
-  optionalString(input.targetSlideId, "targetSlideId", index);
-  optionalString(input.as, "as", index);
   switch (input.operation) {
     case "clone":
-    case "remove":
+      assertOperationFields(input, ["operation", "componentId", "targetSlideId", "as"], index);
+      optionalString(input.targetSlideId, "targetSlideId", index);
+      optionalString(input.as, "as", index);
       return input as ComponentTransformOperation;
     case "move":
+      assertOperationFields(input, ["operation", "componentId", "x", "y"], index);
       finiteField(input.x, "x", index);
       finiteField(input.y, "y", index);
       return input as ComponentTransformOperation;
     case "resize":
+      assertOperationFields(input, ["operation", "componentId", "w", "h"], index);
       finiteField(input.w, "w", index);
       finiteField(input.h, "h", index);
       return input as ComponentTransformOperation;
     case "repeat":
+      assertOperationFields(input, ["operation", "componentId", "count", "offset", "targetSlideId", "as"], index);
+      optionalString(input.targetSlideId, "targetSlideId", index);
+      optionalString(input.as, "as", index);
       if (typeof input.count !== "number" || !Number.isInteger(input.count) || input.count < 1 || input.count > 100) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} repeat count must be an integer from 1 to 100.`);
       if (!isRecord(input.offset)) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} repeat requires an offset object.`);
       finiteField(input.offset.x, "offset.x", index);
       finiteField(input.offset.y, "offset.y", index);
       return input as ComponentTransformOperation;
     case "replace_text":
+      assertOperationFields(input, ["operation", "componentId", "text"], index);
       if (typeof input.text !== "string") throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} replace_text requires a string text.`);
+      if (/[\r\n]/.test(input.text)) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} replace_text text must not contain a newline.`);
+      return input as ComponentTransformOperation;
+    case "remove":
+      assertOperationFields(input, ["operation", "componentId"], index);
       return input as ComponentTransformOperation;
     default:
       throw new Error(`COMPONENT_TRANSFORM_INVALID: unsupported operation '${input.operation}'.`);
@@ -344,14 +359,10 @@ function replaceText(node: Element, text: string, componentId: string): void {
   if (node.namespaceURI !== P_NS || node.localName !== "sp") throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' is not a text shape.`);
   const runs = all(node, A_NS, "t");
   if (runs.length === 0) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' has no text runs.`);
+  if (runs.some((run) => /[\r\n]/.test(run.textContent ?? ""))) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' has rich or multiline text that cannot be replaced losslessly.`);
   if (all(node, A_NS, "r").length !== 1 || all(node, A_NS, "p").length !== 1 || all(node, A_NS, "fld").length > 0 || all(node, A_NS, "br").length > 0 || all(node, A_NS, "tab").length > 0) {
     throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' has rich or multiline text that cannot be replaced losslessly.`);
   }
-  const runStyles = new Set(all(node, A_NS, "r").map((run) => {
-    const properties = first(run, A_NS, "rPr");
-    return properties ? new XMLSerializer().serializeToString(properties as unknown as Parameters<XMLSerializer["serializeToString"]>[0]) : "";
-  }));
-  if (runStyles.size > 1) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${componentId}' has mixed text-run styles; rich-text replacement is not lossless.`);
   runs[0].textContent = text;
   runs.slice(1).forEach((run) => { run.textContent = ""; });
 }

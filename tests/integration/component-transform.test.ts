@@ -239,6 +239,54 @@ describe("template component transformation engine", () => {
     }
   });
 
+  it("rejects operation fields that do not belong to the selected operation", async () => {
+    const source = await fixture();
+    const output = path.join(source.dir, "invalid-fields.pptx");
+    try {
+      const components = compileTemplateComponents(await extractTemplateElements(source.path));
+      const componentId = components.components.find((component) => component.kind === "body_block")?.id;
+      expect(componentId).toBeDefined();
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "move", componentId, x: 1, y: 1, targetSlideId: "S99" } as never])).rejects.toThrow(/unsupported field.*targetSlideId/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a newline in replacement text", async () => {
+    const source = await fixture();
+    const output = path.join(source.dir, "newline-replacement.pptx");
+    try {
+      const components = compileTemplateComponents(await extractTemplateElements(source.path));
+      const componentId = components.components.find((component) => component.kind === "body_block")?.id;
+      expect(componentId).toBeDefined();
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId, text: "LINE\nBREAK" }])).rejects.toThrow(/newline/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a source text run containing a literal newline", async () => {
+    const source = await fixture();
+    const output = path.join(source.dir, "newline-source.pptx");
+    try {
+      const zip = await JSZip.loadAsync(fs.readFileSync(source.path));
+      const document = parse((await zip.file("ppt/slides/slide1.xml")?.async("string"))!);
+      const textShape = all(document, P_NS, "sp").find((shape) => all(shape, A_NS, "t").length > 0)!;
+      first(textShape, A_NS, "t")!.textContent = "SOURCE\nEXAMPLE";
+      zip.file("ppt/slides/slide1.xml", new XMLSerializer().serializeToString(document as unknown as Parameters<XMLSerializer["serializeToString"]>[0]));
+      fs.writeFileSync(source.path, await zip.generateAsync({ type: "nodebuffer" }));
+      const components = compileTemplateComponents(await extractTemplateElements(source.path));
+      const componentId = components.components.find((component) => component.kind === "body_block")?.id;
+      expect(componentId).toBeDefined();
+      await expect(transformTemplateComponents(source.path, output, components, [{ operation: "replace_text", componentId, text: "SAFE" }])).rejects.toThrow(/rich or multiline text/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects text replacement on a non-text graphic component", async () => {
     const source = await fixture(false, true);
     const output = path.join(source.dir, "table-text.pptx");
