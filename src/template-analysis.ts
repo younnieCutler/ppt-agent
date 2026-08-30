@@ -186,7 +186,7 @@ const CANVAS_PRECISION_EPSILON = 2 / EMU_PER_INCH;
 const STRUCTURAL_COORDINATE_ROLES = new Set<SemanticRole | "unknown">(["footer", "logo", "surface", "divider"]);
 
 function isAdaptiveCoordinateElement(element: TemplateElement): boolean {
-  return element.role !== "unknown" && !STRUCTURAL_COORDINATE_ROLES.has(element.role);
+  return !element.offCanvasHelper && element.role !== "unknown" && !STRUCTURAL_COORDINATE_ROLES.has(element.role);
 }
 
 function explicitlyNamesHelper(element: Element): boolean {
@@ -214,7 +214,10 @@ function repeatedOverflow(values: CoordinateObservation[], limit: number, direct
   const edge = direction === "max" ? Math.max(...overflowing.map(({ value }) => value)) : Math.min(...overflowing.map(({ value }) => value));
   const tolerance = Math.max(COORDINATE_EPSILON, Math.abs(edge) * 0.002);
   const matching = overflowing.filter(({ value }) => Math.abs(value - edge) <= tolerance);
-  return matching.length >= 2 && new Set(matching.map(({ slideId }) => slideId)).size === activeSlideIds.size ? edge : undefined;
+  // A source-frame transform is accepted only when every adaptive element shares the same
+  // overflowing edge across every active slide. A single oversized/bleeding box is not enough
+  // evidence to rescale a template, so ambiguous cases fail instead of being silently changed.
+  return matching.length === values.length && new Set(matching.map(({ slideId }) => slideId)).size === activeSlideIds.size ? edge : undefined;
 }
 
 function axisCoordinateFrame(lefts: CoordinateObservation[], rights: CoordinateObservation[], limit: number, axis: "x" | "y", activeSlideIds: Set<string>): { start: number; size: number; scale: number } {

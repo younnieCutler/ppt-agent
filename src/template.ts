@@ -184,6 +184,10 @@ async function assertPatternsMatchTemplate(templatePath: string, patterns: Templ
     assertTemplatePattern(pattern, canvas);
     const actualSlide = actual.slides.find((slide) => slide.id === pattern.sourceSlideId);
     if (!actualSlide || actualSlide.sourceSlidePart !== pattern.skeleton.sourceSlidePart || !sameCoordinateSpace(pattern.coordinateSpace!, actual.coordinateSpace!)) throw new Error(`TEMPLATE_PATTERN_STALE: pattern '${pattern.id}' does not match the current template coordinate extraction. Re-run template-analyze.`);
+    for (const shapeId of pattern.skeleton.offCanvasHelperIds ?? []) {
+      const matches = actualSlide.elements.filter((element) => element.name === shapeId);
+      if (matches.length !== 1 || !matches[0].offCanvasHelper) throw new Error(`TEMPLATE_PATTERN_STALE: pattern '${pattern.id}' has an unverified off-canvas helper '${shapeId}'. Re-run template-analyze.`);
+    }
     for (const [shapeId, bounds] of Object.entries(pattern.skeleton.canonicalBoundsByShape ?? {})) {
       const matches = actualSlide.elements.filter((element) => element.name === shapeId && !element.grouped);
       if (matches.length !== 1 || !sameBounds(bounds, matches[0].bounds)) throw new Error(`TEMPLATE_PATTERN_STALE: pattern '${pattern.id}' has stale canonical bounds for '${shapeId}'. Re-run template-analyze.`);
