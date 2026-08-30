@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { slideFunctionSchema, type CompositionFamily, type DeckPlan, type SlideFunction, type SlideSpec } from "./schema";
 import type { CompositionPlan } from "./planning";
-import { elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
+import { elementsDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
 import { displayWidth } from "./typography";
 
 /**
@@ -63,13 +63,16 @@ export type TemplatePattern = {
     replaceableSlots: TemplateSlot[];
     /** Raw PowerPoint shape names the renderer removes via pptx-automizer's name-selector API. */
     removableContentIds: string[];
+    /** Legitimate design-time helper shapes; kept separate from adaptive content and untouched. */
+    offCanvasHelperIds?: string[];
     /** Keyed by our own element id (template-analysis.ts), not shape name — bookkeeping only. */
     assetClasses: Record<string, AssetClass>;
   };
+  coordinateSpace?: TemplateCoordinateSpace;
   visualSignature: { backgroundTreatment: string; compositionFamily: CompositionFamily; surfaceUsage: string; density: "low" | "medium" | "high" };
 };
 
-export const TEMPLATE_PATTERN_COMPILER_VERSION = "1";
+export const TEMPLATE_PATTERN_COMPILER_VERSION = "2";
 
 export type TemplatePatternsArtifact = {
   version: 1;
@@ -78,6 +81,7 @@ export type TemplatePatternsArtifact = {
   /** Binds this artifact to the exact elements artifact it was compiled from — same discipline as
    * TemplateGrammar.elementsDigest, so a patterns file compiled from stale elements is detectable. */
   elementsDigest: string;
+  coordinateSpace?: TemplateCoordinateSpace;
   patterns: TemplatePattern[];
 };
 
@@ -156,6 +160,7 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
   const patterns: TemplatePattern[] = elements.slides.map((slide) => {
     const preservedShapeIds: string[] = [];
     const removableContentIds: string[] = [];
+    const offCanvasHelperIds: string[] = [];
     const replaceableSlots: TemplateSlot[] = [];
     const elementAssetClasses: Record<string, AssetClass> = {};
     const nameOccurrences = new Map<string, number>();
@@ -163,6 +168,10 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
     const hasReliableName = (element: TemplateElement) => Boolean(element.name) && nameOccurrences.get(element.name) === 1;
 
     for (const element of slide.elements) {
+      if (element.offCanvasHelper) {
+        if (element.name) offCanvasHelperIds.push(element.name);
+        continue;
+      }
       const reliablyNamed = hasReliableName(element);
       const assetClass = reliablyNamed ? classifyTemplateAsset(element, elements.source.slideSize) : "unknown";
       elementAssetClasses[element.id] = assetClass;
@@ -201,9 +210,10 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
       });
     }
 
-    const dividerCount = slide.elements.filter((element) => element.role === "divider").length;
-    const hasMetric = slide.elements.some((element) => element.role === "metric");
-    const density = densityOf(slide.elements.length);
+    const adaptiveElements = slide.elements.filter((element) => !element.offCanvasHelper);
+    const dividerCount = adaptiveElements.filter((element) => element.role === "divider").length;
+    const hasMetric = adaptiveElements.some((element) => element.role === "metric");
+    const density = densityOf(adaptiveElements.length);
     const compositionFamily: CompositionFamily = hasMetric ? "single_focal" : dividerCount ? "split_panels" : "column_zones";
 
     return {
@@ -211,9 +221,10 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
       sourceSlideId: slide.id,
       sourceSlideNumber: Number(slide.id.replace(/^S/, "")),
       suitableFor: { functions: [], compositions: [], densities: [density], confidence: 0.5 },
-      skeleton: { sourceSlidePart: slide.sourceSlidePart, preservedShapeIds: [...new Set(preservedShapeIds)], replaceableSlots, removableContentIds: [...new Set(removableContentIds)], assetClasses: elementAssetClasses },
+      skeleton: { sourceSlidePart: slide.sourceSlidePart, preservedShapeIds: [...new Set(preservedShapeIds)], replaceableSlots, removableContentIds: [...new Set(removableContentIds)], ...(offCanvasHelperIds.length > 0 ? { offCanvasHelperIds: [...new Set(offCanvasHelperIds)] } : {}), assetClasses: elementAssetClasses },
+      coordinateSpace: elements.coordinateSpace,
       visualSignature: {
-        backgroundTreatment: slide.elements.some((element) => element.role === "surface") ? "surface" : "plain",
+        backgroundTreatment: adaptiveElements.some((element) => element.role === "surface") ? "surface" : "plain",
         compositionFamily,
         surfaceUsage: dividerCount ? "sparse" : "none",
         density,
@@ -226,6 +237,7 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
     compilerVersion: TEMPLATE_PATTERN_COMPILER_VERSION,
     sourceDigest: elements.source.sha256,
     elementsDigest: elementsDigest(elements),
+    coordinateSpace: elements.coordinateSpace,
     patterns,
   };
 }

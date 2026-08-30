@@ -1,6 +1,6 @@
 import { compileTemplateGrammar, elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar, type TemplateTextStyle } from "./template-analysis";
 
-export const TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION = "1";
+export const TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION = "2";
 
 type Rect = { x: number; y: number; w: number; h: number };
 type NumericVocabulary = { values: number[]; min?: number; max?: number };
@@ -50,7 +50,7 @@ function elementsOf(artifact: TemplateElementsArtifact): TemplateElement[] {
     ...artifact.slides.flatMap((slide) => slide.elements),
     ...artifact.layouts.flatMap((layout) => layout.elements),
     ...artifact.masters.flatMap((master) => master.elements),
-  ];
+  ].filter((element) => !element.offCanvasHelper);
 }
 
 function styleOf(element: TemplateElement, artifact: TemplateElementsArtifact): TemplateTextStyle | undefined {

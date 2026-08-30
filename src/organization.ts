@@ -79,6 +79,7 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
     // of its input disagree, which is what a hand-edited artifact looks like.
     if (inputs.templateDigest !== templateDigest) throw new Error("Organization Pack v2 template-elements.json records a different template digest than template.pptx. Re-run `template-analyze`.");
     if (inputs.analyzerVersion !== TEMPLATE_ANALYZER_VERSION) throw new Error(`Organization Pack v2 template-elements.json was produced by analyzer version ${inputs.analyzerVersion}; this build is ${TEMPLATE_ANALYZER_VERSION}. Re-run \`template-analyze\`.`);
+    if (!elements.coordinateSpace || Math.abs(elements.coordinateSpace.canvas.w - elements.source.slideSize.w) > 0.001 || Math.abs(elements.coordinateSpace.canvas.h - elements.source.slideSize.h) > 0.001) throw new Error("Organization Pack v2 template-elements.json is missing canonical coordinate-space metadata. Re-run `template-analyze`.");
     if (grammar.compilerVersion !== TEMPLATE_GRAMMAR_COMPILER_VERSION) throw new Error(`Organization Pack v2 template-grammar.json was compiled by grammar compiler version ${grammar.compilerVersion}; this build is ${TEMPLATE_GRAMMAR_COMPILER_VERSION}. Re-run \`template-analyze\`.`);
     if (grammar.elementsDigest !== elementsDigest(elements)) throw new Error("Organization Pack v2 template-grammar.json was not compiled from this template-elements.json. Re-run `template-analyze`.");
     templateGrammar = grammar;

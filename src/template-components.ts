@@ -1,6 +1,6 @@
-import { elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
+import { elementsDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
 
-export const TEMPLATE_COMPONENTS_COMPILER_VERSION = "1";
+export const TEMPLATE_COMPONENTS_COMPILER_VERSION = "2";
 export const componentKinds = ["title_block", "subtitle_block", "body_block", "label", "metric", "surface", "card", "divider", "key_message", "list_item", "footer", "logo", "media_frame", "unknown"] as const;
 export type ComponentKind = (typeof componentKinds)[number];
 export type ResizeFeasibility = "safe" | "unsafe" | "unknown";
@@ -19,6 +19,7 @@ export type TemplateComponent = {
   semanticRoles: SemanticRole[];
   styleRefs: string[];
   assetProvenance: { kind: "none" | "image" | "chart" | "table"; sourceSlidePart: string; sourceElementId: string; ref?: string };
+  offCanvasHelper?: boolean;
   repeatability: { signal: "single" | "repeatable"; count: number; groupId?: string; index?: number };
   resizeFeasibility: { horizontal: ResizeFeasibility; vertical: ResizeFeasibility };
   observedSiblings: string[];
@@ -41,6 +42,7 @@ export type TemplateComponentsArtifact = {
   sourceDigest: string;
   elementsDigest: string;
   canvas: { w: number; h: number };
+  coordinateSpace?: TemplateCoordinateSpace;
   components: TemplateComponent[];
   repeatGroups: TemplateRepeatGroup[];
 };
@@ -94,6 +96,7 @@ function componentFor(element: TemplateElement, slidePart: string, canvas: { w: 
     semanticRoles: element.role === "unknown" ? [] : [element.role],
     styleRefs: element.styleRef ? [element.styleRef] : [],
     assetProvenance: { kind: assetKind, sourceSlidePart: slidePart, sourceElementId: element.id, ...(element.assetRef ? { ref: element.assetRef } : {}) },
+    ...(element.offCanvasHelper ? { offCanvasHelper: true } : {}),
     repeatability: { signal: "single", count: 1 },
     resizeFeasibility: resizeFor(element),
     observedSiblings: [],
@@ -134,8 +137,9 @@ function repeatGroupsForSlide(slideComponents: TemplateComponent[]): Array<{ com
   const groups: Array<{ components: TemplateComponent[]; pattern: Exclude<RepeatPattern, "single"> }> = [];
   const seen = new Set<string>();
   for (const candidate of slideComponents) {
-    if (seen.has(candidate.id) || candidate.kind === "unknown" || candidate.styleRefs.length === 0) continue;
+    if (seen.has(candidate.id) || candidate.offCanvasHelper || candidate.kind === "unknown" || candidate.styleRefs.length === 0) continue;
     const members = slideComponents.filter((other) => !seen.has(other.id)
+      && !other.offCanvasHelper
       && other.kind === candidate.kind
       && other.styleRefs.join("|") === candidate.styleRefs.join("|")
       && similarSize(other.sourceBounds, candidate.sourceBounds));
@@ -170,6 +174,7 @@ export function compileTemplateComponents(artifact: TemplateElementsArtifact): T
     sourceDigest: artifact.source.sha256,
     elementsDigest: elementsDigest(artifact),
     canvas: artifact.source.slideSize,
+    coordinateSpace: artifact.coordinateSpace,
     components,
     repeatGroups,
   };

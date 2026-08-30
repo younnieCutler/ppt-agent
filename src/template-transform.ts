@@ -5,6 +5,7 @@ import JSZip from "jszip";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { pruneUnreachablePptxParts } from "./ooxml";
 import type { TemplateComponent, TemplateComponentsArtifact } from "./template-components";
+import { canonicalizeRect } from "./template-analysis";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -450,6 +451,20 @@ export async function transformTemplateComponents(
     handles.set(alias, { componentId: alias, slideId: state.id, partPath: state.partPath, node });
     createdComponents.push(alias);
   };
+  if (artifact.coordinateSpace?.mode === "scaled") {
+    for (const component of artifact.components) {
+      if (component.offCanvasHelper) continue;
+      const handle = resolve(component.id);
+      const state = states.get(handle.slideId)!;
+      const node = findHandleNode(handle);
+      const rawBounds = rectFor(node, state.partPath);
+      const alreadyCanonical = ["x", "y", "w", "h"].every((key) => Math.abs(rawBounds[key as keyof Rect] - component.sourceBounds[key as keyof Rect]) <= 0.00001);
+      if (alreadyCanonical) continue;
+      const canonicalBounds = canonicalizeRect(rawBounds, artifact.coordinateSpace);
+      ensureInsideCanvas(canonicalBounds, canvas, `canonicalize '${component.id}'`);
+      setRect(node, state.partPath, canonicalBounds);
+    }
+  }
   const clone = async (handle: ComponentHandle, targetSlideId: string, alias?: string, offset?: { x: number; y: number }): Promise<string> => {
     const sourceState = await getState(handle.slideId);
     const targetState = await getState(targetSlideId);

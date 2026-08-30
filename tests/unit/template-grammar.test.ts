@@ -52,31 +52,28 @@ function expectInsideCanvas(geometry: ReturnType<typeof geometryFor>): void {
 }
 
 describe("template grammar geometry", () => {
-  it("keeps the content frame inside the slide when the template parks shapes off canvas", () => {
-    // Observed on a real organization template: a group whose extents reach past the canvas made
-    // contentFrame 16.67in wide on a 13.33in slide, and outerMargins went negative.
-    const geometry = geometryFor([{ x: 0.85, y: 0.7, w: 6, h: 0.5 }, { x: -2, y: -1, w: 18.5, h: 9 }]);
-    expectInsideCanvas(geometry);
-    expect(geometry.contentFrame).toMatchObject({ x: 0, y: 0, w: elements.source.slideSize.w, h: elements.source.slideSize.h });
+  it("rejects non-canonical adaptive bounds instead of hiding them with a clamp", () => {
+    expect(() => geometryFor([{ x: 0.85, y: 0.7, w: 6, h: 0.5 }, { x: -2, y: -1, w: 18.5, h: 9 }])).toThrow(/TEMPLATE_COORDINATE_SPACE_MISMATCH/);
   });
 
-  it("collapses the frame instead of inverting it when everything sits off one edge", () => {
+  it("keeps the content frame inside the slide when an off-canvas helper is explicitly separated", () => {
+    const geometry = compileTemplateGrammar({
+      ...elements,
+      slides: [{ id: "S01", elements: [
+        ...elements.slides[0].elements,
+        { id: "S01-helper-1", slideId: "S01", type: "shape", role: "unknown", confidence: 0, bounds: { x: -2, y: -1, w: 18.5, h: 9 }, zIndex: 3, offCanvasHelper: true, features: {} },
+      ] }],
+    } as unknown as typeof elements).geometry;
+    expectInsideCanvas(geometry);
+    expect(geometry.contentFrame).toMatchObject({ x: 0.85, y: 0.7, w: 8, h: 2.3 });
+  });
+
+  it("rejects every unclassified off-canvas edge rather than collapsing it", () => {
     const { w: slideW, h: slideH } = elements.source.slideSize;
-    const right = geometryFor([{ x: slideW + 2, y: 1, w: 3, h: 1 }]);
-    expectInsideCanvas(right);
-    expect(right.contentFrame).toMatchObject({ x: slideW, w: 0 });
-
-    const below = geometryFor([{ x: 1, y: slideH + 2, w: 3, h: 1 }]);
-    expectInsideCanvas(below);
-    expect(below.contentFrame).toMatchObject({ y: slideH, h: 0 });
-
-    const leftOfSlide = geometryFor([{ x: -6, y: 1, w: 3, h: 1 }]);
-    expectInsideCanvas(leftOfSlide);
-    expect(leftOfSlide.contentFrame).toMatchObject({ x: 0, w: 0 });
-
-    const aboveSlide = geometryFor([{ x: 1, y: -6, w: 3, h: 1 }]);
-    expectInsideCanvas(aboveSlide);
-    expect(aboveSlide.contentFrame).toMatchObject({ y: 0, h: 0 });
+    expect(() => geometryFor([{ x: slideW + 2, y: 1, w: 3, h: 1 }])).toThrow(/TEMPLATE_COORDINATE_SPACE_MISMATCH/);
+    expect(() => geometryFor([{ x: 1, y: slideH + 2, w: 3, h: 1 }])).toThrow(/TEMPLATE_COORDINATE_SPACE_MISMATCH/);
+    expect(() => geometryFor([{ x: -6, y: 1, w: 3, h: 1 }])).toThrow(/TEMPLATE_COORDINATE_SPACE_MISMATCH/);
+    expect(() => geometryFor([{ x: 1, y: -6, w: 3, h: 1 }])).toThrow(/TEMPLATE_COORDINATE_SPACE_MISMATCH/);
   });
 
   it("leaves an ordinary in-canvas template untouched", () => {

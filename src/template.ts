@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import Automizer, { ModifyTextHelper } from "pptx-automizer";
+import Automizer, { ModifyShapeHelper, ModifyTextHelper } from "pptx-automizer";
 import JSZip from "jszip";
 import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
 import { pruneUnreachablePptxParts } from "./ooxml";
@@ -154,6 +154,10 @@ async function validateTemplateContract(templatePath: string, map: TemplateMap, 
 
 export type RenderManifestEntry = { slideId: string; mode: string };
 
+function positionInEmu(bounds: { x: number; y: number; w: number; h: number }): { x: number; y: number; w: number; h: number } {
+  return { x: Math.round(bounds.x * EMU_PER_INCH), y: Math.round(bounds.y * EMU_PER_INCH), w: Math.round(bounds.w * EMU_PER_INCH), h: Math.round(bounds.h * EMU_PER_INCH) };
+}
+
 /**
  * For source_slide_pattern / hybrid strategies: clones each pattern-bound slide directly out of
  * the template's own package (never the renderer's scratch deck), removes its example content,
@@ -215,7 +219,7 @@ export async function applyPatternSkeleton(
         // of content, not the same fully-joined string duplicated into all K of them.
         for (const assignment of resolveSlotAssignments(pattern, slideSpec)) {
           if ("remove" in assignment) slide.removeElement(assignment.slot.shapeId);
-          else slide.modifyElement(assignment.slot.shapeId, [ModifyTextHelper.setText(assignment.text)]);
+          else slide.modifyElement(assignment.slot.shapeId, [ModifyShapeHelper.setPosition(positionInEmu(assignment.slot.bounds)), ModifyTextHelper.setText(assignment.text)]);
         }
       });
       manifest.push({ slideId: slideSpec.id, mode: `pattern:${pattern.id}` });
