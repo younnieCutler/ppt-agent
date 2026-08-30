@@ -31,6 +31,7 @@ describe("template-analyze on a raw .pptx with no organization pack", () => {
       expect(fs.existsSync(path.join(runScopedTemplateDir, "template-elements.json"))).toBe(true);
       expect(fs.existsSync(path.join(runScopedTemplateDir, "template-grammar.json"))).toBe(true);
       expect(fs.existsSync(path.join(runScopedTemplateDir, "template-design-system.json"))).toBe(true);
+      expect(fs.existsSync(path.join(runScopedTemplateDir, "template-components.json"))).toBe(true);
       // Nothing was written back next to the user's own template file.
       expect(fs.readdirSync(path.dirname(templatePath))).toEqual(["template.pptx"]);
     } finally {
