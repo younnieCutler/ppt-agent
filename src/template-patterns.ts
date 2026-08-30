@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { slideFunctionSchema, type CompositionFamily, type DeckPlan, type SlideFunction, type SlideSpec } from "./schema";
 import type { CompositionPlan } from "./planning";
-import { assertCanonicalTemplateElements, assertTemplateCoordinateSpace, elementsDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
+import { assertCanonicalTemplateElements, assertTemplateCoordinateSpace, elementsDigest, TEMPLATE_ANALYZER_VERSION, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
 import { displayWidth } from "./typography";
 
 /**
@@ -108,7 +108,7 @@ export function assertTemplatePatternsArtifact(artifact: TemplatePatternsArtifac
 // The canonical "preserve" roles (PRD §10): background, logo/watermark, dividers, surfaces/bands,
 // footer structure. Everything else that carries a classified role is content a template author put
 // in as an example, which is exactly why cloning a skeleton needs sanitization at all.
-const preservedRoles = new Set<SemanticRole>(["divider", "surface", "footer"]);
+const preservedRoles = new Set<SemanticRole>(["divider", "surface", "footer", "logo"]);
 
 // A short numeral run (a "02" section-index label, a step number, a column number) is exactly the
 // kind of thing a template author's example content puts on top of otherwise-structural chrome —
@@ -177,7 +177,7 @@ function densityOf(elementCount: number): "low" | "medium" | "high" {
  * montage, never a coordinate or a shapeId.
  */
 export function compileTemplatePatterns(elements: TemplateElementsArtifact, _grammar: TemplateGrammar): TemplatePatternsArtifact {
-  if (elements.coordinateSpace || elements.analysisInputs?.analyzerVersion === "5") assertCanonicalTemplateElements(elements);
+  if (elements.coordinateSpace || elements.analysisInputs?.analyzerVersion === TEMPLATE_ANALYZER_VERSION) assertCanonicalTemplateElements(elements);
   if (elements.coordinateSpace?.mode === "scaled" && elements.slides.some((slide) => slide.elements.some((element) => element.grouped && !element.offCanvasHelper))) throw new Error("ADAPTIVE_COMPONENT_UNSUPPORTED: grouped components cannot be canonicalized losslessly in a scaled source coordinate space.");
   const patterns: TemplatePattern[] = elements.slides.map((slide) => {
     const preservedShapeIds: string[] = [];
@@ -196,6 +196,7 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
         continue;
       }
       if (elements.coordinateSpace?.mode === "scaled" && element.grouped && element.role !== "unknown" && !["footer", "logo", "surface", "divider"].includes(element.role)) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: grouped adaptive element '${element.id}' cannot be canonicalized losslessly.`);
+      if (!element.name && element.role !== "unknown" && !preservedRoles.has(element.role as SemanticRole)) throw new Error(`ADAPTIVE_COMPONENT_PROVENANCE_MISSING: adaptive element '${element.id}' has no PowerPoint shape name.`);
       const reliablyNamed = hasReliableName(element);
       const assetClass = reliablyNamed ? classifyTemplateAsset(element, elements.source.slideSize) : "unknown";
       elementAssetClasses[element.id] = assetClass;

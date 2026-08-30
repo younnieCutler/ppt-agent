@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Automizer, { ModifyShapeHelper, ModifyTextHelper } from "pptx-automizer";
 import JSZip from "jszip";
+import { DOMParser } from "@xmldom/xmldom";
 import { bindingForLayout, CANVAS_DIMENSIONS, type TemplateMap } from "./organization";
 import { pruneUnreachablePptxParts } from "./ooxml";
 import { extractTemplateElements } from "./template-analysis";
@@ -9,6 +10,7 @@ import { assertTemplatePattern, resolveSlotAssignments, type TemplatePattern } f
 import type { TemplateStrategy } from "./template-analysis";
 
 const EMU_PER_INCH = 914400;
+const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const CANVAS_SIZE_TOLERANCE_IN = 0.05;
 import type { ResolvedPresentationStyle } from "./style";
 import type { SlideSpec } from "./schema";
@@ -162,9 +164,10 @@ function positionInEmu(bounds: { x: number; y: number; w: number; h: number }): 
 async function templateCanvas(templatePath: string): Promise<{ w: number; h: number }> {
   const zip = await JSZip.loadAsync(fs.readFileSync(templatePath));
   const xml = await zip.file("ppt/presentation.xml")?.async("string");
-  const tag = xml?.match(/<p:sldSz\b[^>]*>/)?.[0];
-  const w = Number(tag?.match(/\bcx="(\d+)"/)?.[1] ?? 0) / EMU_PER_INCH;
-  const h = Number(tag?.match(/\bcy="(\d+)"/)?.[1] ?? 0) / EMU_PER_INCH;
+  const document = xml ? new DOMParser().parseFromString(xml, "text/xml") as unknown as Document : undefined;
+  const size = document ? Array.from(document.getElementsByTagNameNS(P_NS, "sldSz"))[0] as Element | undefined : undefined;
+  const w = Number(size?.getAttribute("cx") ?? 0) / EMU_PER_INCH;
+  const h = Number(size?.getAttribute("cy") ?? 0) / EMU_PER_INCH;
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) throw new Error(`TEMPLATE_COORDINATE_SPACE_INVALID: template has no usable p:sldSz canvas: ${templatePath}`);
   return { w, h };
 }

@@ -189,6 +189,34 @@ describe("template coordinate-space canonicalization", () => {
     }
   });
 
+  it("keeps an explicitly marked helper out of inference even when a role override calls it body", async () => {
+    const source = await coordinateMismatchFixture();
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const overriddenHelper = {
+        ...elements,
+        slides: elements.slides.map((slide) => ({ ...slide, elements: slide.elements.map((element) => element.offCanvasHelper ? { ...element, role: "body" as const } : element) })),
+      };
+      expect(() => compileTemplateGrammar(overriddenHelper)).not.toThrow();
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unnamed adaptive shapes instead of leaving raw source geometry in a pattern", async () => {
+    const source = await coordinateMismatchFixture();
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const unnamed = {
+        ...elements,
+        slides: elements.slides.map((slide, index) => index === 0 ? { ...slide, elements: slide.elements.map((element) => element.type === "text" ? { ...element, name: "" } : element) } : slide),
+      };
+      expect(() => compileTemplatePatterns(unnamed, compileTemplateGrammar(unnamed))).toThrow(/has no PowerPoint shape name/);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects duplicate structural selectors before scaled output can retain raw bounds", async () => {
     const source = await coordinateMismatchFixture();
     try {

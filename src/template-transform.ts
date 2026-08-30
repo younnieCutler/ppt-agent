@@ -433,7 +433,7 @@ export async function transformTemplateComponents(
     const shapeName = component.shapeNames.length === 1 ? component.shapeNames[0] : undefined;
     const actual = actualSlide && shapeName ? actualSlide.elements.filter((element) => element.name === shapeName) : [];
     const matched = actual.length === 1 ? actual[0] : undefined;
-    if (!matched || component.elementIds.length !== 1 || component.elementIds[0] !== matched.id || component.sourceSlidePart !== actualSlide?.sourceSlidePart || !sameBounds(component.sourceBounds, matched.bounds) || Boolean(component.offCanvasHelper) !== Boolean(matched.offCanvasHelper) || Boolean(component.grouped) !== Boolean(matched.grouped)) throw new Error(`COMPONENT_CATALOG_STALE: component '${component.id}' does not match the current template extraction. Re-run template-analyze.`);
+    if (!matched || component.id !== `component-${matched.id}` || component.elementIds.length !== 1 || component.elementIds[0] !== matched.id || component.shapeNames[0] !== matched.name || component.sourceSlidePart !== actualSlide?.sourceSlidePart || !sameBounds(component.sourceBounds, matched.bounds) || Boolean(component.offCanvasHelper) !== Boolean(matched.offCanvasHelper) || Boolean(component.grouped) !== Boolean(matched.grouped)) throw new Error(`COMPONENT_CATALOG_STALE: component '${component.id}' does not match the current template extraction. Re-run template-analyze.`);
   }
   const slidesById = slidesFromPresentation(presentationXml, presentationRelationshipsXml);
   const states = new Map<string, SlideState>();
