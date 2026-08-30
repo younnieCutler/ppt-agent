@@ -4,7 +4,7 @@ import path from "node:path";
 import JSZip from "jszip";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { pruneUnreachablePptxParts } from "./ooxml";
-import { TEMPLATE_COMPONENTS_COMPILER_VERSION, type TemplateComponent, type TemplateComponentsArtifact } from "./template-components";
+import { compileTemplateComponents, TEMPLATE_COMPONENTS_COMPILER_VERSION, type TemplateComponent, type TemplateComponentsArtifact } from "./template-components";
 import { assertTemplateCoordinateSpace, canonicalizeRect, extractTemplateElements } from "./template-analysis";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -424,6 +424,9 @@ export async function transformTemplateComponents(
   assertTemplateCoordinateSpace(artifact.coordinateSpace, canvas);
   const sourceElements = await extractTemplateElements(sourcePath);
   if (!sameCoordinateSpace(artifact.coordinateSpace, sourceElements.coordinateSpace!)) throw new Error("COMPONENT_CATALOG_STALE: component catalog coordinate space does not match the current template extraction. Re-run template-analyze.");
+  const expectedComponentIds = new Set(compileTemplateComponents(sourceElements).components.map((component) => component.id));
+  const actualComponentIds = new Set(artifact.components.map((component) => component.id));
+  if (expectedComponentIds.size !== actualComponentIds.size || [...expectedComponentIds].some((componentId) => !actualComponentIds.has(componentId))) throw new Error("COMPONENT_CATALOG_STALE: component catalog is missing or has extra components for the current template extraction. Re-run template-analyze.");
   for (const component of artifact.components) {
     const actualSlide = sourceElements.slides.find((slide) => slide.id === component.sourceSlideId);
     const shapeName = component.shapeNames.length === 1 ? component.shapeNames[0] : undefined;

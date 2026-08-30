@@ -166,4 +166,35 @@ describe("template coordinate-space canonicalization", () => {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }
   });
+
+  it("rejects duplicate structural selectors before scaled output can retain raw bounds", async () => {
+    const source = await coordinateMismatchFixture();
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const duplicated = {
+        ...elements,
+        slides: elements.slides.map((slide, index) => index === 0 ? {
+          ...slide,
+          elements: slide.elements.map((element) => ["surface", "divider"].includes(element.role) ? { ...element, name: "duplicate structural selector" } : element),
+        } : slide),
+      };
+      expect(() => compileTemplateComponents(duplicated)).toThrow(/duplicate non-helper shape names/);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a component catalog with missing entries before publishing output", async () => {
+    const source = await coordinateMismatchFixture();
+    const output = path.join(source.dir, "missing-component.pptx");
+    try {
+      const elements = await extractTemplateElements(source.path);
+      const components = compileTemplateComponents(elements);
+      const tampered = { ...components, components: components.components.slice(1) };
+      await expect(transformTemplateComponents(source.path, output, tampered, [])).rejects.toThrow(/missing or has extra components/);
+      expect(fs.existsSync(output)).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
 });

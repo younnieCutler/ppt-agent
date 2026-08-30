@@ -199,6 +199,7 @@ export function compileTemplatePatterns(elements: TemplateElementsArtifact, _gra
       const reliablyNamed = hasReliableName(element);
       const assetClass = reliablyNamed ? classifyTemplateAsset(element, elements.source.slideSize) : "unknown";
       elementAssetClasses[element.id] = assetClass;
+      if (elements.coordinateSpace?.mode === "scaled" && !reliablyNamed && preservedRoles.has(element.role as SemanticRole) && !isBareNumericLabel(element)) throw new Error(`TEMPLATE_COORDINATE_SPACE_UNSUPPORTED: structural shape '${element.name || element.id}' has an ambiguous selector in a scaled source coordinate space.`);
       if (assetClass === "structural" || assetClass === "brand") {
         preservedShapeIds.push(element.name);
         if (!element.grouped && element.name) canonicalBoundsByShape[element.name] = element.bounds;
