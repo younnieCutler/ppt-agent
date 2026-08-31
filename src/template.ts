@@ -224,14 +224,14 @@ export async function applyPatternSkeleton(
   outputPath: string,
   slides: SlideSpec[],
   resolvedPatterns: Map<string, TemplatePattern>,
-  options: { strategy?: TemplateStrategy; adaptiveSourceSlides?: Map<string, { sourceSlideNumber: number; family: string }> } = {},
+  options: { strategy?: TemplateStrategy; adaptiveSourceSlides?: Map<string, { sourceSlideNumber: number; family: string }>; patternValidationTemplatePath?: string } = {},
 ): Promise<RenderManifestEntry[]> {
   if (!fs.existsSync(templatePath)) throw new Error(`Template not found: ${templatePath}`);
   const resolvedOutput = path.resolve(outputPath);
   const outputDir = path.dirname(resolvedOutput);
   fs.mkdirSync(outputDir, { recursive: true });
   const canvas = await templateCanvas(templatePath);
-  await assertPatternsMatchTemplate(templatePath, [...resolvedPatterns.values()], canvas);
+  await assertPatternsMatchTemplate(options.patternValidationTemplatePath ?? templatePath, [...resolvedPatterns.values()], canvas);
   const staging = fs.mkdtempSync(path.join(outputDir, `.ppt-agent-pattern-${process.pid}-`));
   const rootName = "org-source.pptx";
   const generatedName = "semantic-render.pptx";
@@ -262,16 +262,20 @@ export async function applyPatternSkeleton(
         return;
       }
       presentation.addSlide("org-source", pattern.sourceSlideNumber, (slide) => {
-        if (pattern.coordinateSpace?.mode === "scaled") {
-          for (const [shapeId, bounds] of Object.entries(pattern.skeleton.canonicalBoundsByShape ?? {})) slide.modifyElement(shapeId, [ModifyShapeHelper.setPosition(positionInEmu(bounds))]);
-        }
-        for (const name of pattern.skeleton.removableContentIds) slide.removeElement(name);
         // resolveSlotAssignments groups slots by binding and maps item i onto sibling slot i — a
         // pattern with K shapes bound to the same field (a real GAO shape) gets K different pieces
         // of content, not the same fully-joined string duplicated into all K of them.
-        for (const assignment of resolveSlotAssignments(pattern, slideSpec)) {
-          if ("remove" in assignment) slide.removeElement(assignment.slot.shapeId);
-          else slide.modifyElement(assignment.slot.shapeId, [ModifyTextHelper.setText(assignment.text)]);
+        const assignments = resolveSlotAssignments(pattern, slideSpec);
+        const removals = new Set([
+          ...pattern.skeleton.removableContentIds,
+          ...assignments.filter((assignment): assignment is Extract<typeof assignment, { remove: true }> => "remove" in assignment).map((assignment) => assignment.slot.shapeId),
+        ]);
+        removals.forEach((name) => slide.removeElement(name));
+        if (pattern.coordinateSpace?.mode === "scaled") {
+          for (const [shapeId, bounds] of Object.entries(pattern.skeleton.canonicalBoundsByShape ?? {})) if (!removals.has(shapeId)) slide.modifyElement(shapeId, [ModifyShapeHelper.setPosition(positionInEmu(bounds))]);
+        }
+        for (const assignment of assignments) {
+          if (!("remove" in assignment)) slide.modifyElement(assignment.slot.shapeId, [ModifyTextHelper.setText(assignment.text)]);
         }
       });
       manifest.push({ slideId: slideSpec.id, mode: `pattern:${pattern.id}` });

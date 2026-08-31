@@ -51,7 +51,10 @@ function exactCloneReasons(slide: SlideSpec, candidate: AdaptiveSelectionCandida
   if (pattern.suitableFor.functions.length > 0 && !pattern.suitableFor.functions.includes(layoutFunction(slide) as typeof pattern.suitableFor.functions[number])) reason("composition_compatibility", `Pattern '${pattern.id}' is not labeled for '${layoutFunction(slide)}'.`);
   if (pattern.suitableFor.compositions.length > 0 && !pattern.suitableFor.compositions.includes(slide.composition)) reason("composition_compatibility", `Pattern '${pattern.id}' is not labeled for composition '${slide.composition}'.`);
   const mediaNeeded = (slide.layout === "title" && Boolean(slide.content.imagePath)) || (slide.layout === "evidence" && Boolean(slide.content.assetPath));
-  if (mediaNeeded && !components.components.some((component) => component.kind === "media_frame" && !component.offCanvasHelper && !component.grouped)) reason("media_capability", `Pattern '${pattern.id}' has no template-native media capability for this slide.`);
+  if (mediaNeeded) {
+    const hasMediaCapability = components.components.some((component) => component.kind === "media_frame" && !component.offCanvasHelper && !component.grouped);
+    reason("media_capability", hasMediaCapability ? `Pattern '${pattern.id}' cannot replace the requested media asset through exact clone; adaptive media composition is required.` : `Pattern '${pattern.id}' has no template-native media capability for this slide.`);
+  }
   return reasons;
 }
 
@@ -77,7 +80,7 @@ function comparisonIntent(slide: Extract<SlideSpec, { layout: "comparison" }>): 
     ...slide.content.right.items.map((text, index) => ({ id: `right-item-${index + 1}`, role: "item" as const, text, group: "right", priority: 50, emphasis: "supporting" as const })),
   ];
   if (slide.content.delta) blocks.push({ id: "delta", role: "support", text: slide.content.delta, group: "right", priority: 90, emphasis: "primary", preferredComponentKind: "key_message" });
-  return adaptiveSlideIntentSchema.parse({ slideId: slide.id, family: "two_column", blocks });
+  return adaptiveSlideIntentSchema.parse({ slideId: slide.id, family: "two_column", header: { text: slide.headline }, blocks });
 }
 
 function metricText(metric: Extract<SlideSpec, { layout: "quantitative" }>["content"]["metrics"][number]): string {
@@ -93,6 +96,7 @@ function quantitativeIntent(slide: Extract<SlideSpec, { layout: "quantitative" }
   return adaptiveSlideIntentSchema.parse({
     slideId: slide.id,
     family: "metric_row",
+    header: { text: slide.headline },
     blocks: slide.content.metrics.map((metric, index) => ({ id: `metric-${index + 1}`, role: "metric", text: metricText(metric), priority: index === 0 ? 100 : 50, emphasis: index === 0 ? "primary" : "supporting" })),
   });
 }
@@ -105,6 +109,7 @@ function processIntent(slide: Extract<SlideSpec, { layout: "process" }>): Adapti
   return adaptiveSlideIntentSchema.parse({
     slideId: slide.id,
     family: "repeated_cards",
+    header: { text: slide.headline },
     blocks: slide.content.steps.map((step, index) => ({
       id: `step-${step.id}`,
       role: "item",
@@ -120,6 +125,7 @@ function timelineIntent(slide: Extract<SlideSpec, { layout: "timeline" }>): Adap
   return adaptiveSlideIntentSchema.parse({
     slideId: slide.id,
     family: "repeated_cards",
+    header: { text: slide.headline },
     blocks: slide.content.milestones.map((milestone, index) => ({
       id: `milestone-${index + 1}`,
       role: "item",
@@ -135,7 +141,7 @@ function evidenceIntent(slide: Extract<SlideSpec, { layout: "evidence" }>): Adap
   const blocks: AdaptiveSlideIntent["blocks"] = [];
   if (slide.content.caption) blocks.push({ id: "caption", role: "support", text: slide.content.caption, priority: 80, emphasis: "secondary", preferredComponentKind: "label" });
   blocks.push(...slide.content.bullets.map((text, index) => ({ id: `bullet-${index + 1}`, role: "item" as const, text, priority: 50, emphasis: "supporting" as const })));
-  return adaptiveSlideIntentSchema.parse({ slideId: slide.id, family: "stack", blocks, ...(slide.content.assetPath ? { mediaPath: slide.content.assetPath } : {}) });
+  return adaptiveSlideIntentSchema.parse({ slideId: slide.id, family: "stack", header: { text: slide.headline }, blocks, ...(slide.content.assetPath ? { mediaPath: slide.content.assetPath } : {}) });
 }
 
 function titleIntent(slide: Extract<SlideSpec, { layout: "title" }>): AdaptiveSlideIntent {

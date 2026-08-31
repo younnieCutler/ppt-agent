@@ -90,6 +90,8 @@ describe("exact clone vs adaptive compose selection", () => {
     const right = selected.adaptivePlan!.placements.filter((placement) => placement.blockId.startsWith("right-") || placement.blockId === "delta");
     expect(left[0].w).not.toBe(right[0].w);
     expect(selected.adaptivePlan!.textAllocation.map((allocation) => allocation.text)).toContain("Choose by constraint.");
+    expect(selected.adaptivePlan!.textAllocation.some((allocation) => allocation.text === "The headline")).toBe(true);
+    expect(selected.adaptivePlan!.textAllocation.some((allocation) => allocation.text === "The headline")).toBe(true);
   });
 
   it("uses a native emphasis component for comparison delta when one exists", () => {
@@ -133,6 +135,8 @@ describe("exact clone vs adaptive compose selection", () => {
     expect(selected.adaptivePlan!.textAllocation[0].text).toContain("Q2");
     expect(selected.adaptivePlan!.textAllocation[0].text).toContain("Q1");
     expect(selected.adaptivePlan!.textAllocation[0].text).toContain("Grounded note");
+    expect(selected.adaptivePlan!.textAllocation.some((allocation) => allocation.text === "The headline")).toBe(true);
+    expect(selected.adaptivePlan!.textAllocation.some((allocation) => allocation.text === "The headline")).toBe(true);
   });
 
   it("hard-fails quantitative adaptive composition without a native metric component", () => {

@@ -20,12 +20,18 @@ const adaptiveBlockSchema = z.object({
   preferredComponentKind: z.enum(componentKinds).optional(),
 }).strict();
 
+const adaptiveHeaderSchema = z.object({
+  text: z.string().min(1),
+  preferredComponentKind: z.enum(componentKinds).default("title_block"),
+}).strict();
+
 export const adaptiveSlideIntentSchema = z.object({
   slideId: z.string().regex(/^S\d{2,}$/),
   family: z.enum(adaptiveCompositionFamilies),
   blocks: z.array(adaptiveBlockSchema).min(1).max(100),
   preferredComponentKind: z.enum(componentKinds).optional(),
   mediaPath: z.string().min(1).optional(),
+  header: adaptiveHeaderSchema.optional(),
 }).strict().superRefine((intent, context) => {
   const ids = intent.blocks.map((block) => block.id);
   if (new Set(ids).size !== ids.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ["blocks"], message: "Adaptive content block ids must be unique." });
@@ -37,6 +43,7 @@ export type AdaptiveSlideIntent = z.infer<typeof adaptiveSlideIntentSchema>;
 type Rect = { x: number; y: number; w: number; h: number };
 
 export type AdaptivePlacement = Rect & { blockId: string; componentId: string; componentKind: ComponentKind; priority: number; emphasis: (typeof adaptiveEmphasis)[number]; order: number; resize: { horizontal: boolean; vertical: boolean } };
+export type AdaptiveHeaderPlacement = AdaptivePlacement;
 export type AdaptiveMediaPlacement = Rect & { componentId: string; assetPath: string };
 export type AdaptiveTextAllocation = { blockId: string; componentId: string; text: string; charCount: number; maxChars?: number; maxLines?: number; fits: "yes" | "no" | "unknown" };
 export type AdaptiveSlidePlan = {
@@ -50,6 +57,7 @@ export type AdaptiveSlidePlan = {
   columns: number;
   placements: AdaptivePlacement[];
   textAllocation: AdaptiveTextAllocation[];
+  header?: AdaptiveHeaderPlacement;
   media?: AdaptiveMediaPlacement;
 };
 
@@ -123,6 +131,12 @@ function chooseComponents(intent: AdaptiveSlideIntent, components: TemplateCompo
     chosen.set(block.id, component);
   }
   return chosen;
+}
+
+function chooseHeader(intent: AdaptiveSlideIntent, components: TemplateComponent[]): TemplateComponent | undefined {
+  if (!intent.header) return undefined;
+  const candidates = components.filter((component) => component.kind === intent.header!.preferredComponentKind).sort((left, right) => right.confidence - left.confidence || left.sourceBounds.y - right.sourceBounds.y || left.sourceBounds.x - right.sourceBounds.x || left.id.localeCompare(right.id));
+  return candidates[0];
 }
 
 function splitTwoColumns(blocks: AdaptiveSlideIntent["blocks"]): [AdaptiveSlideIntent["blocks"], AdaptiveSlideIntent["blocks"]] {
@@ -221,6 +235,8 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
   if (Math.abs(designSystem.canvas.w - components.canvas.w) > 2 / 914400 || Math.abs(designSystem.canvas.h - components.canvas.h) > 2 / 914400) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog canvases differ.");
   const contentFrame = finiteRect(designSystem.geometry.contentFrame, designSystem.canvas);
   const selected = chooseComponents(intent, usableComponents(components));
+  const headerComponent = chooseHeader(intent, usableComponents(components));
+  if (intent.header && !headerComponent) throw new Error(`ADAPTIVE_COMPOSITION_UNSUPPORTED: no template-native '${intent.header.preferredComponentKind}' component exists for the adaptive headline.`);
   const mediaComponent = intent.mediaPath ? usableComponents(components).find((component) => component.kind === "media_frame") : undefined;
   if (intent.mediaPath && !mediaComponent) throw new Error("ADAPTIVE_COMPOSITION_UNSUPPORTED: mediaPath requires a template-native media_frame component.");
   let spacing = observedGap(designSystem);
@@ -231,18 +247,25 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
     const rows = Math.ceil(intent.blocks.length / columns);
     if (rows > 1 && (contentFrame.h - spacing.gap * (rows - 1)) / rows < minimumHeight) spacing = { gap: 0, source: "none" };
   }
-  const grid = placementsFor(intent, contentFrame, spacing.gap, selected);
+  const headerHeight = headerComponent ? Math.min(contentFrame.h, headerComponent.sourceBounds.h) : 0;
+  const bodyFrame = headerComponent ? { ...contentFrame, y: contentFrame.y + headerHeight + spacing.gap, h: contentFrame.h - headerHeight - spacing.gap } : contentFrame;
+  if (headerComponent && bodyFrame.h <= 0) throw new Error("ADAPTIVE_COMPOSITION_UNSUPPORTED: native headline placement leaves no positive body frame.");
+  const grid = placementsFor(intent, bodyFrame, spacing.gap, selected);
+  const epsilon = 2 / 914400;
   const placements = intent.blocks.map((block, order) => {
     const component = selected.get(block.id)!;
     const bounds = grid.bounds.get(block.id)!;
     return { ...bounds, blockId: block.id, componentId: component.id, componentKind: component.kind, priority: block.priority, emphasis: block.emphasis, order, resize: { horizontal: component.resizeFeasibility.horizontal === "safe", vertical: component.resizeFeasibility.vertical === "safe" } };
   });
-  if (placements.some((placement) => placement.x < contentFrame.x || placement.y < contentFrame.y || placement.x + placement.w > contentFrame.x + contentFrame.w || placement.y + placement.h > contentFrame.y + contentFrame.h)) throw new Error("ADAPTIVE_COMPOSITION_INVALID: calculated placement escaped the Design System contentFrame.");
-  placements.forEach((placement) => {
+  const header = headerComponent && intent.header ? { x: contentFrame.x, y: contentFrame.y, w: contentFrame.w, h: headerHeight, blockId: "headline", componentId: headerComponent.id, componentKind: headerComponent.kind, priority: 100, emphasis: "primary" as const, order: -1, resize: { horizontal: headerComponent.resizeFeasibility.horizontal === "safe", vertical: headerComponent.resizeFeasibility.vertical === "safe" } } : undefined;
+  const allPlacements = header ? [header, ...placements] : placements;
+  if (allPlacements.some((placement) => placement.x < contentFrame.x - epsilon || placement.y < contentFrame.y - epsilon || placement.x + placement.w > contentFrame.x + contentFrame.w + epsilon || placement.y + placement.h > contentFrame.y + contentFrame.h + epsilon)) throw new Error("ADAPTIVE_COMPOSITION_INVALID: calculated placement escaped the Design System contentFrame.");
+  allPlacements.forEach((placement) => {
     const component = selected.get(placement.blockId)!;
-    const needsHorizontalResize = Math.abs(placement.w - component.sourceBounds.w) > 2 / 914400;
-    const needsVerticalResize = Math.abs(placement.h - component.sourceBounds.h) > 2 / 914400;
-    if ((needsHorizontalResize && component.resizeFeasibility.horizontal !== "safe") || (needsVerticalResize && component.resizeFeasibility.vertical !== "safe")) throw new Error(`ADAPTIVE_COMPOSITION_UNSUPPORTED: component '${component.id}' lacks a safe resize capability for its calculated placement.`);
+    const source = header?.blockId === placement.blockId ? headerComponent! : component;
+    const needsHorizontalResize = Math.abs(placement.w - source.sourceBounds.w) > 2 / 914400;
+    const needsVerticalResize = Math.abs(placement.h - source.sourceBounds.h) > 2 / 914400;
+    if ((needsHorizontalResize && source.resizeFeasibility.horizontal !== "safe") || (needsVerticalResize && source.resizeFeasibility.vertical !== "safe")) throw new Error(`ADAPTIVE_COMPOSITION_UNSUPPORTED: component '${source.id}' lacks a safe resize capability for its calculated placement.`);
   });
   return {
     version: 1,
@@ -254,7 +277,8 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
     rows: grid.rows,
     columns: grid.columns,
     placements,
-    textAllocation: intent.blocks.map((block) => textAllocation(block, grid.bounds.get(block.id)!, selected.get(block.id)!, designSystem)),
+    textAllocation: [...intent.blocks.map((block) => textAllocation(block, grid.bounds.get(block.id)!, selected.get(block.id)!, designSystem)), ...(header && intent.header ? [textAllocation({ id: "headline", role: "headline", text: intent.header.text, priority: 100, emphasis: "primary" }, header, headerComponent!, designSystem)] : [])],
+    ...(header ? { header } : {}),
     ...(mediaComponent && intent.mediaPath ? { media: { componentId: mediaComponent.id, assetPath: intent.mediaPath, ...mediaComponent.sourceBounds } } : {}),
   };
 }

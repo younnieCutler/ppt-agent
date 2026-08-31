@@ -102,11 +102,11 @@ function geometryOperations(componentId: string, current: Rect, target: Rect, ca
 
 export function adaptiveOperationsForPlan(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact): Parameters<typeof transformTemplateComponents>[3] {
   const byId = new Map(components.components.map((component) => [component.id, component]));
-  const used = new Set([...plan.placements.map((placement) => placement.componentId), ...(plan.media ? [plan.media.componentId] : [])]);
+  const used = new Set([...(plan.header ? [plan.header.componentId] : []), ...plan.placements.map((placement) => placement.componentId), ...(plan.media ? [plan.media.componentId] : [])]);
   const usage = new Map<string, number>();
   const bounds = new Map(components.components.map((component) => [component.id, { ...component.sourceBounds }]));
   const operations: Parameters<typeof transformTemplateComponents>[3] = [];
-  for (const placement of plan.placements) {
+  for (const placement of [...(plan.header ? [plan.header] : []), ...plan.placements]) {
     const component = byId.get(placement.componentId);
     if (!component) throw new Error(`ADAPTIVE_TEMPLATE_PROVENANCE_MISSING: plan references unknown component '${placement.componentId}'.`);
     const count = usage.get(component.id) ?? 0;
