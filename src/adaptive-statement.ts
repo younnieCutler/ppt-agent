@@ -18,7 +18,7 @@ type Rect = { x: number; y: number; w: number; h: number };
 export type AdaptiveStatementFinding = { code: "ADAPTIVE_GEOMETRY_OVERFLOW" | "ADAPTIVE_CONTENT_DROPPED" | "ADAPTIVE_EXAMPLE_CONTENT_LEAK" | "ADAPTIVE_STYLE_SOURCE_VIOLATION" | "ADAPTIVE_TEMPLATE_PROVENANCE_MISSING" | "OOXML_INVALID"; message: string };
 export type AdaptiveStatementQa = { status: "pass" | "fail"; findings: AdaptiveStatementFinding[] };
 export type AdaptiveStatementResult = { outputPath: string; plan: AdaptiveSlidePlan; qa: AdaptiveStatementQa };
-export type AdaptiveRenderableLayout = "statement" | "comparison" | "quantitative";
+export type AdaptiveRenderableLayout = "title" | "statement" | "comparison" | "process" | "quantitative" | "timeline" | "evidence";
 
 function parse(xml: string): Document {
   return new DOMParser().parseFromString(xml, "text/xml") as unknown as Document;
@@ -87,12 +87,21 @@ function geometryOperations(componentId: string, current: Rect, target: Rect, ca
   const moveThenResize = { ...current, x: target.x, y: target.y };
   if (insideCanvas(resizeThenMove, canvas)) return [{ operation: "resize", componentId, w: target.w, h: target.h }, { operation: "move", componentId, x: target.x, y: target.y }];
   if (insideCanvas(moveThenResize, canvas)) return [{ operation: "move", componentId, x: target.x, y: target.y }, { operation: "resize", componentId, w: target.w, h: target.h }];
+  const compact = { ...current, w: Math.min(current.w, target.w), h: Math.min(current.h, target.h) };
+  const compactAtTarget = { ...compact, x: target.x, y: target.y };
+  if (insideCanvas(compact, canvas) && insideCanvas(compactAtTarget, canvas)) {
+    const operations: Parameters<typeof transformTemplateComponents>[3] = [];
+    if (compact.w !== current.w || compact.h !== current.h) operations.push({ operation: "resize", componentId, w: compact.w, h: compact.h });
+    if (compact.x !== target.x || compact.y !== target.y) operations.push({ operation: "move", componentId, x: target.x, y: target.y });
+    if (compact.w !== target.w || compact.h !== target.h) operations.push({ operation: "resize", componentId, w: target.w, h: target.h });
+    return operations;
+  }
   throw new Error(`ADAPTIVE_GEOMETRY_OVERFLOW: component '${componentId}' cannot reach its in-canvas target without an out-of-canvas intermediate transform.`);
 }
 
 function operationsFor(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact): Parameters<typeof transformTemplateComponents>[3] {
   const byId = new Map(components.components.map((component) => [component.id, component]));
-  const used = new Set(plan.placements.map((placement) => placement.componentId));
+  const used = new Set([...plan.placements.map((placement) => placement.componentId), ...(plan.media ? [plan.media.componentId] : [])]);
   const usage = new Map<string, number>();
   const bounds = new Map(components.components.map((component) => [component.id, { ...component.sourceBounds }]));
   const operations: Parameters<typeof transformTemplateComponents>[3] = [];
@@ -112,6 +121,7 @@ function operationsFor(plan: AdaptiveSlidePlan, components: TemplateComponentsAr
     if (!text) throw new Error(`ADAPTIVE_CONTENT_DROPPED: plan has no text allocation for '${placement.blockId}'.`);
     operations.push({ operation: "replace_text", componentId: target, text });
   }
+  if (plan.media) operations.push({ operation: "replace_media", componentId: plan.media.componentId, assetPath: plan.media.assetPath });
   components.components.filter((component) => component.sourceSlideId === plan.slideId && !used.has(component.id) && !structural(component)).forEach((component) => {
     if (component.shapeNames.length !== 1) throw new Error(`ADAPTIVE_TEMPLATE_PROVENANCE_MISSING: unused component '${component.id}' has no single semantic shape selector.`);
     operations.push({ operation: "remove", componentId: component.id });
@@ -121,6 +131,7 @@ function operationsFor(plan: AdaptiveSlidePlan, components: TemplateComponentsAr
 
 async function qaAdaptiveStatement(templatePath: string, outputPath: string, plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact): Promise<AdaptiveStatementQa> {
   const findings: AdaptiveStatementFinding[] = [];
+  const epsilon = 2 / EMU_PER_INCH;
   const facts = await readPptxOoxml(outputPath);
   if (!facts.parseOk || facts.slideCount !== 1) findings.push({ code: "OOXML_INVALID", message: "Adaptive statement output is not a parseable single-slide PPTX." });
   const sourceZip = await JSZip.loadAsync(fs.readFileSync(path.resolve(templatePath)));
@@ -137,7 +148,7 @@ async function qaAdaptiveStatement(templatePath: string, outputPath: string, pla
   for (const node of outputNodes) {
     if (templateOwnedNames.has(nameOf(node))) continue;
     const rect = rectOf(node);
-    if (rect && (rect.x < 0 || rect.y < 0 || rect.w <= 0 || rect.h <= 0 || rect.x + rect.w > plan.contentFrame.x + plan.contentFrame.w || rect.y + rect.h > plan.contentFrame.y + plan.contentFrame.h)) findings.push({ code: "ADAPTIVE_GEOMETRY_OVERFLOW", message: `Output shape '${nameOf(node) || "(unnamed)"}' with bounds ${JSON.stringify(rect)} escaped the adaptive content frame ${JSON.stringify(plan.contentFrame)}.` });
+    if (rect && (rect.x < -epsilon || rect.y < -epsilon || rect.w <= 0 || rect.h <= 0 || rect.x + rect.w > plan.contentFrame.x + plan.contentFrame.w + epsilon || rect.y + rect.h > plan.contentFrame.y + plan.contentFrame.h + epsilon)) findings.push({ code: "ADAPTIVE_GEOMETRY_OVERFLOW", message: `Output shape '${nameOf(node) || "(unnamed)"}' with bounds ${JSON.stringify(rect)} escaped the adaptive content frame ${JSON.stringify(plan.contentFrame)}.` });
   }
 
   const sourceExampleNames = new Set(components.components.filter((component) => !structural(component)).flatMap((component) => component.shapeNames));
@@ -146,7 +157,7 @@ async function qaAdaptiveStatement(templatePath: string, outputPath: string, pla
   const outputText = all(outputRoot, A_NS, "t").map((text) => text.textContent ?? "").join(" ");
   sourceExamples.forEach((text) => { if (outputTextNodes.includes(text)) findings.push({ code: "ADAPTIVE_EXAMPLE_CONTENT_LEAK", message: `Template example text survived: '${text}'.` }); });
   for (const allocation of plan.textAllocation) if (!outputText.includes(allocation.text)) findings.push({ code: "ADAPTIVE_CONTENT_DROPPED", message: `Adaptive content block '${allocation.blockId}' did not reach the output.` });
-  const removableMediaNames = new Set(components.components.filter((component) => !structural(component) && component.assetProvenance.kind !== "none").flatMap((component) => component.shapeNames));
+  const removableMediaNames = new Set(components.components.filter((component) => !structural(component) && component.assetProvenance.kind !== "none" && component.id !== plan.media?.componentId).flatMap((component) => component.shapeNames));
   outputNodes.filter((node) => removableMediaNames.has(nameOf(node))).forEach((node) => findings.push({ code: "ADAPTIVE_EXAMPLE_CONTENT_LEAK", message: `Template example media survived: '${nameOf(node)}'.` }));
 
   const sourceStyles = styleTokens(sourceRoot);
@@ -163,8 +174,11 @@ async function qaAdaptiveStatement(templatePath: string, outputPath: string, pla
 export async function renderAdaptiveContent(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, elements: TemplateElementsArtifact, intentInput: unknown, layout: AdaptiveRenderableLayout): Promise<AdaptiveStatementResult> {
   const intent = adaptiveSlideIntentSchema.parse(intentInput);
   if (intent.blocks.some((block) => /[\r\n]/.test(block.text))) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: content must fit the single-run text replacement contract and must not contain newlines.`);
+  if (layout === "title" && (intent.blocks.some((block) => !["headline", "body", "support"].includes(block.role)) || intent.family !== "stack" || !intent.blocks.some((block) => block.role === "headline"))) throw new Error("ADAPTIVE_TITLE_UNSUPPORTED: title requires stack family with a headline block.");
   if (layout === "statement" && (intent.blocks.some((block) => !["headline", "body", "support"].includes(block.role)) || intent.family !== "stack" || !intent.blocks.some((block) => block.role === "headline") || !intent.blocks.some((block) => block.role === "body"))) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement vertical slice requires stack family with headline and body content.");
   if (layout === "comparison" && (intent.family !== "two_column" || intent.blocks.some((block) => !["support", "item"].includes(block.role)) || new Set(intent.blocks.map((block) => block.group).filter(Boolean)).size < 2)) throw new Error("ADAPTIVE_COMPARISON_UNSUPPORTED: comparison requires two semantic groups in a two_column intent.");
+  if ((layout === "process" || layout === "timeline") && (intent.family !== "repeated_cards" || intent.blocks.some((block) => block.role !== "item") || intent.blocks.length < 2)) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: ${layout} requires repeated_cards with at least two item blocks.`);
+  if (layout === "evidence" && (intent.family !== "stack" || intent.blocks.some((block) => !["support", "item"].includes(block.role)) || intent.blocks.length < 1)) throw new Error("ADAPTIVE_EVIDENCE_UNSUPPORTED: evidence requires a stack with caption or bullet blocks.");
   if (layout === "quantitative" && (intent.family !== "metric_row" || intent.blocks.some((block) => block.role !== "metric"))) throw new Error("ADAPTIVE_QUANTITATIVE_UNSUPPORTED: quantitative requires metric_row with metric blocks only.");
   const extracted = await extractTemplateElements(templatePath);
   assertCanonicalTemplateElements(elements);
@@ -173,7 +187,8 @@ export async function renderAdaptiveContent(templatePath: string, outputPath: st
   const sourceSlideIds = new Set(components.components.map((component) => component.sourceSlideId));
   if (sourceSlideIds.size !== 1 || !sourceSlideIds.has(intent.slideId)) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: adaptive content requires a single source slide in the component catalog.`);
   const sourceKinds = new Set(components.components.filter((component) => !component.offCanvasHelper && !component.grouped).map((component) => component.kind));
-  if (layout === "statement" && (!sourceKinds.has("title_block") || (intent.blocks.some((block) => block.role === "body") && !sourceKinds.has("body_block")))) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement requires template-native title_block and body_block capability.");
+  if ((layout === "title" || layout === "statement") && !sourceKinds.has("title_block")) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: ${layout} requires a template-native title component.`);
+  if (layout === "statement" && intent.blocks.some((block) => block.role === "body") && !sourceKinds.has("body_block")) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement requires a template-native body component.");
   if (layout === "quantitative" && !sourceKinds.has("metric")) throw new Error("ADAPTIVE_QUANTITATIVE_UNSUPPORTED: quantitative requires a template-native metric component.");
   const plan = planAdaptiveSlide({ templateDigest: components.sourceDigest, designSystem, components, intent });
   if (plan.textAllocation.some((allocation) => allocation.fits === "no")) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: text does not fit the calculated native component placement.`);
@@ -198,6 +213,22 @@ export async function renderAdaptiveStatement(templatePath: string, outputPath: 
 
 export async function renderAdaptiveComparison(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, elements: TemplateElementsArtifact, intentInput: unknown): Promise<AdaptiveStatementResult> {
   return renderAdaptiveContent(templatePath, outputPath, designSystem, components, elements, intentInput, "comparison");
+}
+
+export async function renderAdaptiveTitle(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, elements: TemplateElementsArtifact, intentInput: unknown): Promise<AdaptiveStatementResult> {
+  return renderAdaptiveContent(templatePath, outputPath, designSystem, components, elements, intentInput, "title");
+}
+
+export async function renderAdaptiveProcess(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, elements: TemplateElementsArtifact, intentInput: unknown): Promise<AdaptiveStatementResult> {
+  return renderAdaptiveContent(templatePath, outputPath, designSystem, components, elements, intentInput, "process");
+}
+
+export async function renderAdaptiveTimeline(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, elements: TemplateElementsArtifact, intentInput: unknown): Promise<AdaptiveStatementResult> {
+  return renderAdaptiveContent(templatePath, outputPath, designSystem, components, elements, intentInput, "timeline");
+}
+
+export async function renderAdaptiveEvidence(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, elements: TemplateElementsArtifact, intentInput: unknown): Promise<AdaptiveStatementResult> {
+  return renderAdaptiveContent(templatePath, outputPath, designSystem, components, elements, intentInput, "evidence");
 }
 
 export async function renderAdaptiveQuantitative(templatePath: string, outputPath: string, designSystem: TemplateDesignSystemArtifact, components: TemplateComponentsArtifact, elements: TemplateElementsArtifact, intentInput: unknown): Promise<AdaptiveStatementResult> {
