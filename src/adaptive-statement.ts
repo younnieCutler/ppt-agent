@@ -100,7 +100,7 @@ function geometryOperations(componentId: string, current: Rect, target: Rect, ca
   throw new Error(`ADAPTIVE_GEOMETRY_OVERFLOW: component '${componentId}' cannot reach its in-canvas target without an out-of-canvas intermediate transform.`);
 }
 
-function operationsFor(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact): Parameters<typeof transformTemplateComponents>[3] {
+export function adaptiveOperationsForPlan(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact): Parameters<typeof transformTemplateComponents>[3] {
   const byId = new Map(components.components.map((component) => [component.id, component]));
   const used = new Set([...plan.placements.map((placement) => placement.componentId), ...(plan.media ? [plan.media.componentId] : [])]);
   const usage = new Map<string, number>();
@@ -193,7 +193,7 @@ export async function renderAdaptiveContent(templatePath: string, outputPath: st
   if (layout === "quantitative" && !sourceKinds.has("metric")) throw new Error("ADAPTIVE_QUANTITATIVE_UNSUPPORTED: quantitative requires a template-native metric component.");
   const plan = planAdaptiveSlide({ templateDigest: components.sourceDigest, designSystem, components, intent });
   if (plan.textAllocation.some((allocation) => allocation.fits === "no")) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: text does not fit the calculated native component placement.`);
-  const operations = operationsFor(plan, components);
+  const operations = adaptiveOperationsForPlan(plan, components);
   const resolvedOutput = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
   if (physicalPath(templatePath) === physicalPath(resolvedOutput)) throw new Error("ADAPTIVE_STATEMENT_SOURCE_IMMUTABLE: outputPath must differ from the source template path.");

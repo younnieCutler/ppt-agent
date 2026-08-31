@@ -213,14 +213,13 @@ export async function templateFidelityQa(
 }
 
 /**
- * Hard: the Pattern Resolver's own shortlist for a slide came up empty on a source_slide_pattern
- * template — no candidate pattern could hold this slide at all. This repo has no per-layout
- * fallbackPolicy override yet (a real future refinement); until one exists, an empty shortlist on
- * a pure source_slide_pattern template is always hard rather than silently falling back to the
- * generic renderer, which is exactly what this whole architecture exists to prevent.
+ * Hard for the legacy skeleton caller: the Pattern Resolver's own shortlist for a slide came up
+ * empty on a source_slide_pattern template. The adaptive runtime may explicitly defer this exact
+ * miss here because it still has a second, content-first compatibility check; it hard-fails later
+ * only when adaptive composition is unsupported too.
  */
-export function checkTemplatePatternNotFound(strategy: TemplateStrategy, patternPlan: { slides: Array<{ id: string; candidates: unknown[] }> }): QaFinding[] {
-  if (strategy !== "source_slide_pattern") return [];
+export function checkTemplatePatternNotFound(strategy: TemplateStrategy, patternPlan: { slides: Array<{ id: string; candidates: unknown[] }> }, options: { adaptiveRuntime?: boolean } = {}): QaFinding[] {
+  if (strategy !== "source_slide_pattern" || options.adaptiveRuntime) return [];
   return patternPlan.slides
     .filter((slide) => slide.candidates.length === 0)
     .map((slide) => ({ severity: "hard" as const, code: "TEMPLATE_PATTERN_NOT_FOUND", slideId: slide.id, message: "No source-slide pattern could hold this slide (no candidate had a headline-bindable slot). Add or relabel a source-slide pattern, or change this slide's composition." }));

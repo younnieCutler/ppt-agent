@@ -224,7 +224,7 @@ export async function applyPatternSkeleton(
   outputPath: string,
   slides: SlideSpec[],
   resolvedPatterns: Map<string, TemplatePattern>,
-  options: { strategy?: TemplateStrategy } = {},
+  options: { strategy?: TemplateStrategy; adaptiveSourceSlides?: Map<string, { sourceSlideNumber: number; family: string }> } = {},
 ): Promise<RenderManifestEntry[]> {
   if (!fs.existsSync(templatePath)) throw new Error(`Template not found: ${templatePath}`);
   const resolvedOutput = path.resolve(outputPath);
@@ -248,6 +248,12 @@ export async function applyPatternSkeleton(
     slides.forEach((slideSpec, index) => {
       const pattern = resolvedPatterns.get(slideSpec.id);
       if (!pattern) {
+        const adaptive = options.adaptiveSourceSlides?.get(slideSpec.id);
+        if (adaptive) {
+          presentation.addSlide("org-source", adaptive.sourceSlideNumber);
+          manifest.push({ slideId: slideSpec.id, mode: `adaptive:${adaptive.family}` });
+          return;
+        }
         if (options.strategy === "source_slide_pattern") {
           throw new Error(`No pattern fits slide '${slideSpec.id}' on a source_slide_pattern template — refusing to silently redraw it with the generic renderer. Its design lives entirely in the template's own example slide bodies; choose or label a different source slide, or split this deck across a hybrid-strategy template if a generic slide is genuinely acceptable here.`);
         }
