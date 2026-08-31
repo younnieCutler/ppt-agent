@@ -114,7 +114,7 @@ function similarSize(left: Rect, right: Rect): boolean {
 }
 
 function regular(values: number[]): boolean {
-  if (values.length < 2 || values.some((value) => value <= 0)) return false;
+  if (values.length < 1 || values.some((value) => value <= 0)) return false;
   const first = values[0];
   return Math.max(...values) - Math.min(...values) <= Math.max(Math.abs(first), 1) * 0.05;
 }
