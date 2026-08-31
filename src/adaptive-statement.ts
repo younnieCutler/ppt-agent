@@ -8,6 +8,7 @@ import { transformTemplateComponents } from "./template-transform";
 import { assertCanonicalTemplateElements, compileTemplateGrammar, elementsDigest, extractTemplateElements, type TemplateElementsArtifact } from "./template-analysis";
 import { compileTemplateComponents, type TemplateComponentsArtifact, type TemplateComponent } from "./template-components";
 import { compileTemplateDesignSystem, type TemplateDesignSystemArtifact } from "./template-design-system";
+import { runAdaptiveQa, type AdaptiveQaCode } from "./adaptive-qa";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -15,7 +16,7 @@ const EMU_PER_INCH = 914400;
 const STRUCTURAL_ROLES = new Set(["surface", "divider", "footer", "logo"]);
 
 type Rect = { x: number; y: number; w: number; h: number };
-export type AdaptiveStatementFinding = { code: "ADAPTIVE_GEOMETRY_OVERFLOW" | "ADAPTIVE_CONTENT_DROPPED" | "ADAPTIVE_EXAMPLE_CONTENT_LEAK" | "ADAPTIVE_STYLE_SOURCE_VIOLATION" | "ADAPTIVE_TEMPLATE_PROVENANCE_MISSING" | "OOXML_INVALID"; message: string };
+export type AdaptiveStatementFinding = { code: AdaptiveQaCode | "ADAPTIVE_GEOMETRY_OVERFLOW" | "ADAPTIVE_CONTENT_DROPPED" | "ADAPTIVE_EXAMPLE_CONTENT_LEAK" | "ADAPTIVE_STYLE_SOURCE_VIOLATION" | "ADAPTIVE_TEMPLATE_PROVENANCE_MISSING" | "OOXML_INVALID"; message: string };
 export type AdaptiveStatementQa = { status: "pass" | "fail"; findings: AdaptiveStatementFinding[] };
 export type AdaptiveStatementResult = { outputPath: string; plan: AdaptiveSlidePlan; qa: AdaptiveStatementQa };
 export type AdaptiveRenderableLayout = "title" | "statement" | "comparison" | "process" | "quantitative" | "timeline" | "evidence";
@@ -199,7 +200,10 @@ export async function renderAdaptiveContent(templatePath: string, outputPath: st
   const temporary = `${resolvedOutput}.${process.pid}.adaptive.tmp`;
   try {
     await transformTemplateComponents(templatePath, temporary, components, operations);
-    const qa = await qaAdaptiveStatement(templatePath, temporary, plan, components);
+    const legacyQa = await qaAdaptiveStatement(templatePath, temporary, plan, components);
+    const adaptiveQa = await runAdaptiveQa({ templatePath, outputPath: temporary, plan, components });
+    const findings: AdaptiveStatementFinding[] = [...legacyQa.findings, ...adaptiveQa.findings.map((finding) => ({ code: finding.code, message: finding.message }))];
+    const qa = { status: findings.length > 0 ? "fail" as const : "pass" as const, findings };
     if (qa.status === "pass") fs.renameSync(temporary, resolvedOutput);
     return { outputPath: resolvedOutput, plan, qa };
   } finally {
