@@ -202,7 +202,10 @@ function repeatGroupsForSlide(slideComponents: TemplateComponent[]): Array<{ com
 
 export function compileTemplateComponents(artifact: TemplateElementsArtifact): TemplateComponentsArtifact {
   if (artifact.coordinateSpace || artifact.analysisInputs?.analyzerVersion === TEMPLATE_ANALYZER_VERSION) assertCanonicalTemplateElements(artifact);
-  if (artifact.coordinateSpace?.mode === "scaled" && artifact.slides.some((slide) => slide.elements.some((element) => element.grouped && !element.offCanvasHelper))) throw new Error("ADAPTIVE_COMPONENT_UNSUPPORTED: grouped components cannot be canonicalized losslessly in a scaled source coordinate space.");
+  // Grouped components may safely remain in the catalog when their already-rendered geometry is
+  // canonical. They are still non-transformable: the Generative Scene compiler excludes grouped
+  // prototypes and the transform engine hard-fails any direct grouped operation. Keeping them in
+  // the catalog is required for immutable vector logos/chrome to survive base-slide sanitization.
   if (artifact.coordinateSpace?.mode === "scaled" && artifact.slides.some((slide) => {
     return slide.elements.some((element) => !element.offCanvasHelper && element.name && slide.elements.filter((candidate) => candidate.name === element.name).length > 1);
   })) throw new Error("TEMPLATE_COORDINATE_SPACE_UNSUPPORTED: duplicate non-helper shape names cannot be canonicalized losslessly in a scaled source coordinate space.");
