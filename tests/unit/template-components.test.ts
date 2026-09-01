@@ -34,6 +34,7 @@ function fixture(): TemplateElementsArtifact {
         element("S01-title", "S01", "text", "title", { x: 1, y: 0.5, w: 6, h: 0.6 }, "title"),
         element("S01-body", "S01", "text", "body", { x: 1, y: 1.2, w: 6, h: 0.8 }, "body"),
         card("S01", "S01-card", 1),
+        element("S01-logo", "S01", "image", "logo", { x: 0.4, y: 0.3, w: 1.2, h: 0.4 }),
         element("S01-image", "S01", "image", "unknown", { x: 8, y: 1, w: 3, h: 2 }),
       ] },
       { id: "S02", sourceSlidePart: "ppt/slides/slide2.xml", nativeLayout: { index: 1, name: "Blank", masterIndex: 1 }, elements: [card("S02", "S02-card-1", 1), card("S02", "S02-card-2", 4), card("S02", "S02-card-3", 7)] },
@@ -47,6 +48,22 @@ function fixture(): TemplateElementsArtifact {
     masters: [],
     styles: style,
     strategy: "source_slide_pattern",
+  };
+}
+
+function gridFixture(irregular = false): TemplateElementsArtifact {
+  const base = fixture();
+  const positions = irregular
+    ? [[1, 1], [4, 1], [1, 3], [4.5, 3]]
+    : [[1, 1], [4, 1], [1, 3], [4, 3]];
+  return {
+    ...base,
+    slides: [{
+      id: "S04",
+      sourceSlidePart: "ppt/slides/slide4.xml",
+      nativeLayout: { index: 1, name: "Blank", masterIndex: 1 },
+      elements: positions.map(([x, y], index) => element(`S04-card-${index + 1}`, "S04", "shape", "surface", { x, y, w: 2, h: 1 }, "card")),
+    }],
   };
 }
 
@@ -66,10 +83,25 @@ describe("template component catalog", () => {
     expect(result.components.filter((component) => component.kind === "metric")).toHaveLength(3);
     expect(result.repeatGroups.map((group) => group.componentIds.length)).toEqual(expect.arrayContaining([3, 3]));
     expect(result.components.find((component) => component.kind === "divider")?.resizeFeasibility.horizontal).toBe("safe");
-    expect(result.components.find((component) => component.kind === "media_frame")?.assetProvenance).toMatchObject({ kind: "image", ref: "ppt/media/image1.png" });
+    expect(result.components.find((component) => component.id === "component-S01-logo")?.kind).toBe("logo");
+    expect(result.components.find((component) => component.id === "component-S01-image")?.kind).toBe("media_frame");
+    expect(result.components.find((component) => component.id === "component-S01-image")?.assetProvenance).toMatchObject({ kind: "image", ref: "ppt/media/image1.png" });
     expect(result.components.find((component) => component.id === "component-S03-unknown")?.kind).toBe("unknown");
     expect(result.components.find((component) => component.id === "component-S03-unknown")?.confidence).toBe(0);
     expect(result.components.find((component) => component.id === "component-S02-card-1")?.shapeNames).toEqual(["S02-card-1"]);
     expect(JSON.stringify(result)).toBe(JSON.stringify(compileTemplateComponents(fixture())));
+  });
+
+  it("detects a regular 2x2 repeat grid by aligned row/column occupancy", () => {
+    const result = compileTemplateComponents(gridFixture());
+    expect(result.repeatGroups).toHaveLength(1);
+    expect(result.repeatGroups[0]).toMatchObject({ sourceSlideId: "S04", pattern: "grid", componentIds: ["component-S04-card-1", "component-S04-card-2", "component-S04-card-3", "component-S04-card-4"] });
+    expect(result.components.every((component) => component.groupPattern === "grid" && component.repeatability.signal === "repeatable")).toBe(true);
+  });
+
+  it("does not promote an irregular pseudo-grid to a repeat group", () => {
+    const result = compileTemplateComponents(gridFixture(true));
+    expect(result.repeatGroups).toEqual([]);
+    expect(result.components.every((component) => component.groupPattern === "single" && component.repeatability.signal === "single")).toBe(true);
   });
 });
