@@ -82,7 +82,12 @@ async function assemblePreparedSlides(templatePath: string, outputPath: string, 
       presentation = presentation.load(fileName, alias);
       aliases.push(alias);
     });
-    aliases.forEach((alias) => presentation.addSlide(alias, 1));
+    const info = await presentation.getInfo();
+    aliases.forEach((alias) => {
+      const visibleSlides = info.slidesByTemplate(alias);
+      if (visibleSlides.length !== 1) throw new Error(`ADAPTIVE_RUNTIME_ASSEMBLY_FAILED: prepared source '${alias}' must contain exactly one visible slide; found ${visibleSlides.length}.`);
+      presentation.addSlide(alias, visibleSlides[0].number);
+    });
     await presentation.write(path.basename(resolvedOutput));
     if (!fs.existsSync(resolvedOutput)) throw new Error(`ADAPTIVE_RUNTIME_ASSEMBLY_FAILED: final deck was not produced at ${resolvedOutput}.`);
     await pruneUnreachablePptxParts(resolvedOutput);
