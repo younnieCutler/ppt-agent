@@ -2,12 +2,16 @@ import type { ResolvedScene, SceneNodeRole } from "./scene";
 import type { ComponentTransformOperation } from "./template-transform";
 import type { ComponentKind, TemplateComponent, TemplateComponentsArtifact } from "./template-components";
 
+type Rect = { x: number; y: number; w: number; h: number };
+
 export type SceneComponentProvenance = {
   sceneNodeId: string;
   alias: string;
   componentId: string;
   componentKind: ComponentKind;
   sourceSlideId: string;
+  bounds: Rect;
+  text: string;
 };
 
 export type SceneComponentPlan = {
@@ -15,8 +19,6 @@ export type SceneComponentPlan = {
   operations: ComponentTransformOperation[];
   provenance: SceneComponentProvenance[];
 };
-
-type Rect = { x: number; y: number; w: number; h: number };
 
 const preservedChromeKinds = new Set<ComponentKind>(["surface", "footer", "logo"]);
 
@@ -80,7 +82,7 @@ function appendPlacement(operations: ComponentTransformOperation[], provenance: 
   const normalizedText = text.replace(/\s+/g, " ").trim();
   if (!normalizedText) throw new Error(`SCENE_COMPONENT_UNSUPPORTED: scene node '${sceneNodeId}' has no renderable text.`);
   operations.push({ operation: "clone", componentId: component.id, targetSlideId, as: alias });
-  provenance.push({ sceneNodeId, alias, componentId: component.id, componentKind: component.kind, sourceSlideId: component.sourceSlideId });
+  provenance.push({ sceneNodeId, alias, componentId: component.id, componentKind: component.kind, sourceSlideId: component.sourceSlideId, bounds, text: normalizedText });
   operations.push({ operation: "move", componentId: alias, x: bounds.x, y: bounds.y });
   operations.push({ operation: "resize", componentId: alias, w: bounds.w, h: bounds.h });
   operations.push({ operation: "replace_text", componentId: alias, text: normalizedText });
