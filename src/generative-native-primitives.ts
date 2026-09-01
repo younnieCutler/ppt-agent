@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import JSZip from "jszip";
 import Automizer from "pptx-automizer";
 import type { TemplateConstraintProfile, Rect } from "./brand-constraints";
 import { isGenerativeNativePrimitiveNode, nativePrimitiveObjectName, type GenerativeNativePrimitiveNode, type ResolvedGenerativeScene } from "./generative-scene";
@@ -87,7 +88,6 @@ function drawPrimitive(
   profile: TemplateConstraintProfile,
   assets: GenerativeNativeAssetRegistry,
 ): void {
-  const name = nativePrimitiveObjectName(node.id);
   const color = requireTemplateColor(profile);
   const palette = templatePalette(profile);
   const bounds = node.bounds;
@@ -96,7 +96,6 @@ function drawPrimitive(
     const width = node.weight === "light" ? 1 : node.weight === "strong" ? 2.5 : 1.5;
     slide.addShape(pptx.ShapeType.line, {
       ...connectorGeometry(node, bounds),
-      name,
       line: {
         color,
         width,
@@ -114,7 +113,6 @@ function drawPrimitive(
       y: bounds.y,
       w: bounds.w,
       h: bounds.h,
-      name,
       chartColors: palette,
       showLegend: dataset.series.length > 1,
       showTitle: false,
@@ -127,7 +125,59 @@ function drawPrimitive(
   }
 
   const assetPath = requireImage(node, assets);
-  slide.addImage({ path: assetPath, x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h, name });
+  slide.addImage({ path: assetPath, x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h });
+}
+
+function cNvPrTags(xml: string): string[] {
+  return xml.match(/<p:cNvPr\b[^>]*>/g) ?? [];
+}
+
+function tagId(tag: string): number | undefined {
+  const match = tag.match(/\bid="(\d+)"/);
+  const value = match ? Number(match[1]) : Number.NaN;
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function tagName(tag: string): string {
+  return tag.match(/\bname="([^"]*)"/)?.[1] ?? "";
+}
+
+function generatedNativeTag(tag: string): boolean {
+  return tagName(tag).startsWith("generative.native.");
+}
+
+async function normalizeGeneratedDrawingIds(pptxPath: string): Promise<void> {
+  const zip = await JSZip.loadAsync(fs.readFileSync(pptxPath));
+  let changed = false;
+  const slideParts = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
+
+  for (const part of slideParts) {
+    const original = await zip.file(part)?.async("string");
+    if (!original) continue;
+    const tags = cNvPrTags(original);
+    const numericIds = tags.map(tagId).filter((id): id is number => id !== undefined);
+    const used = new Set(tags.filter((tag) => !generatedNativeTag(tag)).map(tagId).filter((id): id is number => id !== undefined));
+    let nextId = Math.max(1, ...numericIds) + 1;
+
+    const normalized = original.replace(/<p:cNvPr\b[^>]*>/g, (tag) => {
+      if (!generatedNativeTag(tag)) return tag;
+      const id = tagId(tag);
+      if (id === undefined) return tag;
+      if (!used.has(id)) {
+        used.add(id);
+        return tag;
+      }
+      while (used.has(nextId)) nextId += 1;
+      const replacement = nextId;
+      used.add(replacement);
+      nextId += 1;
+      changed = true;
+      return tag.replace(/\bid="\d+"/, `id="${replacement}"`);
+    });
+    if (normalized !== original) zip.file(part, normalized);
+  }
+
+  if (changed) fs.writeFileSync(pptxPath, await zip.generateAsync({ type: "nodebuffer" }));
 }
 
 export async function renderGenerativeNativePrimitives(
@@ -156,15 +206,19 @@ export async function renderGenerativeNativePrimitives(
     const visible = info.slidesByTemplate("scene-source");
     if (visible.length !== 1) throw new Error(`GENERATIVE_NATIVE_INPUT_INVALID: expected one visible slide, found ${visible.length}.`);
     presentation.addSlide("scene-source", visible[0].number, (target: any) => {
-      // Keep all generated native objects in one PptxGenJS drawing context. Calling target.generate
-      // once per node resets PptxGenJS's non-visual id allocation and can append duplicate cNvPr ids
-      // to the same slide after Automizer composition.
-      target.generate((slide: any, pptx: any) => {
-        for (const node of nodes) drawPrimitive(slide, pptx, node, profile, assets);
-      }, "generative-native-primitives");
+      // One generate element per semantic node keeps Automizer's generated object name tied to the
+      // Scene node id. Automizer appends a UUID, so the stable prefix remains machine-verifiable.
+      for (const node of nodes) {
+        target.generate((slide: any, pptx: any) => drawPrimitive(slide, pptx, node, profile, assets), nativePrimitiveObjectName(node.id));
+      }
     });
     await presentation.write(path.basename(resolvedOutput));
     if (!fs.existsSync(resolvedOutput)) throw new Error(`GENERATIVE_NATIVE_RENDER_FAILED: output was not produced at ${resolvedOutput}.`);
+
+    // pptx-automizer 0.9.3 imports PptxGenJS objects with their temporary-slide cNvPr ids. The
+    // first generated id can collide with an id already present on the template slide. Preserve all
+    // template ids and reassign only generated native objects before package validation.
+    await normalizeGeneratedDrawingIds(resolvedOutput);
     await pruneUnreachablePptxParts(resolvedOutput);
     return { outputPath: resolvedOutput, renderedNodeIds: nodes.map((node) => node.id) };
   } finally {
