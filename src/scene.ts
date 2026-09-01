@@ -119,6 +119,21 @@ export function selectMeaningfulSceneGap(designSystem: TemplateDesignSystemArtif
   return { value: 0, source: "none" };
 }
 
+function fitSceneGap(frame: SceneRect, gap: number, columns: number, rows: number): number {
+  if (!Number.isFinite(gap) || gap <= 0) return 0;
+  // The Design System spacing vocabulary describes observed gaps between real template objects,
+  // while the 12x12 Scene grid is only a semantic addressing system. A sparse template can
+  // therefore expose a perfectly legitimate object gap that is too large to repeat eleven times
+  // across every virtual grid track. Keep the observed value whenever it fits; otherwise clamp it
+  // to the largest value that still leaves each semantic cell at least as large as the gutter.
+  // For n tracks: (frame - gap*(n-1))/n >= gap  =>  gap <= frame/(2n-1).
+  const horizontalLimit = frame.w / Math.max(1, 2 * columns - 1);
+  const verticalLimit = frame.h / Math.max(1, 2 * rows - 1);
+  const fitted = Math.min(gap, horizontalLimit, verticalLimit);
+  if (!Number.isFinite(fitted) || fitted < 0) throw new Error("SCENE_GEOMETRY_UNSUPPORTED: template spacing cannot be fitted to the semantic grid.");
+  return round(fitted);
+}
+
 function gridRect(frame: SceneRect, gap: number, zone: SceneIntent["zones"][number], columns: number, rows: number): SceneRect {
   const cellW = (frame.w - gap * Math.max(0, columns - 1)) / columns;
   const cellH = (frame.h - gap * Math.max(0, rows - 1)) / rows;
@@ -134,7 +149,8 @@ function gridRect(frame: SceneRect, gap: number, zone: SceneIntent["zones"][numb
 export function resolveSceneGeometry(intent: SceneIntent, designSystem: TemplateDesignSystemArtifact): ResolvedScene {
   const parsed = sceneIntentSchema.parse(intent);
   const frame = validFrame(designSystem);
-  const gap = selectMeaningfulSceneGap(designSystem);
+  const observedGap = selectMeaningfulSceneGap(designSystem);
+  const gap = { ...observedGap, value: fitSceneGap(frame, observedGap.value, parsed.grid.columns, parsed.grid.rows) };
   const zones = parsed.zones.map((zone) => ({ ...zone, bounds: gridRect(frame, gap.value, zone, parsed.grid.columns, parsed.grid.rows) }));
   for (const zone of zones) {
     if (zone.bounds.x < frame.x - 1e-6 || zone.bounds.y < frame.y - 1e-6 || zone.bounds.x + zone.bounds.w > frame.x + frame.w + 1e-6 || zone.bounds.y + zone.bounds.h > frame.y + frame.h + 1e-6) {
