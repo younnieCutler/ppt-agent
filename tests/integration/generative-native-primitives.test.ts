@@ -9,7 +9,7 @@ import { renderGenerativeNativePrimitives } from "../../src/generative-native-pr
 import type { ResolvedGenerativeScene } from "../../src/generative-scene";
 import { validatePptxPackage } from "../../src/package-integrity";
 
-const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC0lEQVR42mP8/x8AAusB9Y9Z4xQAAAAASUVORK5CYII=", "base64");
+const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4xQAAAAASUVORK5CYII=", "base64");
 
 async function sourceDeck(filePath: string): Promise<void> {
   const pptx = new pptxgen();
