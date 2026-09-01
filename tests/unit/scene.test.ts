@@ -53,7 +53,7 @@ describe("vNext Scene IR", () => {
 
     expect(resolved.zones).toHaveLength(3);
     expect(resolved.zones.every((zone) => zone.bounds.w < resolved.frame.w / 2)).toBe(true);
-    expect(new Set(resolved.zones.map((zone) => zone.bounds.y))).toHaveSize(1);
+    expect(new Set(resolved.zones.map((zone) => zone.bounds.y)).size).toBe(1);
     expect(resolved.zones[0].bounds.x).toBeLessThan(resolved.zones[1].bounds.x);
     expect(resolved.zones[1].bounds.x).toBeLessThan(resolved.zones[2].bounds.x);
   });
@@ -67,8 +67,8 @@ describe("vNext Scene IR", () => {
     });
     const resolved = resolveSceneGeometry(scene, designSystem());
 
-    expect(new Set(resolved.zones.map((zone) => zone.bounds.x))).toHaveSize(2);
-    expect(new Set(resolved.zones.map((zone) => zone.bounds.y))).toHaveSize(2);
+    expect(new Set(resolved.zones.map((zone) => zone.bounds.x)).size).toBe(2);
+    expect(new Set(resolved.zones.map((zone) => zone.bounds.y)).size).toBe(2);
     expect(resolved.zones.every((zone) => zone.bounds.w < resolved.frame.w)).toBe(true);
   });
 
@@ -102,7 +102,7 @@ describe("vNext Scene IR", () => {
     const resolved = resolveSceneGeometry(scene, designSystem());
 
     expect(resolved.zones).toHaveLength(5);
-    expect(new Set(resolved.zones.map((zone) => zone.bounds.y))).toHaveSize(1);
+    expect(new Set(resolved.zones.map((zone) => zone.bounds.y)).size).toBe(1);
     expect(resolved.zones.map((zone) => zone.bounds.x)).toEqual([...resolved.zones.map((zone) => zone.bounds.x)].sort((a, b) => a - b));
   });
 
