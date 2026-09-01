@@ -25,8 +25,8 @@ contract.template { kind: "pptx", path }
   -> qa / ooxmlQa / visual
 ```
 
-Keep these modules and their shared contracts: `schema.ts`, `template-analysis.ts`,
-`template-grammar.ts` behavior, `template-design-system.ts`,
+Keep these modules and their shared contracts: `schema.ts`, `template-analysis.ts` grammar
+compiler behavior, `template-design-system.ts`,
 `template-components.ts`, `template-patterns.ts`, `template-transform.ts`,
 `adaptive-*.ts`, `template.ts` source-slide skeleton assembly,
 `ooxml.ts`, `qa.ts`, `visual.ts`, and `CANVAS_DIMENSIONS`/semantic layout
