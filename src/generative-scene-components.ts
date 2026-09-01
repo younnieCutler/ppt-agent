@@ -1,5 +1,5 @@
 import type { TemplateConstraintProfile, ImmutableBrandRegion, Rect } from "./brand-constraints";
-import type { GenerativeSceneNode, ResolvedGenerativeScene } from "./generative-scene";
+import { isGenerativeNativePrimitiveNode, type GenerativeSceneNode, type GenerativeTextNode, type ResolvedGenerativeScene } from "./generative-scene";
 import type { ComponentTransformOperation } from "./template-transform";
 import type { ComponentKind, TemplateComponent, TemplateComponentsArtifact } from "./template-components";
 
@@ -20,7 +20,7 @@ export type GenerativeSceneComponentPlan = {
   preservedImmutableComponentIds: string[];
 };
 
-const textPreferences: Record<Exclude<GenerativeSceneNode["role"], "surface" | "divider">, ComponentKind[]> = {
+const textPreferences: Record<GenerativeTextNode["role"], ComponentKind[]> = {
   headline: ["title_block", "key_message", "body_block"],
   body: ["body_block", "key_message", "list_item", "label"],
   label: ["label", "body_block", "list_item"],
@@ -59,8 +59,7 @@ function immutableComponent(component: TemplateComponent, profile: TemplateConst
   return profile.immutableRegions.some((region) => immutableMatch(component, region));
 }
 
-function textPrototype(node: GenerativeSceneNode, artifact: TemplateComponentsArtifact): TemplateComponent {
-  if (node.role === "surface" || node.role === "divider") throw new Error(`GENERATIVE_COMPONENT_UNSUPPORTED: '${node.role}' is not a text node.`);
+function textPrototype(node: GenerativeTextNode, artifact: TemplateComponentsArtifact): TemplateComponent {
   const preferences = node.componentPreference ? [node.componentPreference] : textPreferences[node.role];
   const candidates = artifact.components.filter(usable).filter((component) => preferences.includes(component.kind) && component.assetProvenance.kind === "none");
   candidates.sort((left, right) => {
@@ -78,7 +77,7 @@ function textPrototype(node: GenerativeSceneNode, artifact: TemplateComponentsAr
   return selected;
 }
 
-function structuralPrototype(node: GenerativeSceneNode, artifact: TemplateComponentsArtifact): TemplateComponent {
+function structuralPrototype(node: Extract<GenerativeSceneNode, { role: "surface" | "divider" }>, artifact: TemplateComponentsArtifact): TemplateComponent {
   const desired: ComponentKind[] = node.role === "surface"
     ? (node.componentPreference ? [node.componentPreference] : ["card", "surface"])
     : ["divider"];
@@ -89,19 +88,17 @@ function structuralPrototype(node: GenerativeSceneNode, artifact: TemplateCompon
   return selected;
 }
 
-function prototypeFor(node: GenerativeSceneNode, artifact: TemplateComponentsArtifact): TemplateComponent {
-  return node.role === "surface" || node.role === "divider" ? structuralPrototype(node, artifact) : textPrototype(node, artifact);
+function prototypeFor(node: Exclude<GenerativeSceneNode, { role: "connector" | "chart" | "image" | "icon" }>, artifact: TemplateComponentsArtifact): TemplateComponent {
+  return node.role === "surface" || node.role === "divider" ? structuralPrototype(node) : textPrototype(node, artifact);
 }
 
 function aliasFor(nodeId: string): string {
   return `generative.${nodeId}`;
 }
 
-function appendNode(operations: ComponentTransformOperation[], provenance: GenerativeComponentProvenance[], node: ResolvedGenerativeScene["nodes"][number], component: TemplateComponent, targetSlideId: string): void {
+function appendNode(operations: ComponentTransformOperation[], provenance: GenerativeComponentProvenance[], node: Exclude<ResolvedGenerativeScene["nodes"][number], { role: "connector" | "chart" | "image" | "icon" }>, component: TemplateComponent, targetSlideId: string): void {
   const alias = aliasFor(node.id);
   operations.push({ operation: "clone", componentId: component.id, targetSlideId, as: alias });
-  // Resize at the source component's known-safe position before moving. This avoids transient
-  // off-canvas geometry when a large template prototype is destined for a small free-form frame.
   operations.push({ operation: "resize", componentId: alias, w: node.bounds.w, h: node.bounds.h });
   operations.push({ operation: "move", componentId: alias, x: node.bounds.x, y: node.bounds.y });
   const record: GenerativeComponentProvenance = {
@@ -112,7 +109,7 @@ function appendNode(operations: ComponentTransformOperation[], provenance: Gener
     sourceSlideId: component.sourceSlideId,
     bounds: { ...node.bounds },
   };
-  if (node.text) {
+  if ("text" in node && node.text) {
     const text = node.text.replace(/\s+/g, " ").trim();
     if (!text) throw new Error(`GENERATIVE_COMPONENT_UNSUPPORTED: Scene node '${node.id}' has no renderable text.`);
     operations.push({ operation: "replace_text", componentId: alias, text });
@@ -139,10 +136,13 @@ export function compileGenerativeSceneComponentPlan(scene: ResolvedGenerativeSce
   const operations: ComponentTransformOperation[] = [];
   const provenance: GenerativeComponentProvenance[] = [];
 
-  // Structural/background nodes are cloned first so later text nodes naturally stay above them.
-  const ordered = [...scene.nodes].sort((left, right) => {
+  // Template component cloning is intentionally limited to text/surface/divider nodes. Native
+  // connector/chart/image/icon nodes are rendered in a second pass so they remain editable native
+  // PowerPoint objects without being forced through a text/rectangle prototype.
+  const componentNodes = scene.nodes.filter((node) => !isGenerativeNativePrimitiveNode(node)) as Array<Exclude<ResolvedGenerativeScene["nodes"][number], { role: "connector" | "chart" | "image" | "icon" }>>;
+  const ordered = [...componentNodes].sort((left, right) => {
     const layer = (role: GenerativeSceneNode["role"]): number => role === "surface" ? 0 : role === "divider" ? 1 : 2;
-    return layer(left.role) - layer(right.role) || scene.nodes.indexOf(left) - scene.nodes.indexOf(right);
+    return layer(left.role) - layer(right.role) || componentNodes.indexOf(left) - componentNodes.indexOf(right);
   });
   for (const node of ordered) appendNode(operations, provenance, node, prototypeFor(node, artifact), targetSlideId);
 
