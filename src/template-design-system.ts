@@ -1,6 +1,6 @@
-import { compileTemplateGrammar, elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar, type TemplateTextStyle } from "./template-analysis";
+import { assertCanonicalTemplateElements, compileTemplateGrammar, elementsDigest, TEMPLATE_ANALYZER_VERSION, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact, type TemplateGrammar, type TemplateTextStyle } from "./template-analysis";
 
-export const TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION = "1";
+export const TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION = "2";
 
 type Rect = { x: number; y: number; w: number; h: number };
 type NumericVocabulary = { values: number[]; min?: number; max?: number };
@@ -17,6 +17,7 @@ export type TemplateDesignSystemArtifact = {
   compilerVersion: string;
   sourceDigest: string;
   elementsDigest: string;
+  coordinateSpace?: TemplateCoordinateSpace;
   canvas: { w: number; h: number };
   typography: {
     roles: Partial<Record<SemanticRole, TypographyRole>>;
@@ -47,9 +48,9 @@ function strings(values: Array<string | undefined>): string[] {
 
 function partsOf(artifact: TemplateElementsArtifact): TemplateElement[][] {
   return [
-    ...artifact.slides.map((slide) => slide.elements),
-    ...artifact.layouts.map((layout) => layout.elements),
-    ...artifact.masters.map((master) => master.elements),
+    ...artifact.slides.map((slide) => slide.elements.filter((element) => !element.offCanvasHelper)),
+    ...artifact.layouts.map((layout) => layout.elements.filter((element) => !element.offCanvasHelper)),
+    ...artifact.masters.map((master) => master.elements.filter((element) => !element.offCanvasHelper)),
   ];
 }
 
@@ -99,29 +100,10 @@ function alignmentAnchors(elements: TemplateElement[]): { x: number[]; y: number
   };
 }
 
-const STRUCTURAL_ROLES = new Set<SemanticRole>(["surface", "divider", "footer", "logo"]);
-
-function contentFrame(elements: TemplateElement[], canvas: { w: number; h: number }): { contentFrame?: Rect; outerMargins?: Rect } {
-  // Structural chrome still contributes to the Design System's style/surface/divider vocabulary,
-  // but it must not enlarge the adaptive body region. Unknown elements are excluded because their
-  // intent has not been established strongly enough to define content geometry.
-  const content = elements.filter((element) => element.role !== "unknown" && !STRUCTURAL_ROLES.has(element.role));
-  if (content.length === 0) return {};
-  const left = Math.min(...content.map((element) => element.bounds.x));
-  const top = Math.min(...content.map((element) => element.bounds.y));
-  const right = Math.max(...content.map((element) => element.bounds.x + element.bounds.w));
-  const bottom = Math.max(...content.map((element) => element.bounds.y + element.bounds.h));
-  const frame = { x: round(left), y: round(top), w: round(right - left), h: round(bottom - top) };
-  if (![frame.x, frame.y, frame.w, frame.h].every(Number.isFinite) || frame.w <= 0 || frame.h <= 0) return {};
-  return {
-    contentFrame: frame,
-    outerMargins: {
-      x: frame.x,
-      y: frame.y,
-      w: round(canvas.w - frame.x - frame.w),
-      h: round(canvas.h - frame.y - frame.h),
-    },
-  };
+function contentFrame(grammar: TemplateGrammar): { contentFrame?: Rect; outerMargins?: Rect } {
+  const frame = grammar.geometry.contentFrame;
+  if (frame.w <= 0 || frame.h <= 0) return {};
+  return { contentFrame: frame, outerMargins: grammar.geometry.outerMargins };
 }
 
 function typography(elements: TemplateElement[], artifact: TemplateElementsArtifact): TemplateDesignSystemArtifact["typography"] {
@@ -147,13 +129,14 @@ function typography(elements: TemplateElement[], artifact: TemplateElementsArtif
   return { roles, typeScale: numericVocabulary(textElements.flatMap((element) => { const size = styleOf(element, artifact)?.sizePt; return size === undefined ? [] : [size]; })) };
 }
 
-export function compileTemplateDesignSystem(artifact: TemplateElementsArtifact, _grammar: TemplateGrammar = compileTemplateGrammar(artifact)): TemplateDesignSystemArtifact {
+export function compileTemplateDesignSystem(artifact: TemplateElementsArtifact, grammar: TemplateGrammar = compileTemplateGrammar(artifact)): TemplateDesignSystemArtifact {
+  if (artifact.coordinateSpace || artifact.analysisInputs?.analyzerVersion === TEMPLATE_ANALYZER_VERSION) assertCanonicalTemplateElements(artifact);
   const elements = elementsOf(artifact);
   const textElements = elements.filter((element) => element.type === "text");
   const styleValues = elements.map((element) => styleOf(element, artifact));
   const dividerElements = elements.filter((element) => element.role === "divider");
   const surfaceElements = elements.filter((element) => element.type === "shape" || element.type === "image");
-  const frames = contentFrame(elements, artifact.source.slideSize);
+  const frames = contentFrame(grammar);
   const gapVocabulary = observedGaps(artifact);
   const backgrounds = [
     ...artifact.slides.map((slide) => slide.background),
@@ -166,6 +149,7 @@ export function compileTemplateDesignSystem(artifact: TemplateElementsArtifact, 
     compilerVersion: TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION,
     sourceDigest: artifact.source.sha256,
     elementsDigest: elementsDigest(artifact),
+    coordinateSpace: artifact.coordinateSpace,
     canvas: artifact.source.slideSize,
     typography: typography(elements, artifact),
     colors: {

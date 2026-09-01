@@ -1,12 +1,11 @@
-import { elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
+import { assertCanonicalTemplateElements, elementsDigest, elementsGeometryDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
 
-export const TEMPLATE_COMPONENTS_COMPILER_VERSION = "1";
+export const TEMPLATE_COMPONENTS_COMPILER_VERSION = "2";
 export const componentKinds = ["title_block", "subtitle_block", "body_block", "label", "metric", "surface", "card", "divider", "key_message", "list_item", "footer", "logo", "media_frame", "unknown"] as const;
 export type ComponentKind = (typeof componentKinds)[number];
 export type ResizeFeasibility = "safe" | "unsafe" | "unknown";
 export type RepeatPattern = "single" | "horizontal_row" | "vertical_stack" | "grid";
 type Rect = { x: number; y: number; w: number; h: number };
-
 type AxisCluster = { center: number; members: TemplateComponent[] };
 
 export type TemplateComponent = {
@@ -21,6 +20,8 @@ export type TemplateComponent = {
   semanticRoles: SemanticRole[];
   styleRefs: string[];
   assetProvenance: { kind: "none" | "image" | "chart" | "table"; sourceSlidePart: string; sourceElementId: string; ref?: string };
+  offCanvasHelper?: boolean;
+  grouped?: boolean;
   repeatability: { signal: "single" | "repeatable"; count: number; groupId?: string; index?: number };
   resizeFeasibility: { horizontal: ResizeFeasibility; vertical: ResizeFeasibility };
   observedSiblings: string[];
@@ -42,7 +43,9 @@ export type TemplateComponentsArtifact = {
   compilerVersion: string;
   sourceDigest: string;
   elementsDigest: string;
+  sourceGeometryDigest: string;
   canvas: { w: number; h: number };
+  coordinateSpace?: TemplateCoordinateSpace;
   components: TemplateComponent[];
   repeatGroups: TemplateRepeatGroup[];
 };
@@ -97,6 +100,8 @@ function componentFor(element: TemplateElement, slidePart: string, canvas: { w: 
     semanticRoles: element.role === "unknown" ? [] : [element.role],
     styleRefs: element.styleRef ? [element.styleRef] : [],
     assetProvenance: { kind: assetKind, sourceSlidePart: slidePart, sourceElementId: element.id, ...(element.assetRef ? { ref: element.assetRef } : {}) },
+    ...(element.offCanvasHelper ? { offCanvasHelper: true } : {}),
+    ...(element.grouped ? { grouped: true } : {}),
     repeatability: { signal: "single", count: 1 },
     resizeFeasibility: resizeFor(element),
     observedSiblings: [],
@@ -181,8 +186,9 @@ function repeatGroupsForSlide(slideComponents: TemplateComponent[]): Array<{ com
   const groups: Array<{ components: TemplateComponent[]; pattern: Exclude<RepeatPattern, "single"> }> = [];
   const seen = new Set<string>();
   for (const candidate of slideComponents) {
-    if (seen.has(candidate.id) || candidate.kind === "unknown" || candidate.styleRefs.length === 0) continue;
+    if (seen.has(candidate.id) || candidate.offCanvasHelper || candidate.kind === "unknown" || candidate.styleRefs.length === 0) continue;
     const members = slideComponents.filter((other) => !seen.has(other.id)
+      && !other.offCanvasHelper
       && other.kind === candidate.kind
       && other.styleRefs.join("|") === candidate.styleRefs.join("|")
       && similarSize(other.sourceBounds, candidate.sourceBounds));
@@ -195,6 +201,11 @@ function repeatGroupsForSlide(slideComponents: TemplateComponent[]): Array<{ com
 }
 
 export function compileTemplateComponents(artifact: TemplateElementsArtifact): TemplateComponentsArtifact {
+  if (artifact.coordinateSpace || artifact.analysisInputs?.analyzerVersion === "5") assertCanonicalTemplateElements(artifact);
+  if (artifact.coordinateSpace?.mode === "scaled" && artifact.slides.some((slide) => slide.elements.some((element) => element.grouped && !element.offCanvasHelper))) throw new Error("ADAPTIVE_COMPONENT_UNSUPPORTED: grouped components cannot be canonicalized losslessly in a scaled source coordinate space.");
+  if (artifact.coordinateSpace?.mode === "scaled" && artifact.slides.some((slide) => {
+    return slide.elements.some((element) => !element.offCanvasHelper && element.name && slide.elements.filter((candidate) => candidate.name === element.name).length > 1);
+  })) throw new Error("TEMPLATE_COORDINATE_SPACE_UNSUPPORTED: duplicate non-helper shape names cannot be canonicalized losslessly in a scaled source coordinate space.");
   const components = artifact.slides.flatMap((slide) => slide.elements.map((element) => componentFor(element, slide.sourceSlidePart, artifact.source.slideSize)));
   const repeatGroups: TemplateRepeatGroup[] = [];
   for (const slide of artifact.slides) {
@@ -216,7 +227,9 @@ export function compileTemplateComponents(artifact: TemplateElementsArtifact): T
     compilerVersion: TEMPLATE_COMPONENTS_COMPILER_VERSION,
     sourceDigest: artifact.source.sha256,
     elementsDigest: elementsDigest(artifact),
+    sourceGeometryDigest: elementsGeometryDigest(artifact),
     canvas: artifact.source.slideSize,
+    coordinateSpace: artifact.coordinateSpace,
     components,
     repeatGroups,
   };

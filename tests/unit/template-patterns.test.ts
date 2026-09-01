@@ -96,6 +96,23 @@ describe("compileTemplatePatterns", () => {
     expect(body.skeleton.preservedShapeIds).toContain(divider!.name);
     expect(body.skeleton.replaceableSlots.some((slot) => slot.shapeId === divider!.name)).toBe(false);
   });
+
+  it("does not turn an ambiguously named logo into removable content in identity space", async () => {
+    const elements = await extractTemplateElements(await buildPatternFixture());
+    const logo = { ...elements.slides[0].elements[0], id: "S01-logo-1", name: "Duplicate Logo", type: "image" as const, role: "logo" as const, bounds: { x: 1, y: 1, w: 1, h: 1 } };
+    const secondLogo = { ...logo, id: "S01-logo-2" };
+    const artifact = { ...elements, coordinateSpace: { mode: "identity" as const, canvas: elements.source.slideSize, sourceFrame: { x: 0, y: 0, ...elements.source.slideSize }, scale: { x: 1, y: 1 } }, slides: [{ ...elements.slides[0], elements: [logo, secondLogo, ...elements.slides[0].elements] }] };
+    const pattern = compileTemplatePatterns(artifact, compileTemplateGrammar(artifact)).patterns[0];
+    expect(pattern.skeleton.removableContentIds).not.toContain("Duplicate Logo");
+  });
+
+  it("rejects a preserved logo name collision with removable example content", async () => {
+    const elements = await extractTemplateElements(await buildPatternFixture());
+    const logo = { ...elements.slides[0].elements[0], id: "S01-logo-1", name: "Duplicate Logo", type: "image" as const, role: "logo" as const, bounds: { x: 1, y: 1, w: 1, h: 1 } };
+    const example = { ...elements.slides[0].elements[0], id: "S01-example-1", name: "Duplicate Logo", role: "body" as const, bounds: { x: 2, y: 1, w: 2, h: 1 } };
+    const artifact = { ...elements, coordinateSpace: { mode: "identity" as const, canvas: elements.source.slideSize, sourceFrame: { x: 0, y: 0, ...elements.source.slideSize }, scale: { x: 1, y: 1 } }, slides: [{ ...elements.slides[0], elements: [logo, example, ...elements.slides[0].elements] }] };
+    expect(() => compileTemplatePatterns(artifact, compileTemplateGrammar(artifact))).toThrow(/preserved shape name.*shared with removable content/);
+  });
 });
 
 describe("compileTemplatePatterns: ambiguous shape names", () => {

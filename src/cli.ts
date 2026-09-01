@@ -18,10 +18,10 @@ import { recordRun, writeQualityReport } from "./score";
 import { deckPlanDigest, resolveCompositionPlan, validateDeckPlan, verifyDeckAgainstPlan } from "./planning";
 import { sha256, sha256File, writeArtifactProvenance, type ArtifactProvenance } from "./provenance";
 import { writeArtifactPair } from "./artifacts";
-import { compileTemplateGrammar, extractTemplateElements } from "./template-analysis";
+import { assertCanonicalTemplateElements, compileTemplateGrammar, elementsDigest, extractTemplateElements, type TemplateElementsArtifact } from "./template-analysis";
 import { compileTemplateDesignSystem } from "./template-design-system";
 import { compileTemplateComponents } from "./template-components";
-import { applyPatternLabels, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, selectPatternsForSlides, type TemplatePattern } from "./template-patterns";
+import { applyPatternLabels, assertTemplatePatternsArtifact, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, selectPatternsForSlides, type TemplatePattern, type TemplatePatternsArtifact } from "./template-patterns";
 import { checkTemplateFidelityUnproven, checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
 import { applyPatternSkeleton } from "./template";
 import { templateMapSchema } from "./organization";
@@ -520,14 +520,22 @@ async function main(): Promise<void> {
     if (!fs.existsSync(patternsPath)) {
       throw new Error(`Pattern resolution requires ${patternsPath}. Run \`template-analyze\` first — or skip pattern-resolve entirely for a native_layout template, which has no source-slide patterns to rank.`);
     }
-    const patterns = readJson(patternsPath) as Parameters<typeof resolvePatternPlan>[2];
+    const patterns = readJson(patternsPath) as TemplatePatternsArtifact;
+    const elementsPath = path.join(runDir, "template", "template-elements.json");
+    const elements = fs.existsSync(elementsPath) ? readJson(elementsPath) as TemplateElementsArtifact : undefined;
+    if (elements) {
+      assertCanonicalTemplateElements(elements);
+      if (patterns.sourceDigest !== elements.source.sha256 || patterns.elementsDigest !== elementsDigest(elements)) throw new Error("Pattern resolution blocked: template-patterns.json is stale for template-elements.json. Re-run template-analyze.");
+    }
+    const canvas = elements?.source.slideSize ?? patterns.coordinateSpace?.canvas;
+    if (!canvas) throw new Error("Pattern resolution requires canonical coordinate-space metadata.");
+    assertTemplatePatternsArtifact(patterns, canvas);
     const compositionPlan = readJson(compositionPlanPath) as Parameters<typeof resolvePatternPlan>[1];
     const patternPlan = resolvePatternPlan(readJson(planPath) as never, compositionPlan, patterns);
     const outputPath = path.join(runDir, "pattern-plan.json");
     fs.writeFileSync(outputPath, JSON.stringify(patternPlan, null, 2));
     recordProvenance(runDir, { templatePatternsDigest: sha256File(patternsPath), patternPlanDigest: sha256File(outputPath) });
-    const elementsPath = path.join(runDir, "template", "template-elements.json");
-    const strategy = fs.existsSync(elementsPath) ? (readJson(elementsPath) as { strategy: Parameters<typeof checkTemplatePatternNotFound>[0] }).strategy : "native_layout";
+    const strategy = elements?.strategy ?? "native_layout";
     const notFoundFindings = checkTemplatePatternNotFound(strategy, patternPlan);
     if (notFoundFindings.length > 0) process.exitCode = 2;
     emit({ status: notFoundFindings.length > 0 ? "fail" : "pass", outputPath, slides: patternPlan.slides.length, findings: notFoundFindings }, { ...patternPlan, findings: notFoundFindings });
@@ -545,8 +553,19 @@ async function main(): Promise<void> {
     if (!fs.existsSync(patternPlanPath)) throw new Error(`Skeleton render requires ${patternPlanPath}. Run \`pattern-resolve\` first.`);
     const patternsPath = path.join(runDir, "template", "template-patterns.json");
     if (!fs.existsSync(patternsPath)) throw new Error(`Skeleton render requires ${patternsPath}. Run \`template-analyze\` first.`);
+    const elementsPath = path.join(runDir, "template", "template-elements.json");
+    if (!fs.existsSync(elementsPath)) throw new Error(`Skeleton render requires ${elementsPath}. Run \`template-analyze\` first.`);
+    const elements = readJson(elementsPath) as TemplateElementsArtifact;
+    assertCanonicalTemplateElements(elements);
+    const patternsArtifact = readJson(patternsPath) as TemplatePatternsArtifact;
+    if (patternsArtifact.sourceDigest !== elements.source.sha256 || patternsArtifact.elementsDigest !== elementsDigest(elements)) throw new Error("Skeleton render blocked: template-patterns.json is stale for template-elements.json. Re-run template-analyze.");
+    assertTemplatePatternsArtifact(patternsArtifact, elements.source.slideSize);
+    const patternProvenance = path.join(runDir, "artifact-provenance.json");
+    if (!fs.existsSync(patternProvenance)) throw new Error("Skeleton render requires artifact-provenance.json. Run pattern-resolve first.");
+    const provenance = readJson(patternProvenance) as ArtifactProvenance & Record<string, string>;
+    if (!provenance.templatePatternsDigest || sha256File(patternsPath) !== provenance.templatePatternsDigest) throw new Error("Skeleton render blocked: template-patterns.json changed after pattern resolution. Re-run pattern-resolve.");
     const patternPlan = readJson(patternPlanPath) as { slides: Array<{ id: string; candidates: Array<{ patternId: string; rank: number }> }> };
-    const patternsById = new Map<string, TemplatePattern>((readJson(patternsPath) as { patterns: TemplatePattern[] }).patterns.map((pattern) => [pattern.id, pattern]));
+    const patternsById = new Map<string, TemplatePattern>(patternsArtifact.patterns.map((pattern) => [pattern.id, pattern]));
     // Walk each slide's shortlist in rank order and take the first candidate that would actually
     // carry the slide's real content and fit its required slots — not unconditionally rank 1. A
     // rank-1 pattern that would silently drop a process's steps, or overflow its headline slot, is

@@ -4,7 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import { loadBrandFile } from "./brand";
 import type { BrandFile } from "./schema";
-import { elementsDigest, roleOverridesDigest, TEMPLATE_ANALYZER_VERSION, TEMPLATE_GRAMMAR_COMPILER_VERSION, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
+import { assertTemplateCoordinateSpace, elementsDigest, roleOverridesDigest, TEMPLATE_ANALYZER_VERSION, TEMPLATE_GRAMMAR_COMPILER_VERSION, type TemplateElementsArtifact, type TemplateGrammar } from "./template-analysis";
 
 const rectSchema = z.object({ x: z.number().nonnegative(), y: z.number().nonnegative(), w: z.number().positive(), h: z.number().positive() });
 export const semanticLayouts = ["title", "statement", "comparison", "process", "pipeline", "architecture", "quantitative", "timeline", "evidence", "chart"] as const;
@@ -79,6 +79,8 @@ export function loadOrganizationPack(directory: string): OrganizationPack {
     // of its input disagree, which is what a hand-edited artifact looks like.
     if (inputs.templateDigest !== templateDigest) throw new Error("Organization Pack v2 template-elements.json records a different template digest than template.pptx. Re-run `template-analyze`.");
     if (inputs.analyzerVersion !== TEMPLATE_ANALYZER_VERSION) throw new Error(`Organization Pack v2 template-elements.json was produced by analyzer version ${inputs.analyzerVersion}; this build is ${TEMPLATE_ANALYZER_VERSION}. Re-run \`template-analyze\`.`);
+    if (!elements.coordinateSpace) throw new Error("Organization Pack v2 template-elements.json is missing canonical coordinate-space metadata. Re-run `template-analyze`.");
+    assertTemplateCoordinateSpace(elements.coordinateSpace, elements.source.slideSize);
     if (grammar.compilerVersion !== TEMPLATE_GRAMMAR_COMPILER_VERSION) throw new Error(`Organization Pack v2 template-grammar.json was compiled by grammar compiler version ${grammar.compilerVersion}; this build is ${TEMPLATE_GRAMMAR_COMPILER_VERSION}. Re-run \`template-analyze\`.`);
     if (grammar.elementsDigest !== elementsDigest(elements)) throw new Error("Organization Pack v2 template-grammar.json was not compiled from this template-elements.json. Re-run `template-analyze`.");
     templateGrammar = grammar;

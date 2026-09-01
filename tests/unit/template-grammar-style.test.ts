@@ -24,6 +24,7 @@ function writePack(options: PackOptions = {}): string {
   const elements = {
     version: 1,
     source: { sha256: templateDigest, slideSize: { w: 13.333, h: 7.5 } },
+    coordinateSpace: { mode: "identity", canvas: { w: 13.333, h: 7.5 }, sourceFrame: { x: 0, y: 0, w: 13.333, h: 7.5 }, scale: { x: 1, y: 1 } },
     analysisInputs: { templateDigest, roleOverridesDigest: roleOverridesDigest(analyzedOverrides as Record<string, never>), analyzerVersion: TEMPLATE_ANALYZER_VERSION },
     slides: [],
     styles: {},

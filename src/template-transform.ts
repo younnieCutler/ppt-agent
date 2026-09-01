@@ -4,7 +4,8 @@ import path from "node:path";
 import JSZip from "jszip";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { pruneUnreachablePptxParts } from "./ooxml";
-import type { TemplateComponent, TemplateComponentsArtifact } from "./template-components";
+import { compileTemplateComponents, TEMPLATE_COMPONENTS_COMPILER_VERSION, type TemplateComponent, type TemplateComponentsArtifact } from "./template-components";
+import { assertTemplateCoordinateSpace, canonicalizeRect, elementsGeometryDigest, extractTemplateElements } from "./template-analysis";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -215,6 +216,15 @@ function ensureInsideCanvas(rect: Rect, canvas: Rect, operation: string): void {
   }
 }
 
+function sameCoordinateSpace(left: NonNullable<TemplateComponentsArtifact["coordinateSpace"]>, right: NonNullable<TemplateComponentsArtifact["coordinateSpace"]>): boolean {
+  return left.mode === right.mode && [left.canvas.w, left.canvas.h, left.sourceFrame.x, left.sourceFrame.y, left.sourceFrame.w, left.sourceFrame.h, left.scale.x, left.scale.y]
+    .every((value, index) => Math.abs(value - [right.canvas.w, right.canvas.h, right.sourceFrame.x, right.sourceFrame.y, right.sourceFrame.w, right.sourceFrame.h, right.scale.x, right.scale.y][index]) <= 2 / EMU_PER_INCH);
+}
+
+function sameBounds(left: Rect, right: { x: number; y: number; w: number; h: number }): boolean {
+  return [left.x, left.y, left.w, left.h].every((value, index) => Math.abs(value - [right.x, right.y, right.w, right.h][index]) <= 2 / EMU_PER_INCH);
+}
+
 function nextShapeId(document: Document | Element): number {
   return Math.max(1, ...all(document, P_NS, "cNvPr").map((node) => Number(node.getAttribute("id") ?? 0)).filter(Number.isFinite)) + 1;
 }
@@ -395,6 +405,7 @@ export async function transformTemplateComponents(
   operations: ComponentTransformOperation[],
 ): Promise<ComponentTransformResult> {
   if (!Array.isArray(operations)) throw new Error("COMPONENT_TRANSFORM_INVALID: operations must be an array.");
+  if (artifact.version !== 1 || artifact.compilerVersion !== TEMPLATE_COMPONENTS_COMPILER_VERSION) throw new Error(`COMPONENT_CATALOG_STALE: expected template component compiler version ${TEMPLATE_COMPONENTS_COMPILER_VERSION}. Re-run template-analyze.`);
   const checkedOperations = operations.map(validateOperation);
   const sourcePath = path.resolve(templatePath);
   const resolvedOutput = path.resolve(outputPath);
@@ -410,6 +421,20 @@ export async function transformTemplateComponents(
   const presentationRelationshipsXml = await zip.file("ppt/_rels/presentation.xml.rels")?.async("string");
   if (!presentationRelationshipsXml) throw new Error("Component transform requires ppt/_rels/presentation.xml.rels.");
   const canvas = canvasFromPresentation(parseXml(presentationXml));
+  assertTemplateCoordinateSpace(artifact.coordinateSpace, canvas);
+  const sourceElements = await extractTemplateElements(sourcePath);
+  if (!sameCoordinateSpace(artifact.coordinateSpace, sourceElements.coordinateSpace!)) throw new Error("COMPONENT_CATALOG_STALE: component catalog coordinate space does not match the current template extraction. Re-run template-analyze.");
+  if (artifact.sourceGeometryDigest !== elementsGeometryDigest(sourceElements)) throw new Error("COMPONENT_CATALOG_STALE: component catalog geometry digest does not match the current template extraction. Re-run template-analyze.");
+  const expectedComponentIds = new Set(compileTemplateComponents(sourceElements).components.map((component) => component.id));
+  const actualComponentIds = new Set(artifact.components.map((component) => component.id));
+  if (expectedComponentIds.size !== actualComponentIds.size || [...expectedComponentIds].some((componentId) => !actualComponentIds.has(componentId))) throw new Error("COMPONENT_CATALOG_STALE: component catalog is missing or has extra components for the current template extraction. Re-run template-analyze.");
+  for (const component of artifact.components) {
+    const actualSlide = sourceElements.slides.find((slide) => slide.id === component.sourceSlideId);
+    const shapeName = component.shapeNames.length === 1 ? component.shapeNames[0] : undefined;
+    const actual = actualSlide && shapeName ? actualSlide.elements.filter((element) => element.name === shapeName) : [];
+    const matched = actual.length === 1 ? actual[0] : undefined;
+    if (!matched || component.id !== `component-${matched.id}` || component.elementIds.length !== 1 || component.elementIds[0] !== matched.id || component.shapeNames[0] !== matched.name || component.sourceSlidePart !== actualSlide?.sourceSlidePart || !sameBounds(component.sourceBounds, matched.bounds) || Boolean(component.offCanvasHelper) !== Boolean(matched.offCanvasHelper) || Boolean(component.grouped) !== Boolean(matched.grouped)) throw new Error(`COMPONENT_CATALOG_STALE: component '${component.id}' does not match the current template extraction. Re-run template-analyze.`);
+  }
   const slidesById = slidesFromPresentation(presentationXml, presentationRelationshipsXml);
   const states = new Map<string, SlideState>();
   const getState = async (slideId: string): Promise<SlideState> => {
@@ -450,6 +475,20 @@ export async function transformTemplateComponents(
     handles.set(alias, { componentId: alias, slideId: state.id, partPath: state.partPath, node });
     createdComponents.push(alias);
   };
+  if (artifact.coordinateSpace.mode === "scaled") {
+    for (const component of artifact.components) {
+      if (component.offCanvasHelper || component.grouped) continue;
+      const handle = resolve(component.id);
+      const state = states.get(handle.slideId)!;
+      const node = findHandleNode(handle);
+      const rawBounds = rectFor(node, state.partPath);
+      const alreadyCanonical = ["x", "y", "w", "h"].every((key) => Math.abs(rawBounds[key as keyof Rect] - component.sourceBounds[key as keyof Rect]) <= 0.00001);
+      if (alreadyCanonical) continue;
+      const canonicalBounds = canonicalizeRect(rawBounds, artifact.coordinateSpace);
+      ensureInsideCanvas(canonicalBounds, canvas, `canonicalize '${component.id}'`);
+      setRect(node, state.partPath, canonicalBounds);
+    }
+  }
   const clone = async (handle: ComponentHandle, targetSlideId: string, alias?: string, offset?: { x: number; y: number }): Promise<string> => {
     const sourceState = await getState(handle.slideId);
     const targetState = await getState(targetSlideId);
