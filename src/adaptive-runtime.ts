@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Automizer from "pptx-automizer";
 import { adaptiveSlideIntentSchema, type AdaptiveSlideIntent } from "./adaptive-composition";
+import { runAdaptiveQa } from "./adaptive-qa";
 import { applyPatternSkeleton } from "./template";
 import { transformTemplateComponents } from "./template-transform";
 import { adaptiveOperationsForPlan } from "./adaptive-statement";
@@ -116,6 +117,7 @@ export async function renderAdaptiveRuntime(input: AdaptiveRuntimeInput): Promis
   assertCanonicalTemplateElements(input.elements);
   const templateDigest = crypto.createHash("sha256").update(fs.readFileSync(path.resolve(input.templatePath))).digest("hex");
   if (templateDigest !== input.elements.source.sha256 || input.components.sourceDigest !== input.elements.source.sha256 || input.designSystem.sourceDigest !== input.elements.source.sha256 || input.components.elementsDigest !== elementsDigest(input.elements) || input.designSystem.elementsDigest !== elementsDigest(input.elements) || input.components.compilerVersion !== TEMPLATE_COMPONENTS_COMPILER_VERSION || input.designSystem.compilerVersion !== TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION) throw new Error("ADAPTIVE_RUNTIME_PROVENANCE_MISMATCH: template artifacts do not describe the current raw template extraction.");
+  if (!input.designSystem.coordinateSpace || !input.components.coordinateSpace || JSON.stringify(input.designSystem.coordinateSpace) !== JSON.stringify(input.components.coordinateSpace)) throw new Error("ADAPTIVE_RUNTIME_PROVENANCE_MISMATCH: Design System and component catalog coordinate spaces differ.");
 
   const resolvedOutput = path.resolve(input.outputPath);
   const outputDir = path.dirname(resolvedOutput);
@@ -149,6 +151,8 @@ export async function renderAdaptiveRuntime(input: AdaptiveRuntimeInput): Promis
       await transformTemplateComponents(input.templatePath, transformedTemplate, input.components, operations);
       const adaptiveSourceSlides = new Map([[slide.id, { sourceSlideNumber: selected.sourceSlideNumber, family: plan.family }]]);
       const manifest = await applyPatternSkeleton(transformedTemplate, input.scratchPath, preparedPath, [slide], new Map(), { strategy: input.elements.strategy, adaptiveSourceSlides });
+      const adaptiveQa = await runAdaptiveQa({ templatePath: input.templatePath, outputPath: preparedPath, plan: sourceScopedPlan, components: selected.components });
+      if (adaptiveQa.status !== "pass") throw new Error(`ADAPTIVE_RUNTIME_QA_FAILED: slide '${slide.id}' failed adaptive QA: ${adaptiveQa.findings.map((finding) => finding.code).join(", ")}`);
       decisions.push({ ...selected.decision, sourceSlideId: selected.sourceSlideId, sourceSlideNumber: selected.sourceSlideNumber });
       prepared.push({ slideId: slide.id, path: preparedPath, mode: manifest[0]?.mode ?? `adaptive:${plan.family}`, sourceSlideId: selected.sourceSlideId, sourceSlideNumber: selected.sourceSlideNumber });
     }
