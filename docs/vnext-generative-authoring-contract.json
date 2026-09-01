@@ -1,0 +1,28 @@
+{
+  "request": {
+    "version": 1,
+    "instructions": {
+      "compositionAuthority": "model_authored",
+      "coordinateSpace": "normalized_content_region_0_1",
+      "sourceSlideGeometry": "reference_only",
+      "preserveAllContentAtoms": true,
+      "forbidInventedText": true,
+      "chrome": "immutable",
+      "colors": "template_only",
+      "fonts": "template_only"
+    }
+  },
+  "response": {
+    "version": 1,
+    "requestDigest": "<echo request.requestDigest>",
+    "sourceDigest": "<echo request.sourceDigest>",
+    "scenes": [
+      {
+        "scene": "<GenerativeSceneIntent v2>",
+        "bindings": [
+          { "nodeId": "headline", "contentRef": "S01.headline" }
+        ]
+      }
+    ]
+  }
+}
