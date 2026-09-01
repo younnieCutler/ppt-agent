@@ -16,6 +16,7 @@ const EMU_PER_INCH = 914400;
 const STRUCTURAL_ROLES = new Set(["surface", "divider", "footer", "logo"]);
 
 type Rect = { x: number; y: number; w: number; h: number };
+type ComparisonPanelTarget = { component: TemplateComponent; group: string; bounds: Rect };
 export type AdaptiveStatementFinding = { code: AdaptiveQaCode | "ADAPTIVE_GEOMETRY_OVERFLOW" | "ADAPTIVE_CONTENT_DROPPED" | "ADAPTIVE_EXAMPLE_CONTENT_LEAK" | "ADAPTIVE_STYLE_SOURCE_VIOLATION" | "ADAPTIVE_TEMPLATE_PROVENANCE_MISSING" | "OOXML_INVALID"; message: string };
 export type AdaptiveStatementQa = { status: "pass" | "fail"; findings: AdaptiveStatementFinding[] };
 export type AdaptiveStatementResult = { outputPath: string; plan: AdaptiveSlidePlan; qa: AdaptiveStatementQa };
@@ -31,10 +32,6 @@ function all(scope: Document | Element, namespace: string, name: string): Elemen
 
 function first(scope: Document | Element, namespace: string, name: string): Element | undefined {
   return all(scope, namespace, name)[0];
-}
-
-function children(node: Element): Element[] {
-  return Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1) as Element[];
 }
 
 function nameOf(node: Element): string {
@@ -100,12 +97,36 @@ function geometryOperations(componentId: string, current: Rect, target: Rect, ca
   throw new Error(`ADAPTIVE_GEOMETRY_OVERFLOW: component '${componentId}' cannot reach its in-canvas target without an out-of-canvas intermediate transform.`);
 }
 
-function operationsFor(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact): Parameters<typeof transformTemplateComponents>[3] {
+function comparisonPanelTargets(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact, intent: AdaptiveSlideIntent): ComparisonPanelTarget[] {
+  const groups = [...new Set(intent.blocks.map((block) => block.group).filter((group): group is string => Boolean(group)))];
+  if (groups.length !== 2) throw new Error("ADAPTIVE_COMPARISON_UNSUPPORTED: comparison panel reuse requires exactly two semantic groups.");
+  const panels = components.components
+    .filter((component) => !component.offCanvasHelper && !component.grouped && component.kind === "card" && component.semanticRoles.includes("surface") && component.shapeNames.length === 1)
+    .sort((left, right) => left.sourceBounds.x - right.sourceBounds.x || left.sourceBounds.y - right.sourceBounds.y || left.id.localeCompare(right.id));
+  if (panels.length < 2) throw new Error("ADAPTIVE_COMPARISON_UNSUPPORTED: comparison requires two distinct template-native panel/card surfaces so asymmetric geometry can be transformed without inventing or duplicating chrome.");
+  return groups.map((group, index) => {
+    const blockIds = new Set(intent.blocks.filter((block) => block.group === group).map((block) => block.id));
+    const placements = plan.placements.filter((placement) => blockIds.has(placement.blockId));
+    if (placements.length === 0) throw new Error(`ADAPTIVE_COMPARISON_UNSUPPORTED: semantic group '${group}' has no adaptive placement.`);
+    const x = Math.min(...placements.map((placement) => placement.x));
+    const right = Math.max(...placements.map((placement) => placement.x + placement.w));
+    return { component: panels[index], group, bounds: { x, y: plan.contentFrame.y, w: right - x, h: plan.contentFrame.h } };
+  });
+}
+
+function operationsFor(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact, intent: AdaptiveSlideIntent, layout: AdaptiveRenderableLayout): Parameters<typeof transformTemplateComponents>[3] {
   const byId = new Map(components.components.map((component) => [component.id, component]));
   const used = new Set([...plan.placements.map((placement) => placement.componentId), ...(plan.media ? [plan.media.componentId] : [])]);
   const usage = new Map<string, number>();
   const bounds = new Map(components.components.map((component) => [component.id, { ...component.sourceBounds }]));
   const operations: Parameters<typeof transformTemplateComponents>[3] = [];
+  if (layout === "comparison") {
+    for (const panel of comparisonPanelTargets(plan, components, intent)) {
+      operations.push(...geometryOperations(panel.component.id, panel.component.sourceBounds, panel.bounds, components.canvas));
+      bounds.set(panel.component.id, panel.bounds);
+      used.add(panel.component.id);
+    }
+  }
   for (const placement of plan.placements) {
     const component = byId.get(placement.componentId);
     if (!component) throw new Error(`ADAPTIVE_TEMPLATE_PROVENANCE_MISSING: plan references unknown component '${placement.componentId}'.`);
@@ -176,7 +197,7 @@ export async function renderAdaptiveContent(templatePath: string, outputPath: st
   if (intent.blocks.some((block) => /[\r\n]/.test(block.text))) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: content must fit the single-run text replacement contract and must not contain newlines.`);
   if (layout === "title" && (intent.blocks.some((block) => !["headline", "body", "support"].includes(block.role)) || intent.family !== "stack" || !intent.blocks.some((block) => block.role === "headline"))) throw new Error("ADAPTIVE_TITLE_UNSUPPORTED: title requires stack family with a headline block.");
   if (layout === "statement" && (intent.blocks.some((block) => !["headline", "body", "support"].includes(block.role)) || intent.family !== "stack" || !intent.blocks.some((block) => block.role === "headline") || !intent.blocks.some((block) => block.role === "body"))) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement vertical slice requires stack family with headline and body content.");
-  if (layout === "comparison" && (intent.family !== "two_column" || intent.blocks.some((block) => !["support", "item"].includes(block.role)) || new Set(intent.blocks.map((block) => block.group).filter(Boolean)).size < 2)) throw new Error("ADAPTIVE_COMPARISON_UNSUPPORTED: comparison requires two semantic groups in a two_column intent.");
+  if (layout === "comparison" && (intent.family !== "two_column" || intent.blocks.some((block) => !["support", "item"].includes(block.role)) || new Set(intent.blocks.map((block) => block.group).filter(Boolean)).size !== 2)) throw new Error("ADAPTIVE_COMPARISON_UNSUPPORTED: comparison requires exactly two semantic groups in a two_column intent.");
   if ((layout === "process" || layout === "timeline") && (intent.family !== "repeated_cards" || intent.blocks.some((block) => block.role !== "item") || intent.blocks.length < 2)) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: ${layout} requires repeated_cards with at least two item blocks.`);
   if (layout === "evidence" && (intent.family !== "stack" || intent.blocks.some((block) => !["support", "item"].includes(block.role)) || intent.blocks.length < 1)) throw new Error("ADAPTIVE_EVIDENCE_UNSUPPORTED: evidence requires a stack with caption or bullet blocks.");
   if (layout === "quantitative" && (intent.family !== "metric_row" || intent.blocks.some((block) => block.role !== "metric"))) throw new Error("ADAPTIVE_QUANTITATIVE_UNSUPPORTED: quantitative requires metric_row with metric blocks only.");
@@ -189,10 +210,11 @@ export async function renderAdaptiveContent(templatePath: string, outputPath: st
   const sourceKinds = new Set(components.components.filter((component) => !component.offCanvasHelper && !component.grouped).map((component) => component.kind));
   if ((layout === "title" || layout === "statement") && !sourceKinds.has("title_block")) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: ${layout} requires a template-native title component.`);
   if (layout === "statement" && intent.blocks.some((block) => block.role === "body") && !sourceKinds.has("body_block")) throw new Error("ADAPTIVE_STATEMENT_UNSUPPORTED: statement requires a template-native body component.");
+  if (layout === "comparison" && components.components.filter((component) => !component.offCanvasHelper && !component.grouped && component.kind === "card" && component.semanticRoles.includes("surface") && component.shapeNames.length === 1).length < 2) throw new Error("ADAPTIVE_COMPARISON_UNSUPPORTED: comparison requires two distinct template-native panel/card surfaces.");
   if (layout === "quantitative" && !sourceKinds.has("metric")) throw new Error("ADAPTIVE_QUANTITATIVE_UNSUPPORTED: quantitative requires a template-native metric component.");
   const plan = planAdaptiveSlide({ templateDigest: components.sourceDigest, designSystem, components, intent });
   if (plan.textAllocation.some((allocation) => allocation.fits === "no")) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: text does not fit the calculated native component placement.`);
-  const operations = operationsFor(plan, components);
+  const operations = operationsFor(plan, components, intent, layout);
   const resolvedOutput = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
   if (physicalPath(templatePath) === physicalPath(resolvedOutput)) throw new Error("ADAPTIVE_STATEMENT_SOURCE_IMMUTABLE: outputPath must differ from the source template path.");
