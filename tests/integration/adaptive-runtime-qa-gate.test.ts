@@ -70,4 +70,33 @@ describe("Goal 10 adaptive QA release gate", () => {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }
   });
+
+  it("rejects Design System and Component Catalog artifacts that disagree on canonical coordinate space", async () => {
+    const source = await fixture();
+    try {
+      const elements = await extractTemplateElements(source.template);
+      const grammar = compileTemplateGrammar(elements);
+      const designSystem = compileTemplateDesignSystem(elements, grammar);
+      const components = compileTemplateComponents(elements);
+      const mismatchedComponents = {
+        ...components,
+        coordinateSpace: components.coordinateSpace ? {
+          ...components.coordinateSpace,
+          sourceFrame: { ...components.coordinateSpace.sourceFrame, w: components.coordinateSpace.sourceFrame.w - 0.1 },
+        } : components.coordinateSpace,
+      };
+      await expect(renderAdaptiveRuntime({
+        templatePath: source.template,
+        scratchPath: source.template,
+        outputPath: path.join(source.dir, "coordinate-mismatch.pptx"),
+        slides: [adaptiveSlide()],
+        candidatesBySlide: new Map([["S10", []]]),
+        elements,
+        designSystem,
+        components: mismatchedComponents,
+      })).rejects.toThrow(/coordinate spaces differ/);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  });
 });
