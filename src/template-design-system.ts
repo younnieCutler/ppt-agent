@@ -46,12 +46,16 @@ function strings(values: Array<string | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value)).map((value) => value.toUpperCase()))].sort();
 }
 
-function elementsOf(artifact: TemplateElementsArtifact): TemplateElement[] {
+function partsOf(artifact: TemplateElementsArtifact): TemplateElement[][] {
   return [
-    ...artifact.slides.flatMap((slide) => slide.elements),
-    ...artifact.layouts.flatMap((layout) => layout.elements),
-    ...artifact.masters.flatMap((master) => master.elements),
-  ].filter((element) => !element.offCanvasHelper);
+    ...artifact.slides.map((slide) => slide.elements.filter((element) => !element.offCanvasHelper)),
+    ...artifact.layouts.map((layout) => layout.elements.filter((element) => !element.offCanvasHelper)),
+    ...artifact.masters.map((master) => master.elements.filter((element) => !element.offCanvasHelper)),
+  ];
+}
+
+function elementsOf(artifact: TemplateElementsArtifact): TemplateElement[] {
+  return partsOf(artifact).flat();
 }
 
 function styleOf(element: TemplateElement, artifact: TemplateElementsArtifact): TemplateTextStyle | undefined {
@@ -81,6 +85,12 @@ function gaps(elements: TemplateElement[]): number[] {
     }
   }
   return uniqueSorted(observed.filter((value) => value > 0));
+}
+
+function observedGaps(artifact: TemplateElementsArtifact): number[] {
+  // A spacing value is observed only when both elements coexist in the same physical OOXML part.
+  // Never manufacture a gap between unrelated slides/layouts/masters that merely share coordinates.
+  return uniqueSorted(partsOf(artifact).flatMap((elements) => gaps(elements)));
 }
 
 function alignmentAnchors(elements: TemplateElement[]): { x: number[]; y: number[] } {
@@ -127,6 +137,7 @@ export function compileTemplateDesignSystem(artifact: TemplateElementsArtifact, 
   const dividerElements = elements.filter((element) => element.role === "divider");
   const surfaceElements = elements.filter((element) => element.type === "shape" || element.type === "image");
   const frames = contentFrame(grammar);
+  const gapVocabulary = observedGaps(artifact);
   const backgrounds = [
     ...artifact.slides.map((slide) => slide.background),
     ...artifact.layouts.map((layout) => layout.background),
@@ -147,8 +158,8 @@ export function compileTemplateDesignSystem(artifact: TemplateElementsArtifact, 
       stroke: strings(styleValues.map((style) => style?.stroke)),
       background: strings(backgrounds),
     },
-    geometry: { ...frames, gutters: gaps(elements) },
-    spacing: { rhythm: gaps(elements) },
+    geometry: { ...frames, gutters: gapVocabulary },
+    spacing: { rhythm: gapVocabulary },
     dividers: {
       orientations: dividerElements.map((element) => element.bounds.w === 0 && element.bounds.h === 0 ? "unknown" : element.bounds.w >= element.bounds.h ? "horizontal" : "vertical"),
       thicknesses: uniqueSorted(dividerElements.map((element) => Math.min(element.bounds.w, element.bounds.h)).filter((value) => value > 0)),
