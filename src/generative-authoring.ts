@@ -324,6 +324,14 @@ function validateNativePrimitives(slide: AuthoringSlide, scene: GenerativeSceneI
   const chartNodes = scene.layout.nodes.filter((node): node is Extract<(typeof scene.layout.nodes)[number], { role: "chart" }> => node.role === "chart");
   const requiredImages = slide.nativePrimitives.filter((item): item is Extract<NativePrimitiveRequirement, { kind: "image" }> => item.kind === "image");
   const requiredCharts = slide.nativePrimitives.filter((item): item is Extract<NativePrimitiveRequirement, { kind: "chart" }> => item.kind === "chart");
+  const allowedImageRefs = new Set(requiredImages.map((item) => item.assetRef));
+  const allowedChartRefs = new Set(requiredCharts.map((item) => `${item.datasetRef}|${item.chartType}`));
+
+  // Reject invented native references before checking required counts. Otherwise changing a
+  // required dataset/asset ref is misreported as a dropped primitive and hides the grounding
+  // violation that actually occurred.
+  if (imageNodes.some((node) => node.role === "icon" || !allowedImageRefs.has(node.assetRef))) throw new Error(`GENERATIVE_AUTHORING_NATIVE_REF_UNKNOWN: Scene '${scene.slideId}' invented an image/icon asset reference.`);
+  if (chartNodes.some((node) => !allowedChartRefs.has(`${node.datasetRef}|${node.chartType}`))) throw new Error(`GENERATIVE_AUTHORING_NATIVE_REF_UNKNOWN: Scene '${scene.slideId}' invented a chart dataset/type reference.`);
 
   for (const requirement of requiredImages) {
     const matches = imageNodes.filter((node) => node.role === "image" && node.assetRef === requirement.assetRef);
@@ -333,10 +341,6 @@ function validateNativePrimitives(slide: AuthoringSlide, scene: GenerativeSceneI
     const matches = chartNodes.filter((node) => node.datasetRef === requirement.datasetRef && node.chartType === requirement.chartType);
     if (matches.length !== 1) throw new Error(`GENERATIVE_AUTHORING_NATIVE_DROPPED: Scene '${scene.slideId}' must contain exactly one ${requirement.chartType} chart '${requirement.datasetRef}'.`);
   }
-  const allowedImageRefs = new Set(requiredImages.map((item) => item.assetRef));
-  const allowedChartRefs = new Set(requiredCharts.map((item) => `${item.datasetRef}|${item.chartType}`));
-  if (imageNodes.some((node) => node.role === "icon" || !allowedImageRefs.has(node.assetRef))) throw new Error(`GENERATIVE_AUTHORING_NATIVE_REF_UNKNOWN: Scene '${scene.slideId}' invented an image/icon asset reference.`);
-  if (chartNodes.some((node) => !allowedChartRefs.has(`${node.datasetRef}|${node.chartType}`))) throw new Error(`GENERATIVE_AUTHORING_NATIVE_REF_UNKNOWN: Scene '${scene.slideId}' invented a chart dataset/type reference.`);
 }
 
 export function parseGenerativeAuthoringResponse(request: GenerativeAuthoringRequest, responseInput: unknown): Map<string, GenerativeSceneIntent> {
