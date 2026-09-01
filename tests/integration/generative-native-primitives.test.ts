@@ -9,7 +9,7 @@ import { renderGenerativeNativePrimitives } from "../../src/generative-native-pr
 import type { ResolvedGenerativeScene } from "../../src/generative-scene";
 import { validatePptxPackage } from "../../src/package-integrity";
 
-const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4xQAAAAASUVORK5CYII=", "base64");
+const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC0lEQVR42mP8/x8AAusB9Y9Z4xQAAAAASUVORK5CYII=", "base64");
 
 async function sourceDeck(filePath: string): Promise<void> {
   const pptx = new pptxgen();
@@ -111,10 +111,12 @@ describe("Generative Scene v3 native primitives", () => {
 
       const zip = await JSZip.loadAsync(fs.readFileSync(output));
       const slideXml = (await Promise.all(Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).map((name) => zip.file(name)!.async("string")))).join("\n");
-      expect(slideXml).toContain("generative.native.flow");
-      expect(slideXml).toContain("generative.native.chart");
-      expect(slideXml).toContain("generative.native.photo");
-      expect(slideXml).toContain("generative.native.icon");
+      expect(slideXml).toContain('name="generative.native.flow"');
+      expect(slideXml).toContain('name="generative.native.chart"');
+      expect(slideXml).toContain('name="generative.native.photo"');
+      expect(slideXml).toContain('name="generative.native.icon"');
+      const flowXml = slideXml.match(/<p:sp>[\s\S]*?name="generative\.native\.flow"[\s\S]*?<\/p:sp>/)?.[0] ?? "";
+      expect(flowXml).toContain('val="17324D"');
       expect(Object.keys(zip.files).some((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name))).toBe(true);
       expect(Object.keys(zip.files).some((name) => /^ppt\/media\//.test(name))).toBe(true);
 
