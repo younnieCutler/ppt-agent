@@ -44,8 +44,16 @@ async function mixedCoordinateFixture(): Promise<{ dir: string; source: string }
   return { dir, source };
 }
 
+function headlineElements(elements: Awaited<ReturnType<typeof extractTemplateElements>>) {
+  // Coordinate behavior is the contract under test. cNvPr names are metadata and can differ
+  // across PowerPoint/PptxGenJS versions, so select the top-most authored text shape instead.
+  return elements.slides.map((slide) => slide.elements
+    .filter((element) => element.type === "text")
+    .sort((left, right) => left.bounds.y - right.bounds.y)[0]);
+}
+
 function headlineXs(elements: Awaited<ReturnType<typeof extractTemplateElements>>): number[] {
-  return elements.slides.map((slide) => slide.elements.find((element) => element.name.startsWith("Title "))?.bounds.x ?? -1);
+  return headlineElements(elements).map((element) => element?.bounds.x ?? -1);
 }
 
 describe("mixed-template coordinate regression", () => {
@@ -56,8 +64,7 @@ describe("mixed-template coordinate regression", () => {
       expect(elements.coordinateSpace?.mode).toBe("scaled");
       expect(elements.coordinateSpace?.sourceFrame.w).toBeGreaterThan(elements.source.slideSize.w);
       expect(headlineXs(elements).every((x) => Math.abs(x - 0.85) < 0.001)).toBe(true);
-      expect(elements.slides.flatMap((slide) => slide.elements).filter((element) => element.name.startsWith("Title "))
-        .every((element) => element.bounds.x + element.bounds.w <= elements.source.slideSize.w + 1e-6)).toBe(true);
+      expect(headlineElements(elements).every((element) => Boolean(element) && element!.bounds.x + element!.bounds.w <= elements.source.slideSize.w + 1e-6)).toBe(true);
 
       const components = compileTemplateComponents(elements);
       const output = path.join(fixture.dir, "normalized.pptx");
