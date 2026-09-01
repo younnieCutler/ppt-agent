@@ -16,6 +16,8 @@ export type SceneComponentPlan = {
   provenance: SceneComponentProvenance[];
 };
 
+type Rect = { x: number; y: number; w: number; h: number };
+
 const preservedChromeKinds = new Set<ComponentKind>(["surface", "footer", "logo"]);
 
 const kindPreferences: Record<SceneNodeRole | "headline", ComponentKind[]> = {
@@ -73,7 +75,7 @@ function aliasFor(nodeId: string): string {
   return `scene.${nodeId}`;
 }
 
-function appendPlacement(operations: ComponentTransformOperation[], provenance: SceneComponentProvenance[], component: TemplateComponent, alias: string, targetSlideId: string, bounds: { x: number; y: number; w: number; h: number }, text: string, sceneNodeId: string): void {
+function appendPlacement(operations: ComponentTransformOperation[], provenance: SceneComponentProvenance[], component: TemplateComponent, alias: string, targetSlideId: string, bounds: Rect, text: string, sceneNodeId: string): void {
   const normalizedText = text.replace(/\s+/g, " ").trim();
   if (!normalizedText) throw new Error(`SCENE_COMPONENT_UNSUPPORTED: scene node '${sceneNodeId}' has no renderable text.`);
   operations.push({ operation: "clone", componentId: component.id, targetSlideId, as: alias });
@@ -83,12 +85,34 @@ function appendPlacement(operations: ComponentTransformOperation[], provenance: 
   operations.push({ operation: "replace_text", componentId: alias, text: normalizedText });
 }
 
-function headerBounds(scene: ResolvedScene): { x: number; y: number; w: number; h: number } {
+function headerBounds(scene: ResolvedScene): Rect {
   const rows = 12;
   const gap = scene.gap.value;
   const cellH = (scene.frame.h - gap * (rows - 1)) / rows;
   if (!Number.isFinite(cellH) || cellH <= 0) throw new Error("SCENE_GEOMETRY_UNSUPPORTED: no positive header grid row remains after template spacing.");
   return { x: scene.frame.x, y: scene.frame.y, w: scene.frame.w, h: cellH * 2 + gap };
+}
+
+function nodeWeight(node: ResolvedScene["nodes"][number]): number {
+  const emphasis = node.emphasis === "primary" ? 1.3 : node.emphasis === "secondary" ? 1.1 : 1;
+  const role = node.role === "label" ? 0.72 : node.role === "metric" ? 1.2 : 1;
+  return emphasis * role;
+}
+
+function nodeBounds(scene: ResolvedScene, node: ResolvedScene["nodes"][number]): Rect {
+  const zone = scene.zones.find((candidate) => candidate.id === node.zoneId);
+  if (!zone) throw new Error(`SCENE_COMPONENT_UNSUPPORTED: scene node '${node.id}' references missing resolved zone '${node.zoneId}'.`);
+  const peers = scene.nodes.filter((candidate) => candidate.zoneId === node.zoneId).sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  if (peers.length === 1) return zone.bounds;
+  const gap = scene.gap.value;
+  const available = zone.bounds.h - gap * (peers.length - 1);
+  if (!Number.isFinite(available) || available <= 0) throw new Error(`SCENE_GEOMETRY_UNSUPPORTED: zone '${zone.id}' cannot fit ${peers.length} ordered scene nodes.`);
+  const weights = peers.map(nodeWeight);
+  const total = weights.reduce((sum, value) => sum + value, 0);
+  const index = peers.findIndex((candidate) => candidate.id === node.id);
+  const heights = weights.map((weight) => available * weight / total);
+  const y = zone.bounds.y + heights.slice(0, index).reduce((sum, value) => sum + value, 0) + gap * index;
+  return { x: zone.bounds.x, y, w: zone.bounds.w, h: heights[index] };
 }
 
 function decorationPlan(scene: ResolvedScene, targetSlideId: string, artifact: TemplateComponentsArtifact): ComponentTransformOperation[] {
@@ -132,12 +156,9 @@ export function compileSceneComponentPlan(scene: ResolvedScene, headlineText: st
   const headline = prototypeFor("headline", artifact);
   appendPlacement(operations, provenance, headline, "scene.headline", targetSlideId, headerBounds(scene), headlineText, "$headline");
 
-  const zoneById = new Map(scene.zones.map((zone) => [zone.id, zone]));
   for (const node of [...scene.nodes].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))) {
-    const zone = zoneById.get(node.zoneId);
-    if (!zone) throw new Error(`SCENE_COMPONENT_UNSUPPORTED: scene node '${node.id}' references missing resolved zone '${node.zoneId}'.`);
     const prototype = prototypeFor(node.role, artifact);
-    appendPlacement(operations, provenance, prototype, aliasFor(node.id), targetSlideId, zone.bounds, node.text, node.id);
+    appendPlacement(operations, provenance, prototype, aliasFor(node.id), targetSlideId, nodeBounds(scene, node), node.text, node.id);
   }
 
   for (const component of targetComponents) {
