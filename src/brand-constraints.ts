@@ -5,7 +5,7 @@ export const BRAND_CONSTRAINT_COMPILER_VERSION = "1";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type BrandLockRole = "logo" | "header_chrome" | "footer_chrome" | "page_number" | "legal" | "persistent_decoration";
-export type BrandConstraintEvidence = "master_or_layout_owned" | "cross_slide_repeat" | "stable_geometry" | "stable_style" | "stable_asset" | "edge_anchored";
+export type BrandConstraintEvidence = "master_or_layout_owned" | "cross_slide_repeat" | "explicit_logo_role" | "stable_geometry" | "stable_style" | "stable_asset" | "edge_anchored";
 
 export type ImmutableBrandRegion = {
   id: string;
@@ -97,6 +97,11 @@ function stableRepeatedSlideBody(artifact: TemplateElementsArtifact): TemplateEl
   return [...buckets.values()].filter((bucket) => bucket.slideIds.size >= required).map((bucket) => bucket.elements[0]);
 }
 
+function explicitSlideBodyLogos(artifact: TemplateElementsArtifact): TemplateElement[] {
+  return artifact.slides.flatMap((slide) => slide.elements)
+    .filter((element) => !element.offCanvasHelper && element.ownership === "slide-body-owned" && element.role === "logo" && element.confidence >= 0.8);
+}
+
 function inheritedStructural(artifact: TemplateElementsArtifact): TemplateElement[] {
   return [...artifact.layouts.flatMap((layout) => layout.elements), ...artifact.masters.flatMap((master) => master.elements)]
     .filter((element) => !element.offCanvasHelper && STRUCTURAL_ROLES.has(element.role));
@@ -130,6 +135,19 @@ function immutableFromRepeated(element: TemplateElement, canvas: { w: number; h:
   };
 }
 
+function immutableFromExplicitLogo(element: TemplateElement, canvas: { w: number; h: number }): ImmutableBrandRegion {
+  return {
+    id: `immutable:logo:${element.slideId}:${element.id}`,
+    sourceElementId: element.id,
+    sourceSlideId: element.slideId,
+    role: "logo",
+    bounds: { ...element.bounds },
+    reserveSpace: true,
+    confidence: Math.max(0.97, element.confidence),
+    evidence: ["explicit_logo_role", "stable_geometry", ...(element.styleRef ? ["stable_style" as const] : []), ...(element.assetRef ? ["stable_asset" as const] : []), ...(edgeAnchored(element.bounds, canvas) ? ["edge_anchored" as const] : [])],
+  };
+}
+
 function dedupeRegions(regions: ImmutableBrandRegion[]): ImmutableBrandRegion[] {
   const seen = new Set<string>();
   return regions.filter((region) => {
@@ -152,6 +170,7 @@ export function compileTemplateConstraintProfile(artifact: TemplateElementsArtif
   const canvas = artifact.source.slideSize;
   const inherited = inheritedStructural(artifact).map((element) => immutableFromInherited(element, canvas));
   const repeated = stableRepeatedSlideBody(artifact).map((element) => immutableFromRepeated(element, canvas));
+  const explicitLogos = explicitSlideBodyLogos(artifact).map((element) => immutableFromExplicitLogo(element, canvas));
   const frame = designSystem.geometry.contentFrame ?? { x: 0, y: 0, w: canvas.w, h: canvas.h };
   if (![frame.x, frame.y, frame.w, frame.h].every(Number.isFinite) || frame.w <= 0 || frame.h <= 0 || frame.x < 0 || frame.y < 0 || frame.x + frame.w > canvas.w + 1e-6 || frame.y + frame.h > canvas.h + 1e-6) {
     throw new Error("BRAND_CONSTRAINT_CONTENT_FRAME_INVALID: template Design System content frame is not usable.");
@@ -162,7 +181,7 @@ export function compileTemplateConstraintProfile(artifact: TemplateElementsArtif
     sourceDigest: artifact.source.sha256,
     elementsDigest: designSystem.elementsDigest,
     canvas,
-    immutableRegions: dedupeRegions([...inherited, ...repeated]),
+    immutableRegions: dedupeRegions([...inherited, ...repeated, ...explicitLogos]),
     contentRegions: [{ id: "content-main", bounds: { ...frame } }],
     styleVocabulary: {
       fonts: typographyFamilies(designSystem),

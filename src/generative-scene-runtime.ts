@@ -3,9 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import Automizer from "pptx-automizer";
 import { compileTemplateConstraintProfile, type TemplateConstraintProfile } from "./brand-constraints";
+import { renderGenerativeNativePrimitives, type GenerativeNativeAssetRegistry } from "./generative-native-primitives";
 import { compileGenerativeSceneComponentPlan, type GenerativeSceneComponentPlan } from "./generative-scene-components";
 import { runGenerativeSceneQa, type GenerativeSceneQaReport } from "./generative-scene-qa";
 import { generativeSceneIntentSchema, resolveGenerativeScene, type GenerativeSceneIntent, type ResolvedGenerativeScene } from "./generative-scene";
+import { assertPptxPackageIntegrity, type PackageIntegrityReport } from "./package-integrity";
 import { transformTemplateComponents } from "./template-transform";
 import { TEMPLATE_COMPONENTS_COMPILER_VERSION, type TemplateComponentsArtifact } from "./template-components";
 import { TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION, type TemplateDesignSystemArtifact } from "./template-design-system";
@@ -20,6 +22,7 @@ export type GenerativeSceneRuntimeInput = {
   designSystem: TemplateDesignSystemArtifact;
   components: TemplateComponentsArtifact;
   baseSlideId?: string;
+  nativeAssets?: GenerativeNativeAssetRegistry;
 };
 
 export type GenerativeSceneRuntimeResult = {
@@ -30,6 +33,7 @@ export type GenerativeSceneRuntimeResult = {
   scene: ResolvedGenerativeScene;
   componentPlan: GenerativeSceneComponentPlan;
   qa: GenerativeSceneQaReport;
+  packageIntegrity: PackageIntegrityReport;
 };
 
 type BaseCandidate = {
@@ -145,9 +149,12 @@ export async function renderGenerativeSceneRuntime(input: GenerativeSceneRuntime
   let success = false;
   try {
     const transformed = path.join(workspace, "transformed-template.pptx");
+    const componentPrepared = path.join(workspace, "prepared-components.pptx");
     const prepared = path.join(workspace, "prepared-generative-scene.pptx");
     await transformTemplateComponents(normalized.templatePath, transformed, normalized.components, selected.plan.operations);
-    await extractSingleSlide(transformed, prepared, selected.slideNumber);
+    await extractSingleSlide(transformed, componentPrepared, selected.slideNumber);
+    await renderGenerativeNativePrimitives(componentPrepared, prepared, scene, brandProfile, normalized.nativeAssets);
+
     const qa = await runGenerativeSceneQa({
       templatePath: normalized.templatePath,
       outputPath: prepared,
@@ -159,6 +166,11 @@ export async function renderGenerativeSceneRuntime(input: GenerativeSceneRuntime
     });
     if (qa.status !== "pass") throw new Error(`GENERATIVE_RUNTIME_QA_FAILED: ${qa.findings.map((finding) => finding.code).join(", ")}; workspace preserved at ${workspace}`);
 
+    // Package validation is baseline-aware: defects already present in the raw corporate template
+    // are inherited, while any new broken relationship/XML/content-type/placeholder defect blocks
+    // publication. This runs on the exact PPTX that will be published.
+    const packageIntegrity = await assertPptxPackageIntegrity(prepared, normalized.templatePath);
+
     const temporary = `${resolvedOutput}.${process.pid}.tmp`;
     try {
       fs.copyFileSync(prepared, temporary);
@@ -168,7 +180,7 @@ export async function renderGenerativeSceneRuntime(input: GenerativeSceneRuntime
       fs.rmSync(temporary, { force: true });
     }
     success = true;
-    return { outputPath: resolvedOutput, baseSlideId: selected.slideId, baseSlideNumber: selected.slideNumber, brandProfile, scene, componentPlan: selected.plan, qa };
+    return { outputPath: resolvedOutput, baseSlideId: selected.slideId, baseSlideNumber: selected.slideNumber, brandProfile, scene, componentPlan: selected.plan, qa, packageIntegrity };
   } finally {
     if (success) fs.rmSync(workspace, { recursive: true, force: true });
   }
