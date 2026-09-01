@@ -23,17 +23,14 @@ export type TemplateCoordinateSpace = { mode: "identity" | "scaled"; canvas: { w
 // this element walked out of," not an inference over the rendered result.
 export const elementOwnerships = ["master-owned", "layout-owned", "slide-body-owned"] as const;
 export type ElementOwnership = (typeof elementOwnerships)[number];
-export type TemplateElement = { id: string; /** The raw PowerPoint shape name (`cNvPr@name`) — pptx-automizer selects/modifies/removes shapes by this exact name, never by `id` (a composite, JSON-key-safe string derived from it). */ name: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; ownership: ElementOwnership; styleRef?: string; assetRef?: string; offCanvasHelper?: boolean; grouped?: boolean; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
+export type TemplateElement = { id: string; /** The raw PowerPoint shape name (`cNvPr@name`) — pptx-automizer selects/modifies/removes shapes by this exact name, never by `id` (a composite, JSON-key-safe string derived from it). */ name: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; ownership: ElementOwnership; styleRef?: string; assetRef?: string; offCanvasHelper?: boolean; grouped?: boolean; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string; ancestorLabel?: string } };
 // Two independent versions: the extractor that reads a PPTX into elements, and the compiler that
 // turns elements into grammar. Either can change without the other, and an artifact whose grammar
 // was compiled by an older compiler is stale even when its elements are current.
-// Bumped to "6": role-map sidecar provenance is gone; elements now retain observed shape fill/stroke and slide backgrounds for the
-// Design System artifact, in addition to `name`, the raw PowerPoint shape name pptx-automizer
-// needs to select/modify/remove a specific shape when cloning a source slide skeleton (PR D), plus
-// canonical coordinate-space metadata and explicit off-canvas-helper classification — an artifact
-// analyzed before these existed cannot drive the adaptive renderer path at all.
-// A generated artifact analyzed before these fields existed cannot drive the adaptive renderer path.
-export const TEMPLATE_ANALYZER_VERSION = "6";
+// Bumped to "7": group labels now propagate to child shapes so vector/group logos retain their
+// semantic identity, and mixed-template coordinate normalization accepts a repeated overflow frame
+// on a consistent slide subset while preserving already-canonical PowerPoint positions.
+export const TEMPLATE_ANALYZER_VERSION = "7";
 export const TEMPLATE_GRAMMAR_COMPILER_VERSION = "2";
 /** Everything the analysis consumed, so an artifact can prove it describes its current input. */
 export type AnalysisInputs = { templateDigest: string; analyzerVersion: string };
@@ -112,9 +109,14 @@ export function classifyTemplateElement(
     if (placeholderRole !== "footer" || element.bounds.y + element.bounds.h >= slideSize.h * 0.8) return { role: placeholderRole, confidence: 0.95 };
   }
 
-  const name = `${element.id} ${element.features.altText ?? ""}`.toLowerCase();
+  const name = `${element.id} ${element.features.altText ?? ""} ${element.features.ancestorLabel ?? ""}`.toLowerCase();
   if (/footer/.test(name)) return element.bounds.y + element.bounds.h >= slideSize.h * 0.9 ? { role: "footer", confidence: 0.85 } : { role: "unknown", confidence: 0 };
-  if (/logo/.test(name) && element.type === "image") return { role: "logo", confidence: 0.9 };
+  // Logos are often native vector shapes (or children of a grouped wordmark), not pictures. The
+  // ancestor label is PowerPoint-authored metadata, so an explicit Logo/Wordmark group is stronger
+  // evidence than guessing from geometry and is safe to preserve as corporate chrome.
+  if (/logo|wordmark|brandmark|logomark/.test(name) && ["image", "shape", "line"].includes(element.type)) {
+    return { role: "logo", confidence: element.type === "image" ? 0.92 : 0.88 };
+  }
   if (/divider|line/.test(name) || element.type === "line") return { role: "divider", confidence: 0.8 };
   // Geometry-only fallbacks for chrome that carries no name signal at all — a real template's
   // background/divider shapes are very often auto-named ("Rectangle 1") rather than labeled, so
@@ -183,6 +185,7 @@ export function classifyTemplateElements(artifact: TemplateElementsArtifact): Te
 
 const COORDINATE_EPSILON = 0.01;
 const CANVAS_PRECISION_EPSILON = 2 / EMU_PER_INCH;
+const SOURCE_FRAME_MIN_REPEAT_SHARE = 0.5;
 const STRUCTURAL_COORDINATE_ROLES = new Set<SemanticRole | "unknown">(["footer", "logo", "surface", "divider"]);
 
 function isAdaptiveCoordinateElement(element: TemplateElement): boolean {
@@ -210,21 +213,25 @@ type CoordinateObservation = { slideId: string; value: number };
 
 function repeatedOverflow(values: CoordinateObservation[], limit: number, direction: "min" | "max", activeSlideIds: Set<string>): number | undefined {
   const overflowing = values.filter(({ value }) => direction === "max" ? value > limit + COORDINATE_EPSILON : value < limit - COORDINATE_EPSILON);
-  if (overflowing.length < 2 || new Set(overflowing.map(({ slideId }) => slideId)).size < 2) return undefined;
+  const overflowSlideIds = new Set(overflowing.map(({ slideId }) => slideId));
+  if (overflowing.length < 2 || overflowSlideIds.size < 2) return undefined;
   const edge = direction === "max" ? Math.max(...overflowing.map(({ value }) => value)) : Math.min(...overflowing.map(({ value }) => value));
   const tolerance = Math.max(COORDINATE_EPSILON, Math.abs(edge) * 0.002);
   const matching = overflowing.filter(({ value }) => Math.abs(value - edge) <= tolerance);
-  // A source-frame transform is accepted only when the same overflowing edge recurs on every
-  // active slide. Other adaptive elements may legitimately use narrower widths, so mixed-width
-  // compositions are scaled by the shared frame edge rather than rejected as one-off overflow.
-  return matching.length >= 2 && new Set(matching.map(({ slideId }) => slideId)).size === activeSlideIds.size ? edge : undefined;
+  const matchingSlideIds = new Set(matching.map(({ slideId }) => slideId));
+  // A mixed corporate template may contain exact native slides beside wider example-slide text
+  // frames. Treat a far edge as source-frame evidence only when every slide that overflows agrees
+  // on that edge and the evidence covers a material subset of the deck. This accepts 2/4 or 8/16
+  // consistent example slides, but still rejects a one-slide accident or competing overflow frames.
+  const required = Math.max(2, Math.ceil(activeSlideIds.size * SOURCE_FRAME_MIN_REPEAT_SHARE));
+  return matchingSlideIds.size === overflowSlideIds.size && matchingSlideIds.size >= required ? edge : undefined;
 }
 
 function axisCoordinateFrame(lefts: CoordinateObservation[], rights: CoordinateObservation[], limit: number, axis: "x" | "y", activeSlideIds: Set<string>): { start: number; size: number; scale: number } {
   const maxOverflow = repeatedOverflow(rights, limit, "max", activeSlideIds);
   const minOverflow = repeatedOverflow(lefts, 0, "min", activeSlideIds);
-  if (rights.some(({ value }) => value > limit + COORDINATE_EPSILON) && maxOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds exceed the p:sldSz canvas without repeated cross-slide source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
-  if (lefts.some(({ value }) => value < -COORDINATE_EPSILON) && minOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds start before the p:sldSz canvas without repeated cross-slide source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
+  if (rights.some(({ value }) => value > limit + COORDINATE_EPSILON) && maxOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds exceed the p:sldSz canvas without consistent repeated source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
+  if (lefts.some(({ value }) => value < -COORDINATE_EPSILON) && minOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds start before the p:sldSz canvas without consistent repeated source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
   const start = minOverflow ?? 0;
   const end = maxOverflow ?? limit;
   const size = end - start;
@@ -243,7 +250,35 @@ function inferCoordinateSpace(slides: TemplateElementsArtifact["slides"], canvas
 
 const roundedCoordinate = (value: number): number => Math.round(value * EMU_PER_INCH) / EMU_PER_INCH;
 
+function nearCoordinateEdge(value: number, edge: number): boolean {
+  const tolerance = Math.max(COORDINATE_EPSILON, Math.abs(edge) * 0.002);
+  return Math.abs(value - edge) <= tolerance;
+}
+
+function canPreserveCanonicalOrigin(rect: { x: number; y: number; w: number; h: number }, space: TemplateCoordinateSpace): boolean {
+  if (space.mode !== "scaled") return false;
+  // When the inferred frame starts at the PowerPoint origin, the common real-world defect is an
+  // oversized text/container extent, not an alternate coordinate system. Preserve valid x/y and
+  // only trim the repeatedly proven far edge. Shifted/negative frames still use the affine path.
+  if (Math.abs(space.sourceFrame.x) > COORDINATE_EPSILON || Math.abs(space.sourceFrame.y) > COORDINATE_EPSILON) return false;
+  if (rect.x < -COORDINATE_EPSILON || rect.y < -COORDINATE_EPSILON || rect.x > space.canvas.w + COORDINATE_EPSILON || rect.y > space.canvas.h + COORDINATE_EPSILON) return false;
+  const right = rect.x + rect.w;
+  const bottom = rect.y + rect.h;
+  const sourceRight = space.sourceFrame.x + space.sourceFrame.w;
+  const sourceBottom = space.sourceFrame.y + space.sourceFrame.h;
+  const rightSafe = right <= space.canvas.w + COORDINATE_EPSILON || nearCoordinateEdge(right, sourceRight);
+  const bottomSafe = bottom <= space.canvas.h + COORDINATE_EPSILON || nearCoordinateEdge(bottom, sourceBottom);
+  return rightSafe && bottomSafe;
+}
+
 export function canonicalizeRect(rect: { x: number; y: number; w: number; h: number }, space: TemplateCoordinateSpace): { x: number; y: number; w: number; h: number } {
+  if (space.mode === "identity" || canPreserveCanonicalOrigin(rect, space)) {
+    const x = roundedCoordinate(Math.max(0, rect.x));
+    const y = roundedCoordinate(Math.max(0, rect.y));
+    const right = roundedCoordinate(Math.min(space.canvas.w, rect.x + rect.w));
+    const bottom = roundedCoordinate(Math.min(space.canvas.h, rect.y + rect.h));
+    return { x, y, w: Math.max(0, right - x), h: Math.max(0, bottom - y) };
+  }
   const x = roundedCoordinate((rect.x - space.sourceFrame.x) * space.scale.x);
   const y = roundedCoordinate((rect.y - space.sourceFrame.y) * space.scale.y);
   const right = roundedCoordinate((rect.x + rect.w - space.sourceFrame.x) * space.scale.x);
@@ -256,6 +291,10 @@ export function canonicalizeRect(rect: { x: number; y: number; w: number; h: num
   };
 }
 
+function sameRect(left: TemplateElement["bounds"], right: TemplateElement["bounds"]): boolean {
+  return [left.x, left.y, left.w, left.h].every((value, index) => Math.abs(value - [right.x, right.y, right.w, right.h][index]) <= CANVAS_PRECISION_EPSILON);
+}
+
 export function canonicalizeTemplateElements(artifact: TemplateElementsArtifact): TemplateElementsArtifact {
   if (artifact.coordinateSpace) {
     assertCanonicalTemplateElements(artifact);
@@ -264,6 +303,17 @@ export function canonicalizeTemplateElements(artifact: TemplateElementsArtifact)
   const coordinateSpace = inferCoordinateSpace(artifact.slides, artifact.source.slideSize);
   const normalize = (element: TemplateElement): TemplateElement => {
     if (element.offCanvasHelper && !isAdaptiveCoordinateElement(element)) return element;
+    if (element.grouped) {
+      const canonicalBounds = canonicalizeRect(element.bounds, coordinateSpace);
+      if (!sameRect(canonicalBounds, element.bounds)) {
+        throw new Error(`TEMPLATE_COORDINATE_SPACE_UNSUPPORTED: grouped element '${element.id}' requires geometry canonicalization that cannot be applied losslessly; keep the group inside p:sldSz or fix the source template.`);
+      }
+      if (outsideCanvas(element.bounds, artifact.source.slideSize)) {
+        if (STRUCTURAL_COORDINATE_ROLES.has(element.role)) return { ...element, offCanvasHelper: true };
+        throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: grouped element '${element.id}' is outside the canonical p:sldSz canvas.`);
+      }
+      return element;
+    }
     if (isAdaptiveCoordinateElement(element)) {
       const bounds = canonicalizeRect(element.bounds, coordinateSpace);
       if (outsideCanvas(bounds as TemplateElement["bounds"], artifact.source.slideSize)) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: adaptive element '${element.id}' remains outside the p:sldSz canvas after source-frame normalization.`);
@@ -499,22 +549,32 @@ function backgroundColor(xml: string): string | undefined {
   return solidColor(background ? first(background, A_NS, "solidFill") : undefined);
 }
 
+function groupLabel(node: Element): string | undefined {
+  const metadata = first(node, P_NS, "cNvPr");
+  const values = [metadata?.getAttribute("name"), metadata?.getAttribute("descr")].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim());
+  return values.length > 0 ? values.join(" ") : undefined;
+}
+
 function extractSlide(xml: string, slideId: string, styles: Record<string, TemplateTextStyle>, ownership: ElementOwnership): TemplateElement[] {
   const root = first(parse(xml), P_NS, "spTree");
   if (!root) return [];
   const elements: TemplateElement[] = [];
-  const walk = (nodes: Element[], parent: Transform, grouped = false): void => {
+  const walk = (nodes: Element[], parent: Transform, ancestorLabels: string[] = []): void => {
     for (const node of nodes) {
       if (node.localName === "grpSp") {
         const group = transform(node, parent);
-        walk(children(node), group.child, true);
+        const label = groupLabel(node);
+        walk(children(node), group.child, label ? [...ancestorLabels, label] : ancestorLabels);
         continue;
       }
       const type = typeOf(node);
       if (!type) continue;
       const bounds = transform(node, parent).rect;
       const name = first(node, P_NS, "cNvPr")?.getAttribute("name") ?? "";
-      elements.push({ id: elementId(node, slideId, elements.length), name, slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: styleId(elementStyle(node, type) ?? {}, styles), ...(explicitlyNamesHelper(node) ? { offCanvasHelper: true } : {}), ...(grouped ? { grouped: true } : {}), features: feature(node) });
+      const rawFeatures = feature(node);
+      const ancestorLabel = ancestorLabels.join(" > ");
+      const features = ancestorLabel ? { ...rawFeatures, ancestorLabel } : rawFeatures;
+      elements.push({ id: elementId(node, slideId, elements.length), name, slideId, type, role: "unknown", confidence: 0, bounds, zIndex: elements.length, ownership, styleRef: styleId(elementStyle(node, type) ?? {}, styles), ...(explicitlyNamesHelper(node) ? { offCanvasHelper: true } : {}), ...(ancestorLabels.length > 0 ? { grouped: true } : {}), features });
     }
   };
   walk(children(root), { x: 0, y: 0, sx: 1, sy: 1 });
