@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildPatternFixture } from "../fixtures/pattern-template";
-import { compileTemplateGrammar, extractTemplateElements, elementsDigest } from "../../src/template-analysis";
+import { compileTemplateGrammar, extractTemplateElements, elementsDigest, type TemplateElementsArtifact } from "../../src/template-analysis";
 import { compileTemplateDesignSystem } from "../../src/template-design-system";
 
 describe("template design system compiler", () => {
@@ -58,5 +58,36 @@ describe("template design system compiler", () => {
     expect(result.geometry.outerMargins).toBeUndefined();
     expect(result.spacing.rhythm).toEqual([]);
     expect(result.colors).toEqual({ text: [], fill: [], stroke: [], background: [] });
+  });
+
+  it("does not manufacture spacing between elements that never coexist in one OOXML part", () => {
+    const digest = "a".repeat(64);
+    const elements: TemplateElementsArtifact = {
+      version: 1,
+      source: { sha256: digest, slideSize: { w: 13.333, h: 7.5 } },
+      analysisInputs: { templateDigest: digest, analyzerVersion: "4" },
+      slides: [
+        {
+          id: "S01",
+          sourceSlidePart: "ppt/slides/slide1.xml",
+          nativeLayout: { index: 1, name: "Blank", masterIndex: 1 },
+          elements: [{ id: "left", name: "left", slideId: "S01", type: "text", role: "body", confidence: 0.9, bounds: { x: 1, y: 1, w: 1, h: 1 }, zIndex: 0, ownership: "slide-body-owned", styleRef: "body", features: {} }],
+        },
+        {
+          id: "S02",
+          sourceSlidePart: "ppt/slides/slide2.xml",
+          nativeLayout: { index: 1, name: "Blank", masterIndex: 1 },
+          elements: [{ id: "right", name: "right", slideId: "S02", type: "text", role: "body", confidence: 0.9, bounds: { x: 4, y: 1, w: 1, h: 1 }, zIndex: 0, ownership: "slide-body-owned", styleRef: "body", features: {} }],
+        },
+      ],
+      layouts: [],
+      masters: [],
+      styles: { body: { family: "Arial", sizePt: 12, weight: 400 } },
+      strategy: "source_slide_pattern",
+    };
+
+    const result = compileTemplateDesignSystem(elements);
+    expect(result.spacing.rhythm).toEqual([]);
+    expect(result.geometry.gutters).toEqual([]);
   });
 });
