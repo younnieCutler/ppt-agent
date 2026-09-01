@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
 import { readPptxOoxml } from "./ooxml";
 import type { TemplateConstraintProfile, Rect } from "./brand-constraints";
-import type { ResolvedGenerativeScene } from "./generative-scene";
+import { isGenerativeNativePrimitiveNode, nativePrimitiveObjectName, type ResolvedGenerativeScene } from "./generative-scene";
 import type { GenerativeSceneComponentPlan } from "./generative-scene-components";
 import type { TemplateComponentsArtifact, TemplateComponent } from "./template-components";
 import type { TemplateElementsArtifact } from "./template-analysis";
@@ -25,9 +25,13 @@ export const generativeSceneQaCodes = [
   "GENERATIVE_STYLE_SOURCE_VIOLATION",
   "GENERATIVE_IMMUTABLE_CHROME_DRIFT",
   "GENERATIVE_COMPONENT_UNSUPPORTED",
+  "GENERATIVE_NATIVE_PRIMITIVE_MISSING",
+  "GENERATIVE_NATIVE_PRIMITIVE_DRIFT",
+  "GENERATIVE_GEOMETRY_GAP_RISK",
+  "GENERATIVE_ALIGNMENT_RISK",
 ] as const;
 export type GenerativeSceneQaCode = (typeof generativeSceneQaCodes)[number];
-export type GenerativeSceneQaFinding = { severity: "hard"; code: GenerativeSceneQaCode; message: string };
+export type GenerativeSceneQaFinding = { severity: "hard" | "risk"; code: GenerativeSceneQaCode; message: string };
 export type GenerativeSceneQaReport = { status: "pass" | "fail"; findings: GenerativeSceneQaFinding[] };
 export type GenerativeSceneQaInput = {
   templatePath: string;
@@ -93,6 +97,10 @@ function intersects(left: Rect, right: Rect, epsilon: number): boolean {
     && Math.min(left.y + left.h, right.y + right.h) - Math.max(left.y, right.y) > epsilon;
 }
 
+function overlapLength(a1: number, a2: number, b1: number, b2: number): number {
+  return Math.max(0, Math.min(a2, b2) - Math.max(a1, b1));
+}
+
 function styleTokens(root: Element): Set<string> {
   return new Set([
     ...["latin", "ea", "cs"].flatMap((name) => all(root, A_NS, name).map((node) => `font:${node.getAttribute("typeface") ?? ""}`)),
@@ -117,6 +125,48 @@ function add(findings: GenerativeSceneQaFinding[], code: GenerativeSceneQaCode, 
   findings.push({ severity: "hard", code, message });
 }
 
+function addRisk(findings: GenerativeSceneQaFinding[], code: GenerativeSceneQaCode, message: string): void {
+  findings.push({ severity: "risk", code, message });
+}
+
+function addDeterministicGeometryRisks(findings: GenerativeSceneQaFinding[], scene: ResolvedGenerativeScene): void {
+  const nodes = scene.nodes.filter((node) => !["surface", "divider", "connector"].includes(node.role));
+  for (let index = 0; index < nodes.length; index += 1) {
+    for (let other = index + 1; other < nodes.length; other += 1) {
+      const left = nodes[index];
+      const right = nodes[other];
+      if (left.group && right.group && left.group === right.group) continue;
+      if (intersects(left.bounds, right.bounds, 1e-6)) continue;
+      const verticalOverlap = overlapLength(left.bounds.y, left.bounds.y + left.bounds.h, right.bounds.y, right.bounds.y + right.bounds.h);
+      const horizontalOverlap = overlapLength(left.bounds.x, left.bounds.x + left.bounds.w, right.bounds.x, right.bounds.x + right.bounds.w);
+      if (verticalOverlap >= Math.min(left.bounds.h, right.bounds.h) * 0.5) {
+        const gap = Math.max(right.bounds.x - (left.bounds.x + left.bounds.w), left.bounds.x - (right.bounds.x + right.bounds.w));
+        if (gap > 0 && gap < 0.08) addRisk(findings, "GENERATIVE_GEOMETRY_GAP_RISK", `Scene nodes '${left.id}' and '${right.id}' have only ${gap.toFixed(3)}in horizontal separation.`);
+      }
+      if (horizontalOverlap >= Math.min(left.bounds.w, right.bounds.w) * 0.5) {
+        const gap = Math.max(right.bounds.y - (left.bounds.y + left.bounds.h), left.bounds.y - (right.bounds.y + right.bounds.h));
+        if (gap > 0 && gap < 0.08) addRisk(findings, "GENERATIVE_GEOMETRY_GAP_RISK", `Scene nodes '${left.id}' and '${right.id}' have only ${gap.toFixed(3)}in vertical separation.`);
+      }
+    }
+  }
+
+  const groups = new Map<string, typeof nodes>();
+  for (const node of nodes) {
+    if (!node.group) continue;
+    const key = `${node.group}|${node.role}`;
+    groups.set(key, [...(groups.get(key) ?? []), node]);
+  }
+  for (const [key, members] of groups) {
+    if (members.length < 3) continue;
+    const widths = members.map((node) => node.bounds.w);
+    const widthRatio = Math.max(...widths) / Math.max(Math.min(...widths), 1e-6);
+    if (widthRatio > 1.15) continue;
+    const xs = members.map((node) => node.bounds.x);
+    const spread = Math.max(...xs) - Math.min(...xs);
+    if (spread > 0.04 && spread < 0.18) addRisk(findings, "GENERATIVE_ALIGNMENT_RISK", `Scene sibling group '${key}' has a ${spread.toFixed(3)}in near-alignment drift.`);
+  }
+}
+
 async function sourceRoot(zip: JSZip, component: TemplateComponent): Promise<Element | undefined> {
   const xml = await zip.file(component.sourceSlidePart)?.async("string");
   return xml ? first(parse(xml), P_NS, "spTree") : undefined;
@@ -127,8 +177,10 @@ export async function runGenerativeSceneQa(input: GenerativeSceneQaInput): Promi
   const epsilon = 4 / EMU_PER_INCH;
   const byId = new Map(input.components.components.map((component) => [component.id, component]));
   const base = input.elements.slides.find((slide) => slide.id === input.componentPlan.targetSlideId);
+  const nativeSceneNodes = input.scene.nodes.filter(isGenerativeNativePrimitiveNode);
+  const componentSceneNodes = input.scene.nodes.filter((node) => !isGenerativeNativePrimitiveNode(node));
   if (!base) add(findings, "GENERATIVE_COMPONENT_PROVENANCE_MISSING", `Generative base '${input.componentPlan.targetSlideId}' is absent from template extraction.`);
-  if (input.componentPlan.provenance.length !== input.scene.nodes.length) add(findings, "GENERATIVE_COMPONENT_PROVENANCE_MISSING", "Every generative Scene node must have exactly one template component provenance record.");
+  if (input.componentPlan.provenance.length !== componentSceneNodes.length) add(findings, "GENERATIVE_COMPONENT_PROVENANCE_MISSING", "Every template-backed Scene node must have exactly one template component provenance record.");
 
   const textEntries = input.componentPlan.provenance.filter((entry) => entry.text !== undefined);
   for (const entry of input.componentPlan.provenance) {
@@ -143,6 +195,7 @@ export async function runGenerativeSceneQa(input: GenerativeSceneQaInput): Promi
       if (intersects(textEntries[index].bounds, textEntries[other].bounds, epsilon)) add(findings, "GENERATIVE_TEXT_OVERLAP", `Scene text '${textEntries[index].sceneNodeId}' overlaps '${textEntries[other].sceneNodeId}'.`);
     }
   }
+  addDeterministicGeometryRisks(findings, input.scene);
 
   const templateZip = await JSZip.loadAsync(fs.readFileSync(path.resolve(input.templatePath)));
   const outputZip = await JSZip.loadAsync(fs.readFileSync(path.resolve(input.outputPath)));
@@ -156,7 +209,8 @@ export async function runGenerativeSceneQa(input: GenerativeSceneQaInput): Promi
 
   for (const outputNode of outputNodes) {
     const name = nameOf(outputNode);
-    if (name && !allSourceNames.some((sourceName) => matchesComponentName(name, sourceName))) add(findings, "GENERATIVE_COMPONENT_PROVENANCE_MISSING", `Output object '${name}' has no raw-template component provenance.`);
+    const native = name.startsWith("generative.native.");
+    if (name && !native && !allSourceNames.some((sourceName) => matchesComponentName(name, sourceName))) add(findings, "GENERATIVE_COMPONENT_PROVENANCE_MISSING", `Output object '${name}' has no raw-template component provenance.`);
     const rect = rectOf(outputNode);
     if (rect && (rect.x < -epsilon || rect.y < -epsilon || rect.x + rect.w > input.components.canvas.w + epsilon || rect.y + rect.h > input.components.canvas.h + epsilon)) add(findings, "GENERATIVE_GEOMETRY_OVERFLOW", `Output object '${name || "(unnamed)"}' escaped the template canvas.`);
   }
@@ -175,6 +229,17 @@ export async function runGenerativeSceneQa(input: GenerativeSceneQaInput): Promi
     }
     usedOutputNodes.add(selected.node);
     if (rectDistance(selected.rect, entry.bounds) > 0.02) add(findings, "GENERATIVE_GEOMETRY_DRIFT", `Scene node '${entry.sceneNodeId}' rendered outside its model-authored bounds.`);
+  }
+
+  for (const node of nativeSceneNodes) {
+    const objectName = nativePrimitiveObjectName(node.id);
+    const outputNode = outputNodes.find((candidate) => nameOf(candidate) === objectName);
+    if (!outputNode) {
+      add(findings, "GENERATIVE_NATIVE_PRIMITIVE_MISSING", `Native ${node.role} '${node.id}' did not reach the editable PPTX output.`);
+      continue;
+    }
+    const rect = rectOf(outputNode);
+    if (!rect || rectDistance(rect, node.bounds) > 0.08) add(findings, "GENERATIVE_NATIVE_PRIMITIVE_DRIFT", `Native ${node.role} '${node.id}' rendered outside its model-authored frame.`);
   }
 
   for (const componentId of input.componentPlan.preservedImmutableComponentIds) {
@@ -230,5 +295,5 @@ export async function runGenerativeSceneQa(input: GenerativeSceneQaInput): Promi
 
   const facts = await readPptxOoxml(input.outputPath);
   if (!facts.parseOk || facts.slideCount !== 1) add(findings, "GENERATIVE_COMPONENT_UNSUPPORTED", "Generative output must be a parseable single-slide PPTX.");
-  return { status: findings.length > 0 ? "fail" : "pass", findings };
+  return { status: findings.some((finding) => finding.severity === "hard") ? "fail" : "pass", findings };
 }
