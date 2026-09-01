@@ -6,6 +6,7 @@ export type ComponentKind = (typeof componentKinds)[number];
 export type ResizeFeasibility = "safe" | "unsafe" | "unknown";
 export type RepeatPattern = "single" | "horizontal_row" | "vertical_stack" | "grid";
 type Rect = { x: number; y: number; w: number; h: number };
+type AxisCluster = { center: number; members: TemplateComponent[] };
 
 export type TemplateComponent = {
   id: string;
@@ -67,6 +68,7 @@ const kindByRole: Partial<Record<SemanticRole, ComponentKind>> = {
 };
 
 function kindFor(element: TemplateElement, canvas: { w: number; h: number }): ComponentKind {
+  if (element.role === "logo") return "logo";
   if (element.type === "image") return "media_frame";
   if (element.role === "surface") return element.bounds.w >= canvas.w * 0.9 && element.bounds.h >= canvas.h * 0.9 ? "surface" : "card";
   return kindByRole[element.role as SemanticRole] ?? "unknown";
@@ -119,18 +121,62 @@ function regular(values: number[]): boolean {
   return Math.max(...values) - Math.min(...values) <= Math.max(Math.abs(first), 1) * 0.05;
 }
 
+function axisCenter(component: TemplateComponent, axis: "x" | "y"): number {
+  return axis === "x" ? component.sourceBounds.x + component.sourceBounds.w / 2 : component.sourceBounds.y + component.sourceBounds.h / 2;
+}
+
+function clusterByCenter(components: TemplateComponent[], axis: "x" | "y"): AxisCluster[] {
+  const tolerance = 0.05;
+  const sorted = [...components].sort((left, right) => axisCenter(left, axis) - axisCenter(right, axis) || left.id.localeCompare(right.id));
+  const clusters: AxisCluster[] = [];
+  for (const component of sorted) {
+    const center = axisCenter(component, axis);
+    const current = clusters[clusters.length - 1];
+    if (!current || Math.abs(center - current.center) > tolerance) {
+      clusters.push({ center, members: [component] });
+      continue;
+    }
+    current.members.push(component);
+    current.center = current.members.reduce((sum, member) => sum + axisCenter(member, axis), 0) / current.members.length;
+  }
+  return clusters;
+}
+
+function clusterGaps(clusters: AxisCluster[], axis: "x" | "y"): number[] {
+  return clusters.slice(1).map((cluster, index) => {
+    const previous = clusters[index];
+    if (axis === "x") {
+      const previousEnd = Math.max(...previous.members.map((member) => member.sourceBounds.x + member.sourceBounds.w));
+      const nextStart = Math.min(...cluster.members.map((member) => member.sourceBounds.x));
+      return nextStart - previousEnd;
+    }
+    const previousEnd = Math.max(...previous.members.map((member) => member.sourceBounds.y + member.sourceBounds.h));
+    const nextStart = Math.min(...cluster.members.map((member) => member.sourceBounds.y));
+    return nextStart - previousEnd;
+  });
+}
+
+function occupiesEveryCell(rows: AxisCluster[], columns: AxisCluster[], components: TemplateComponent[]): boolean {
+  if (rows.length * columns.length !== components.length) return false;
+  const tolerance = 0.05;
+  for (const row of rows) {
+    for (const column of columns) {
+      const count = components.filter((component) => Math.abs(axisCenter(component, "y") - row.center) <= tolerance && Math.abs(axisCenter(component, "x") - column.center) <= tolerance).length;
+      if (count !== 1) return false;
+    }
+  }
+  return true;
+}
+
 function groupPattern(components: TemplateComponent[]): RepeatPattern {
-  const horizontal = [...components].sort((left, right) => left.sourceBounds.x - right.sourceBounds.x);
-  const vertical = [...components].sort((left, right) => left.sourceBounds.y - right.sourceBounds.y);
-  const centersX = components.map((component) => component.sourceBounds.x + component.sourceBounds.w / 2);
-  const centersY = components.map((component) => component.sourceBounds.y + component.sourceBounds.h / 2);
-  const horizontalGaps = horizontal.slice(1).map((component, index) => component.sourceBounds.x - (horizontal[index].sourceBounds.x + horizontal[index].sourceBounds.w));
-  const verticalGaps = vertical.slice(1).map((component, index) => component.sourceBounds.y - (vertical[index].sourceBounds.y + vertical[index].sourceBounds.h));
-  const sameRow = Math.max(...centersY) - Math.min(...centersY) <= 0.05;
-  const sameColumn = Math.max(...centersX) - Math.min(...centersX) <= 0.05;
-  if (sameRow && regular(horizontalGaps)) return "horizontal_row";
-  if (sameColumn && regular(verticalGaps)) return "vertical_stack";
-  if (regular(horizontalGaps) && regular(verticalGaps)) return "grid";
+  if (components.length < 2) return "single";
+  const rows = clusterByCenter(components, "y");
+  const columns = clusterByCenter(components, "x");
+  const horizontalGaps = clusterGaps(columns, "x");
+  const verticalGaps = clusterGaps(rows, "y");
+  if (rows.length === 1 && columns.length === components.length && regular(horizontalGaps)) return "horizontal_row";
+  if (columns.length === 1 && rows.length === components.length && regular(verticalGaps)) return "vertical_stack";
+  if (rows.length >= 2 && columns.length >= 2 && occupiesEveryCell(rows, columns, components) && regular(horizontalGaps) && regular(verticalGaps)) return "grid";
   return "single";
 }
 
