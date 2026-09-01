@@ -8,6 +8,8 @@ import type { TemplateComponentsArtifact, TemplateComponent } from "./template-c
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const EMU_PER_INCH = 914400;
 
 export const adaptiveQaCodes = [
@@ -75,6 +77,18 @@ function add(findings: AdaptiveQaFinding[], code: AdaptiveQaCode, message: strin
   findings.push({ severity: "hard", code, message });
 }
 
+async function onlyVisibleSlidePart(zip: JSZip): Promise<string | undefined> {
+  const presentationXml = await zip.file("ppt/presentation.xml")?.async("string");
+  const relsXml = await zip.file("ppt/_rels/presentation.xml.rels")?.async("string");
+  if (!presentationXml || !relsXml) return undefined;
+  const targets = new Map(all(parse(relsXml), REL_NS, "Relationship").map((node) => [node.getAttribute("Id") ?? "", node.getAttribute("Target") ?? ""]));
+  const slideIds = all(parse(presentationXml), P_NS, "sldId");
+  if (slideIds.length !== 1) return undefined;
+  const target = targets.get(slideIds[0].getAttributeNS(R_NS, "id") ?? "");
+  if (!target) return undefined;
+  return target.startsWith("/") ? target.slice(1) : path.posix.normalize(path.posix.join("ppt", target));
+}
+
 export function normalizeAdaptiveText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -92,9 +106,10 @@ export async function runAdaptiveQa(input: AdaptiveQaInput): Promise<AdaptiveQaR
   if (!sourcePart) return { status: "fail", findings: [...findings, { severity: "hard", code: "TEMPLATE_COMPONENT_PROVENANCE_MISSING", message: "Component catalog has no source slide part." }] };
   const sourceZip = await JSZip.loadAsync(fs.readFileSync(path.resolve(input.templatePath)));
   const outputZip = await JSZip.loadAsync(fs.readFileSync(path.resolve(input.outputPath)));
+  const outputPart = await onlyVisibleSlidePart(outputZip);
   const sourceXml = await sourceZip.file(sourcePart)?.async("string");
-  const outputXml = await outputZip.file(sourcePart)?.async("string");
-  if (!sourceXml || !outputXml) return { status: "fail", findings: [...findings, { severity: "hard", code: "TEMPLATE_COMPONENT_PROVENANCE_MISSING", message: `Source/output slide part '${sourcePart}' is missing.` }] };
+  const outputXml = outputPart ? await outputZip.file(outputPart)?.async("string") : undefined;
+  if (!sourceXml || !outputXml) return { status: "fail", findings: [...findings, { severity: "hard", code: "TEMPLATE_COMPONENT_PROVENANCE_MISSING", message: `Source slide part '${sourcePart}' or the prepared output slide part is missing.` }] };
   const sourceRoot = first(parse(sourceXml), P_NS, "spTree");
   const outputRoot = first(parse(outputXml), P_NS, "spTree");
   if (!sourceRoot || !outputRoot) return { status: "fail", findings: [...findings, { severity: "hard", code: "TEMPLATE_COMPONENT_PROVENANCE_MISSING", message: "Source/output slide shape tree is missing." }] };
