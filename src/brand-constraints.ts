@@ -1,4 +1,4 @@
-import type { SemanticRole, TemplateElement, TemplateElementsArtifact } from "./template-analysis";
+import { elementsDigest as computeElementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
 import type { TemplateDesignSystemArtifact } from "./template-design-system";
 
 export const BRAND_CONSTRAINT_COMPILER_VERSION = "1";
@@ -72,8 +72,7 @@ function lockRole(element: TemplateElement, canvas: { w: number; h: number }): B
 
 function reserveSpace(element: TemplateElement, role: BrandLockRole, canvas: { w: number; h: number }): boolean {
   if (isFullCanvasSurface(element, canvas)) return false;
-  if (role === "logo" || role === "header_chrome" || role === "footer_chrome" || role === "page_number" || role === "legal") return true;
-  return false;
+  return role === "logo" || role === "header_chrome" || role === "footer_chrome" || role === "page_number" || role === "legal";
 }
 
 function geometryKey(element: TemplateElement): string {
@@ -81,7 +80,7 @@ function geometryKey(element: TemplateElement): string {
   return [element.role, round(x), round(y), round(w), round(h), element.styleRef ?? "", element.assetRef ?? ""].join("|");
 }
 
-function stableRepeatedSlideBody(artifact: TemplateElementsArtifact): Array<{ element: TemplateElement; count: number; slideCount: number }> {
+function stableRepeatedSlideBody(artifact: TemplateElementsArtifact): TemplateElement[] {
   const buckets = new Map<string, { elements: TemplateElement[]; slideIds: Set<string> }>();
   for (const slide of artifact.slides) {
     for (const element of slide.elements) {
@@ -95,9 +94,7 @@ function stableRepeatedSlideBody(artifact: TemplateElementsArtifact): Array<{ el
     }
   }
   const required = Math.max(2, Math.ceil(artifact.slides.length * 0.6));
-  return [...buckets.values()]
-    .filter((bucket) => bucket.slideIds.size >= required)
-    .map((bucket) => ({ element: bucket.elements[0], count: bucket.elements.length, slideCount: bucket.slideIds.size }));
+  return [...buckets.values()].filter((bucket) => bucket.slideIds.size >= required).map((bucket) => bucket.elements[0]);
 }
 
 function inheritedStructural(artifact: TemplateElementsArtifact): TemplateElement[] {
@@ -149,11 +146,12 @@ function typographyFamilies(designSystem: TemplateDesignSystemArtifact): string[
 }
 
 export function compileTemplateConstraintProfile(artifact: TemplateElementsArtifact, designSystem: TemplateDesignSystemArtifact): TemplateConstraintProfile {
-  if (artifact.source.sha256 !== designSystem.sourceDigest) throw new Error("BRAND_CONSTRAINT_PROVENANCE_MISMATCH: Design System and template elements describe different PPTX sources.");
-  if (designSystem.elementsDigest.length === 0) throw new Error("BRAND_CONSTRAINT_PROVENANCE_MISMATCH: Design System elements digest is missing.");
+  if (artifact.source.sha256 !== designSystem.sourceDigest || computeElementsDigest(artifact) !== designSystem.elementsDigest) {
+    throw new Error("BRAND_CONSTRAINT_PROVENANCE_MISMATCH: Design System and template elements describe different analyzed inputs.");
+  }
   const canvas = artifact.source.slideSize;
   const inherited = inheritedStructural(artifact).map((element) => immutableFromInherited(element, canvas));
-  const repeated = stableRepeatedSlideBody(artifact).map(({ element }) => immutableFromRepeated(element, canvas));
+  const repeated = stableRepeatedSlideBody(artifact).map((element) => immutableFromRepeated(element, canvas));
   const frame = designSystem.geometry.contentFrame ?? { x: 0, y: 0, w: canvas.w, h: canvas.h };
   if (![frame.x, frame.y, frame.w, frame.h].every(Number.isFinite) || frame.w <= 0 || frame.h <= 0 || frame.x < 0 || frame.y < 0 || frame.x + frame.w > canvas.w + 1e-6 || frame.y + frame.h > canvas.h + 1e-6) {
     throw new Error("BRAND_CONSTRAINT_CONTENT_FRAME_INVALID: template Design System content frame is not usable.");
