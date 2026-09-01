@@ -44,8 +44,6 @@ function prototypeFor(role: SceneNodeRole | "headline", artifact: TemplateCompon
   candidates.sort((left, right) => {
     const kindRank = preferences.indexOf(left.kind) - preferences.indexOf(right.kind);
     if (kindRank !== 0) return kindRank;
-    const semanticMatch = Number(right.semanticRoles.includes(role as never)) - Number(left.semanticRoles.includes(role as never));
-    if (semanticMatch !== 0) return semanticMatch;
     const repeatability = Number(right.repeatability.signal === "repeatable") - Number(left.repeatability.signal === "repeatable");
     if (repeatability !== 0) return repeatability;
     return right.confidence - left.confidence || left.sourceSlideId.localeCompare(right.sourceSlideId) || left.id.localeCompare(right.id);
@@ -76,11 +74,13 @@ function aliasFor(nodeId: string): string {
 }
 
 function appendPlacement(operations: ComponentTransformOperation[], provenance: SceneComponentProvenance[], component: TemplateComponent, alias: string, targetSlideId: string, bounds: { x: number; y: number; w: number; h: number }, text: string, sceneNodeId: string): void {
+  const normalizedText = text.replace(/\s+/g, " ").trim();
+  if (!normalizedText) throw new Error(`SCENE_COMPONENT_UNSUPPORTED: scene node '${sceneNodeId}' has no renderable text.`);
   operations.push({ operation: "clone", componentId: component.id, targetSlideId, as: alias });
   provenance.push({ sceneNodeId, alias, componentId: component.id, componentKind: component.kind, sourceSlideId: component.sourceSlideId });
   operations.push({ operation: "move", componentId: alias, x: bounds.x, y: bounds.y });
   operations.push({ operation: "resize", componentId: alias, w: bounds.w, h: bounds.h });
-  operations.push({ operation: "replace_text", componentId: alias, text: text.replace(/\s+/g, " ").trim() });
+  operations.push({ operation: "replace_text", componentId: alias, text: normalizedText });
 }
 
 function headerBounds(scene: ResolvedScene): { x: number; y: number; w: number; h: number } {
@@ -122,7 +122,7 @@ function decorationPlan(scene: ResolvedScene, targetSlideId: string, artifact: T
   return operations;
 }
 
-export function compileSceneComponentPlan(scene: ResolvedScene, targetSlideId: string, artifact: TemplateComponentsArtifact): SceneComponentPlan {
+export function compileSceneComponentPlan(scene: ResolvedScene, headlineText: string, targetSlideId: string, artifact: TemplateComponentsArtifact): SceneComponentPlan {
   const targetComponents = assertSanitizableBase(targetSlideId, artifact);
   const operations: ComponentTransformOperation[] = [];
   const provenance: SceneComponentProvenance[] = [];
@@ -130,7 +130,7 @@ export function compileSceneComponentPlan(scene: ResolvedScene, targetSlideId: s
   operations.push(...decorationPlan(scene, targetSlideId, artifact));
 
   const headline = prototypeFor("headline", artifact);
-  appendPlacement(operations, provenance, headline, "scene.headline", targetSlideId, headerBounds(scene), scene.nodes.length > 0 ? scene.nodes[0].text && scene.nodes[0].text !== scene.slideId ? scene.nodes[0].text : scene.slideId : scene.slideId, "$headline");
+  appendPlacement(operations, provenance, headline, "scene.headline", targetSlideId, headerBounds(scene), headlineText, "$headline");
 
   const zoneById = new Map(scene.zones.map((zone) => [zone.id, zone]));
   for (const node of [...scene.nodes].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))) {
