@@ -64,10 +64,11 @@ function dividerPrototype(artifact: TemplateComponentsArtifact): TemplateCompone
 }
 
 function assertSanitizableBase(targetSlideId: string, artifact: TemplateComponentsArtifact): TemplateComponent[] {
-  const target = artifact.components.filter((component) => component.sourceSlideId === targetSlideId && !component.offCanvasHelper);
+  const target = artifact.components.filter((component) => component.sourceSlideId === targetSlideId);
   if (target.length === 0) throw new Error(`SCENE_BASE_UNSUPPORTED: template source slide '${targetSlideId}' has no catalogued components.`);
-  const unsafe = target.filter((component) => !preservedChromeKinds.has(component.kind) && (component.grouped || component.shapeNames.length !== 1));
-  if (unsafe.length > 0) throw new Error(`SCENE_BASE_UNSANITIZABLE: source slide '${targetSlideId}' contains content that cannot be removed losslessly: ${unsafe.map((component) => component.id).join(", ")}`);
+  const removable = target.filter((component) => component.offCanvasHelper || !preservedChromeKinds.has(component.kind));
+  const unsafe = removable.filter((component) => component.grouped || component.shapeNames.length !== 1);
+  if (unsafe.length > 0) throw new Error(`SCENE_BASE_UNSANITIZABLE: source slide '${targetSlideId}' contains content/helper shapes that cannot be removed losslessly: ${unsafe.map((component) => component.id).join(", ")}`);
   return target;
 }
 
@@ -162,7 +163,7 @@ export function compileSceneComponentPlan(scene: ResolvedScene, headlineText: st
   }
 
   for (const component of targetComponents) {
-    if (preservedChromeKinds.has(component.kind)) continue;
+    if (!component.offCanvasHelper && preservedChromeKinds.has(component.kind)) continue;
     operations.push({ operation: "remove", componentId: component.id });
   }
 
