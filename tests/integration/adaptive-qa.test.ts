@@ -7,7 +7,7 @@ import { extractTemplateElements, compileTemplateGrammar } from "../../src/templ
 import { compileTemplateComponents } from "../../src/template-components";
 import { compileTemplateDesignSystem } from "../../src/template-design-system";
 import { renderAdaptiveTitle } from "../../src/adaptive-statement";
-import { runAdaptiveQa } from "../../src/adaptive-qa";
+import { hasExactAdaptiveTextNode, runAdaptiveQa } from "../../src/adaptive-qa";
 
 async function fixture(): Promise<{ dir: string; template: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-adaptive-qa-"));
@@ -23,6 +23,11 @@ async function fixture(): Promise<{ dir: string; template: string }> {
 }
 
 describe("Goal 9 additive adaptive QA gate", () => {
+  it("requires exact normalized output text nodes instead of substring containment", () => {
+    expect(hasExactAdaptiveTextNode(["1000"], "10")).toBe(false);
+    expect(hasExactAdaptiveTextNode([" 10   users "], "10 users")).toBe(true);
+  });
+
   it("passes a native adaptive output and reports provenance/content hard findings", async () => {
     const source = await fixture();
     try {
@@ -31,7 +36,7 @@ describe("Goal 9 additive adaptive QA gate", () => {
       const designSystem = compileTemplateDesignSystem(elements, grammar);
       const components = compileTemplateComponents(elements);
       const output = path.join(source.dir, "adaptive-title.pptx");
-      const rendered = await renderAdaptiveTitle(source.template, output, designSystem, components, elements, { slideId: "S01", family: "stack", blocks: [{ id: "headline", role: "headline", text: "ADAPTIVE TITLE", priority: 100, emphasis: "primary" }] });
+      const rendered = await renderAdaptiveTitle(source.template, output, designSystem, components, elements, { slideId: "S01", family: "stack", blocks: [{ id: "headline", role: "headline", text: "1000", priority: 100, emphasis: "primary" }] });
       const pass = await runAdaptiveQa({ templatePath: source.template, outputPath: output, plan: rendered.plan, components });
       expect(pass).toMatchObject({ status: "pass", findings: [] });
 
@@ -42,6 +47,10 @@ describe("Goal 9 additive adaptive QA gate", () => {
       const droppedContentPlan = { ...rendered.plan, textAllocation: rendered.plan.textAllocation.map((allocation, index) => index === 0 ? { ...allocation, text: "MISSING ADAPTIVE CONTENT" } : allocation) };
       const dropped = await runAdaptiveQa({ templatePath: source.template, outputPath: output, plan: droppedContentPlan, components });
       expect(dropped.findings.map((finding) => finding.code)).toContain("ADAPTIVE_CONTENT_DROPPED");
+
+      const substringOnlyPlan = { ...rendered.plan, textAllocation: rendered.plan.textAllocation.map((allocation, index) => index === 0 ? { ...allocation, text: "10" } : allocation) };
+      const substringOnly = await runAdaptiveQa({ templatePath: source.template, outputPath: output, plan: substringOnlyPlan, components });
+      expect(substringOnly.findings.map((finding) => finding.code)).toContain("ADAPTIVE_CONTENT_DROPPED");
     } finally {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }
