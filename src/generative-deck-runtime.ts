@@ -12,6 +12,7 @@ import { assertCanonicalTemplateElements, elementsDigest, type TemplateElementsA
 import { TEMPLATE_COMPONENTS_COMPILER_VERSION, type TemplateComponentsArtifact } from "./template-components";
 import { TEMPLATE_DESIGN_SYSTEM_COMPILER_VERSION, type TemplateDesignSystemArtifact } from "./template-design-system";
 import type { TemplatePattern } from "./template-patterns";
+import { compileTemplateSemantics, sourceSlideUsage, type TemplateSemanticsProfile } from "./template-semantics";
 
 export type GenerativeDeckRuntimeInput = {
   templatePath: string;
@@ -103,10 +104,15 @@ function assertMapKeysBelongToDeck(name: string, map: Map<string, unknown>, slid
   if (unknown.length > 0) throw new Error(`GENERATIVE_DECK_UNKNOWN_${name.toUpperCase()}_SLIDE: ${unknown.join(", ")}`);
 }
 
-function exactPatternForSlide(input: GenerativeDeckRuntimeInput, slide: SlideSpec): TemplatePattern | undefined {
+function exactPatternForSlide(input: GenerativeDeckRuntimeInput, slide: SlideSpec, semantics: TemplateSemanticsProfile): TemplatePattern | undefined {
   const candidates = [...(input.candidatesBySlide.get(slide.id) ?? [])]
     .sort((left, right) => left.rank - right.rank || left.pattern.id.localeCompare(right.pattern.id));
   for (const candidate of candidates) {
+    // A source example may be an excellent style/component reference without owning output
+    // geometry. Only placeholder-driven structural source slides are allowed to become an exact
+    // skeleton. This is the boundary that prevents example-heavy decks such as GAO from turning
+    // their reference compositions into cages for new content.
+    if (sourceSlideUsage(semantics, candidate.pattern.sourceSlideId) !== "structural_template") continue;
     const decision = diagnoseAdaptiveMode({
       templateDigest: input.components.sourceDigest,
       slide,
@@ -145,12 +151,13 @@ function planSlides(input: GenerativeDeckRuntimeInput): PlannedSlide[] {
   const slideIds = new Set(ids);
   assertMapKeysBelongToDeck("scene", input.scenesBySlide as Map<string, unknown>, slideIds);
   assertMapKeysBelongToDeck("candidate", input.candidatesBySlide as Map<string, unknown>, slideIds);
+  const semantics = compileTemplateSemantics(input.elements);
 
   return slides.map((slide) => {
-    const pattern = exactPatternForSlide(input, slide);
+    const pattern = exactPatternForSlide(input, slide, semantics);
     if (pattern) return { slide, mode: "exact_clone" as const, pattern };
     const scene = input.scenesBySlide.get(slide.id);
-    if (!scene) throw new Error(`GENERATIVE_DECK_SCENE_MISSING: slide '${slide.id}' has no exact template fit and therefore requires a Generative Scene.`);
+    if (!scene) throw new Error(`GENERATIVE_DECK_SCENE_MISSING: slide '${slide.id}' has no structural exact template fit and therefore requires a Generative Scene.`);
     return { slide, mode: "generative_scene" as const, scene: validateSceneForSlide(slide, scene) };
   });
 }
