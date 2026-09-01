@@ -35,7 +35,7 @@ function templatePalette(profile: TemplateConstraintProfile): string[] {
   ].map(normalizedColor).filter((color): color is string => Boolean(color));
   const accentFills = profile.styleVocabulary.fillColors
     .map(normalizedColor)
-    .filter((color): color is string => Boolean(color) && !backgrounds.has(color));
+    .filter((color): color is string => color !== undefined && !backgrounds.has(color));
   const fallbackFills = profile.styleVocabulary.fillColors
     .map(normalizedColor)
     .filter((color): color is string => Boolean(color));
