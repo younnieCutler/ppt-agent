@@ -317,7 +317,9 @@ export function compileTemplateGrammar(artifact: TemplateElementsArtifact): Temp
   const bodySize = bodies.map((style) => style.sizePt ?? 0).find(Boolean) ?? titleSize;
   const titleWeight = titles.map((style) => style.weight ?? 400).find(Boolean) ?? 400;
   const bodyWeight = bodies.map((style) => style.weight ?? 400).find(Boolean) ?? 400;
-  const usable = elements.filter((element) => !["footer", "logo"].includes(element.role));
+  // Content frame is the area adaptive composition may occupy. Full-slide backgrounds, dividers,
+  // logos, footers, and unclassified helpers are template structure, not usable content bounds.
+  const usable = elements.filter(isAdaptiveCoordinateElement);
   const xs = usable.map((element) => element.bounds.x);
   const ys = usable.map((element) => element.bounds.y);
   const rights = usable.map((element) => element.bounds.x + element.bounds.w);
