@@ -170,6 +170,7 @@ function adaptiveResult(input: AdaptiveSelectionInput, rejectionReasons: Adaptiv
     intent = timelineIntent(input.slide);
     adaptiveContent = { layout: "timeline", content: input.slide.content };
   } else if (input.slide.layout === "evidence") {
+    if (!input.slide.content.caption && input.slide.content.bullets.length === 0) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: "Adaptive evidence composition requires a caption or bullet content block; media-only evidence is not supported in Goal 8." }] };
     intent = evidenceIntent(input.slide);
     adaptiveContent = { layout: "evidence", content: input.slide.content };
   } else if (input.slide.layout === "title") {
