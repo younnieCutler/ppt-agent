@@ -119,8 +119,10 @@ describe("content-first adaptive composition planning", () => {
     const mismatched = {
       ...components,
       coordinateSpace: {
-        ...components.coordinateSpace!,
-        sourceFrame: { ...components.coordinateSpace!.sourceFrame, w: components.coordinateSpace!.sourceFrame.w - 1 },
+        mode: "scaled" as const,
+        canvas: { ...components.canvas },
+        sourceFrame: { x: 0, y: 0, w: 26.666, h: 7.5 },
+        scale: { x: 0.5, y: 1 },
       },
     };
     expect(() => planAdaptiveSlide({ templateDigest, designSystem, components: mismatched, intent: intent("stack", [block("one", "body", "One")]) })).toThrow(/coordinate spaces differ/);
