@@ -54,9 +54,10 @@ function asymmetricComparison(): GenerativeSceneIntent {
     layout: {
       strategy: "model_authored",
       nodes: [
+        { id: "panel", role: "surface", frame: { x: 0.42, y: 0.19, w: 0.58, h: 0.66 }, emphasis: 0.2, componentPreference: "card" },
         { id: "title", role: "headline", text: "기존 방식과 Agentic Workflow", frame: { x: 0, y: 0, w: 0.72, h: 0.16 }, emphasis: 1, styleRole: "title", componentPreference: "title_block" },
         { id: "legacy", role: "item", text: "사람이 요청마다 직접 실행", frame: { x: 0, y: 0.24, w: 0.38, h: 0.52 }, emphasis: 0.55, group: "legacy", styleRole: "body" },
-        { id: "agent", role: "item", text: "Agent가 계획·실행·검증", frame: { x: 0.44, y: 0.21, w: 0.56, h: 0.62 }, emphasis: 0.9, group: "agent", styleRole: "body" },
+        { id: "agent", role: "item", text: "Agent가 계획·실행·검증", frame: { x: 0.47, y: 0.27, w: 0.48, h: 0.48 }, emphasis: 0.9, group: "agent", styleRole: "body" },
       ],
     },
     constraints: { chrome: "immutable", colors: "template_only", fonts: "template_only" },
@@ -70,16 +71,35 @@ describe("brand-constrained generative Scene", () => {
     const agent = resolved.nodes.find((node) => node.id === "agent")!;
 
     expect(legacy.frame.w).toBe(0.38);
-    expect(agent.frame.w).toBe(0.56);
+    expect(agent.frame.w).toBe(0.48);
     expect(agent.bounds.w).toBeGreaterThan(legacy.bounds.w);
     expect(resolved.contentRegion).toEqual({ x: 0.8, y: 0.75, w: 11.733, h: 5.95 });
     expect(resolved.brandConstraintDigestInput.sourceDigest).toBe("a".repeat(64));
   });
 
+  it("lets the model explicitly request template-native surfaces/dividers without inventing styles", () => {
+    const scene = generativeSceneIntentSchema.parse({
+      version: 2,
+      slideId: "S05",
+      semanticIntent: "process",
+      headline: "Agentic workflow",
+      layout: {
+        strategy: "model_authored",
+        nodes: [
+          { id: "title", role: "headline", text: "Agentic workflow", frame: { x: 0, y: 0, w: 0.65, h: 0.14 }, emphasis: 1, styleRole: "title" },
+          { id: "surface", role: "surface", frame: { x: 0, y: 0.24, w: 1, h: 0.5 }, emphasis: 0.1, componentPreference: "card" },
+          { id: "divider", role: "divider", frame: { x: 0.15, y: 0.5, w: 0.7, h: 0.01 }, emphasis: 0.2, componentPreference: "divider" },
+        ],
+      },
+    });
+    const resolved = resolveGenerativeScene(scene, profile());
+    expect(resolved.nodes.map((node) => node.role)).toEqual(["headline", "surface", "divider"]);
+  });
+
   it("rejects arbitrary host color/font/shape identity fields at the contract boundary", () => {
     const scene = asymmetricComparison() as unknown as Record<string, unknown>;
     const layout = scene.layout as { strategy: string; nodes: Array<Record<string, unknown>> };
-    layout.nodes[0] = { ...layout.nodes[0], color: "FF00FF", font: "Comic Sans MS", shapeId: "42" };
+    layout.nodes[1] = { ...layout.nodes[1], color: "FF00FF", font: "Comic Sans MS", shapeId: "42" };
 
     expect(() => generativeSceneIntentSchema.parse(scene)).toThrow();
   });
@@ -89,7 +109,10 @@ describe("brand-constrained generative Scene", () => {
       ...asymmetricComparison(),
       layout: {
         strategy: "model_authored" as const,
-        nodes: [{ id: "bad", role: "body" as const, text: "overflow", frame: { x: 0.8, y: 0.2, w: 0.3, h: 0.2 }, emphasis: 0.5 }],
+        nodes: [
+          { id: "title", role: "headline" as const, text: "overflow", frame: { x: 0, y: 0, w: 0.6, h: 0.1 }, emphasis: 1 },
+          { id: "bad", role: "body" as const, text: "overflow", frame: { x: 0.8, y: 0.2, w: 0.3, h: 0.2 }, emphasis: 0.5 },
+        ],
       },
     };
     expect(() => generativeSceneIntentSchema.parse(raw)).toThrow(/exceeds the content region width/);
@@ -121,6 +144,7 @@ describe("brand-constrained generative Scene", () => {
       layout: {
         strategy: "model_authored",
         nodes: [
+          { id: "title", role: "headline", text: "Three metrics", frame: { x: 0, y: 0, w: 0.6, h: 0.14 }, emphasis: 1, styleRole: "title" },
           { id: "m1", role: "metric", text: "45%", frame: { x: 0, y: 0.3, w: 0.28, h: 0.35 }, emphasis: 1, styleRole: "metric", componentPreference: "metric" },
           { id: "m2", role: "metric", text: "40%", frame: { x: 0.36, y: 0.3, w: 0.28, h: 0.35 }, emphasis: 0.8, styleRole: "metric", componentPreference: "metric" },
           { id: "m3", role: "metric", text: "15%", frame: { x: 0.72, y: 0.3, w: 0.25, h: 0.35 }, emphasis: 0.5, styleRole: "metric", componentPreference: "metric" },
@@ -128,7 +152,23 @@ describe("brand-constrained generative Scene", () => {
       },
     });
 
-    expect(resolveGenerativeScene(scene, profile()).nodes).toHaveLength(3);
+    expect(resolveGenerativeScene(scene, profile()).nodes).toHaveLength(4);
+  });
+
+  it("rejects structural nodes that carry text or request a text style", () => {
+    expect(() => generativeSceneIntentSchema.parse({
+      version: 2,
+      slideId: "S06",
+      semanticIntent: "evidence",
+      headline: "Bad surface",
+      layout: {
+        strategy: "model_authored",
+        nodes: [
+          { id: "title", role: "headline", text: "Bad surface", frame: { x: 0, y: 0, w: 0.6, h: 0.14 } },
+          { id: "bad-surface", role: "surface", text: "not allowed", styleRole: "body", frame: { x: 0, y: 0.2, w: 0.6, h: 0.5 } },
+        ],
+      },
+    })).toThrow();
   });
 
   it("rejects relaxed brand policy profiles", () => {
