@@ -3,11 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
 import pptxgen from "pptxgenjs";
+import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { compileTemplateGrammar, extractTemplateElements } from "../../src/template-analysis";
 import { compileTemplateComponents } from "../../src/template-components";
 import { compileTemplateDesignSystem } from "../../src/template-design-system";
 import { renderAdaptiveComparison, renderAdaptiveQuantitative } from "../../src/adaptive-statement";
+
+const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const EMU_PER_INCH = 914400;
+type Rect = { x: number; y: number; w: number; h: number };
 
 async function fixture(kind: "comparison" | "quantitative"): Promise<{ dir: string; template: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-adaptive-goal7-"));
@@ -46,8 +52,37 @@ async function artifacts(template: string) {
   return { elements, designSystem: compileTemplateDesignSystem(elements, grammar), components: compileTemplateComponents(elements) };
 }
 
+async function describedShapeBounds(filePath: string): Promise<Record<string, Rect>> {
+  const zip = await JSZip.loadAsync(fs.readFileSync(filePath));
+  const xml = await zip.file("ppt/slides/slide1.xml")!.async("string");
+  const document = new DOMParser().parseFromString(xml, "text/xml") as unknown as Document;
+  const result: Record<string, Rect> = {};
+  for (const shape of Array.from(document.getElementsByTagNameNS(P_NS, "sp")) as Element[]) {
+    const cNvPr = Array.from(shape.getElementsByTagNameNS(P_NS, "cNvPr"))[0] as Element | undefined;
+    const description = cNvPr?.getAttribute("descr") ?? "";
+    if (!description) continue;
+    const xfrm = Array.from(shape.getElementsByTagNameNS(A_NS, "xfrm"))[0] as Element | undefined;
+    const off = xfrm ? Array.from(xfrm.getElementsByTagNameNS(A_NS, "off"))[0] as Element | undefined : undefined;
+    const ext = xfrm ? Array.from(xfrm.getElementsByTagNameNS(A_NS, "ext"))[0] as Element | undefined : undefined;
+    if (!off || !ext) continue;
+    result[description] = {
+      x: Number(off.getAttribute("x") ?? 0) / EMU_PER_INCH,
+      y: Number(off.getAttribute("y") ?? 0) / EMU_PER_INCH,
+      w: Number(ext.getAttribute("cx") ?? 0) / EMU_PER_INCH,
+      h: Number(ext.getAttribute("cy") ?? 0) / EMU_PER_INCH,
+    };
+  }
+  return result;
+}
+
+function union(placements: Array<{ x: number; y: number; w: number; h: number }>, frame: Rect): Rect {
+  const x = Math.min(...placements.map((placement) => placement.x));
+  const right = Math.max(...placements.map((placement) => placement.x + placement.w));
+  return { x, y: frame.y, w: right - x, h: frame.h };
+}
+
 describe("Goal 7 adaptive comparison and quantitative vertical slices", () => {
-  it("transforms comparison groups with asymmetric content using template-native components", async () => {
+  it("transforms comparison groups and their native panels with the same asymmetric geometry", async () => {
     const source = await fixture("comparison");
     try {
       const compiled = await artifacts(source.template);
@@ -66,7 +101,22 @@ describe("Goal 7 adaptive comparison and quantitative vertical slices", () => {
         ],
       });
       expect(result.qa).toMatchObject({ status: "pass", findings: [] });
-      expect(result.plan.placements.filter((placement) => placement.blockId.startsWith("left-"))[0].w).not.toBe(result.plan.placements.filter((placement) => placement.blockId.startsWith("right-"))[0].w);
+      const leftPlacements = result.plan.placements.filter((placement) => placement.blockId.startsWith("left-"));
+      const rightPlacements = result.plan.placements.filter((placement) => placement.blockId.startsWith("right-") || placement.blockId === "delta");
+      expect(leftPlacements[0].w).not.toBe(rightPlacements[0].w);
+      const expectedLeft = union(leftPlacements, result.plan.contentFrame);
+      const expectedRight = union(rightPlacements, result.plan.contentFrame);
+      const panels = await describedShapeBounds(output);
+      expect(panels["left panel"]).toBeDefined();
+      expect(panels["right panel"]).toBeDefined();
+      expect(panels["left panel"].x).toBeCloseTo(expectedLeft.x, 4);
+      expect(panels["left panel"].w).toBeCloseTo(expectedLeft.w, 4);
+      expect(panels["left panel"].y).toBeCloseTo(expectedLeft.y, 4);
+      expect(panels["left panel"].h).toBeCloseTo(expectedLeft.h, 4);
+      expect(panels["right panel"].x).toBeCloseTo(expectedRight.x, 4);
+      expect(panels["right panel"].w).toBeCloseTo(expectedRight.w, 4);
+      expect(panels["right panel"].y).toBeCloseTo(expectedRight.y, 4);
+      expect(panels["right panel"].h).toBeCloseTo(expectedRight.h, 4);
       const outputXml = await JSZip.loadAsync(fs.readFileSync(output)).then(async (zip) => Promise.all(Object.keys(zip.files).filter((file) => /^ppt\/slides\/.*\.xml$/.test(file)).map((file) => zip.file(file)!.async("string"))));
       expect(outputXml.join("\n")).toContain("ADAPTIVE DELTA");
       expect(outputXml.join("\n")).not.toContain("SOURCE LEFT");
@@ -76,7 +126,7 @@ describe("Goal 7 adaptive comparison and quantitative vertical slices", () => {
   });
 
   it("repeats and reflows native metric components without dropping metric context", async () => {
-      const source = await fixture("quantitative");
+    const source = await fixture("quantitative");
     try {
       const compiled = await artifacts(source.template);
       const output = path.join(source.dir, "adaptive-quantitative.pptx");
