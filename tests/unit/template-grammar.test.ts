@@ -52,6 +52,18 @@ function expectInsideCanvas(geometry: ReturnType<typeof geometryFor>): void {
 }
 
 describe("template grammar geometry", () => {
+  it("does not let structural or unclassified full-canvas shapes expand the adaptive content frame", () => {
+    const grammar = compileTemplateGrammar({
+      ...elements,
+      slides: [{ id: "S01", elements: [
+        ...elements.slides[0].elements,
+        { id: "S01-background", slideId: "S01", type: "shape", role: "surface", confidence: 0.7, bounds: { x: 0, y: 0, w: 13.333, h: 7.5 }, zIndex: 3, features: {} },
+        { id: "S01-helper", slideId: "S01", type: "shape", role: "unknown", confidence: 0, bounds: { x: 0, y: 0, w: 13.333, h: 7.5 }, zIndex: 4, features: {} },
+      ] }],
+    } as unknown as typeof elements);
+    expect(grammar.geometry.contentFrame).toMatchObject({ x: 0.85, y: 0.7, w: 8, h: 1.8 });
+  });
+
   it("rejects non-canonical adaptive bounds instead of hiding them with a clamp", () => {
     expect(() => geometryFor([{ x: 0.85, y: 0.7, w: 6, h: 0.5 }, { x: -2, y: -1, w: 18.5, h: 9 }])).toThrow(/TEMPLATE_COORDINATE_SPACE_MISMATCH/);
   });
@@ -65,7 +77,7 @@ describe("template grammar geometry", () => {
       ] }],
     } as unknown as typeof elements).geometry;
     expectInsideCanvas(geometry);
-    expect(geometry.contentFrame).toMatchObject({ x: 0.85, y: 0.7, w: 8, h: 2.3 });
+    expect(geometry.contentFrame).toMatchObject({ x: 0.85, y: 0.7, w: 8, h: 1.8 });
   });
 
   it("rejects every unclassified off-canvas edge rather than collapsing it", () => {

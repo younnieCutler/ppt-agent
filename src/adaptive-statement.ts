@@ -168,10 +168,11 @@ async function qaAdaptiveStatement(templatePath: string, outputPath: string, pla
 
   const templateOwnedNames = new Set(components.components.filter(structural).flatMap((component) => component.shapeNames));
   const outputNodes = slideNodes(outputRoot);
+  const allowedFrames = [plan.contentFrame, ...(plan.media ? [plan.media] : [])];
   for (const node of outputNodes) {
     if (templateOwnedNames.has(nameOf(node))) continue;
     const rect = rectOf(node);
-    if (rect && (rect.x < -epsilon || rect.y < -epsilon || rect.w <= 0 || rect.h <= 0 || rect.x + rect.w > plan.contentFrame.x + plan.contentFrame.w + epsilon || rect.y + rect.h > plan.contentFrame.y + plan.contentFrame.h + epsilon)) findings.push({ code: "ADAPTIVE_GEOMETRY_OVERFLOW", message: `Output shape '${nameOf(node) || "(unnamed)"}' with bounds ${JSON.stringify(rect)} escaped the adaptive content frame ${JSON.stringify(plan.contentFrame)}.` });
+    if (rect && (rect.x < -epsilon || rect.y < -epsilon || rect.w <= 0 || rect.h <= 0 || !allowedFrames.some((frame) => rect.x >= frame.x - epsilon && rect.y >= frame.y - epsilon && rect.x + rect.w <= frame.x + frame.w + epsilon && rect.y + rect.h <= frame.y + frame.h + epsilon))) findings.push({ code: "ADAPTIVE_GEOMETRY_OVERFLOW", message: `Output shape '${nameOf(node) || "(unnamed)"}' with bounds ${JSON.stringify(rect)} escaped the adaptive content frame ${JSON.stringify(plan.contentFrame)}.` });
   }
 
   const sourceExampleNames = new Set(components.components.filter((component) => !structural(component)).flatMap((component) => component.shapeNames));
