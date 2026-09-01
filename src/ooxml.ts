@@ -3,7 +3,7 @@ import path from "node:path";
 import JSZip from "jszip";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 
-// Parsed as XML, not regex: an Organization Template Pack ships arbitrary PowerPoint parts whose
+// Parsed as XML, not regex: a raw PowerPoint template ships arbitrary package parts whose
 // prefixes, attribute order, nesting (grouped shapes), and whitespace are outside our control.
 // Lookups are namespace-based so a template that binds `pp:` instead of `p:` still reads correctly.
 
@@ -116,7 +116,7 @@ function analyzeSlide(xml: string, slideSize: { cx: number; cy: number }, chartP
 
   // Everything the slide part itself authors — background, shapes, frames, native charts — minus
   // a picture's own artwork. Template master/layout chrome lives in other parts and is never read
-  // here, so an organization template's own gradients stay out of this count by construction.
+  // here, so source-template master/layout gradients stay out of this count by construction.
   const gradientFills = elements(document, A_NS, "gradFill").length
     - pictures.reduce((total, picture) => total + elements(picture, A_NS, "gradFill").length, 0)
     + chartParts.reduce((total, chartXml) => total + chartGradientCount(chartXml), 0);

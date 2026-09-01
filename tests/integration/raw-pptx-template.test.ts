@@ -6,8 +6,7 @@ import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { buildPatternFixture } from "../fixtures/pattern-template";
 
-// Proves the "raw pptx first-class input" path end to end: a template.pptx with zero
-// pre-authored brand.yaml/template-map.json, analyzed straight into a run-scoped directory
+// Proves the "raw pptx first-class input" path end to end: a template.pptx analyzed straight into a run-scoped directory
 // (standing in for <run-dir>/template/ under the hidden workspace from PR A).
 
 const repoRoot = path.resolve(__dirname, "../..");
@@ -18,7 +17,7 @@ function cli(args: string[]): string {
   return execFileSync(process.execPath, [tsxCli, path.join(repoRoot, "src/cli.ts"), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
-describe("template-analyze on a raw .pptx with no organization pack", () => {
+describe("template-analyze on a raw .pptx", () => {
   it("analyzes a bare template.pptx into an arbitrary run-scoped directory and reports its detected strategy", async () => {
     const templatePath = await buildPatternFixture();
     const runScopedTemplateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-raw-pptx-run-"));
@@ -27,7 +26,6 @@ describe("template-analyze on a raw .pptx with no organization pack", () => {
       expect(output.status).toBe("pass");
       expect(output.slides).toBe(3);
       expect(output.strategy).toBe("source_slide_pattern");
-      expect(output.roleOverrides).toBe(0); // no template-map.json existed to supply any
       expect(fs.existsSync(path.join(runScopedTemplateDir, "template-elements.json"))).toBe(true);
       expect(fs.existsSync(path.join(runScopedTemplateDir, "template-grammar.json"))).toBe(true);
       expect(fs.existsSync(path.join(runScopedTemplateDir, "template-design-system.json"))).toBe(true);

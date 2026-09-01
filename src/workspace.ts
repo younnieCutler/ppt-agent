@@ -45,8 +45,8 @@ export function createRunWorkspace(projectDir: string, name: string): RunWorkspa
  * immediate parent chain must end in `.ppt-agent/runs/<runId>`. Checking this structurally, rather
  * than against a separately supplied "project dir," means the guard cannot be defeated by a caller
  * whose notion of the project root (an env var, a stale cwd) disagrees with where `runDir` actually
- * lives — the one thing standing between a cleanup bug and deleting `organizations/`, `outputs/`,
- * or the project root itself stays true regardless of that mismatch.
+ * lives — the one thing standing between a cleanup bug and deleting `outputs/` or the project root
+ * itself stays true regardless of that mismatch.
  */
 export function removeRunWorkspace(runDir: string): void {
   const resolvedRunDir = path.resolve(runDir);

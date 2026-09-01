@@ -26,7 +26,7 @@ describe("semantic composition resolver", () => {
     }
   });
 
-  it("lets high-confidence organization grammar outrank reference preferences", () => {
+  it("lets high-confidence template grammar outrank reference preferences", () => {
     const resolved = resolveCompositionPlan(plan, { referenceCompositionPreferences: ["architecture_zones"] }, {
       compositionPatterns: [{ family: "radial", visualIntents: ["network"], density: "medium", confidence: 0.9 }],
     });

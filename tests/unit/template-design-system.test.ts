@@ -44,7 +44,7 @@ describe("template design system compiler", () => {
     const elements = {
       version: 1 as const,
       source: { sha256: "a".repeat(64), slideSize: { w: 13.333, h: 7.5 } },
-      analysisInputs: { templateDigest: "a".repeat(64), roleOverridesDigest: "b".repeat(64), analyzerVersion: "4" },
+      analysisInputs: { templateDigest: "a".repeat(64), analyzerVersion: "4" },
       slides: [{ id: "S01", sourceSlidePart: "ppt/slides/slide1.xml", nativeLayout: { index: 1, name: "Blank", masterIndex: 1 }, elements: [] }],
       layouts: [],
       masters: [],

@@ -92,7 +92,6 @@ describe("derived editability contract", () => {
       "VISUAL_QA_STALE_RENDER",
       "VISUAL_RENDER_PROVENANCE_UNKNOWN",
       "RENDER_FONT_SUBSTITUTION",
-      "ORGANIZATION_GRAMMAR_NOT_APPLIED",
     ]);
   });
 
@@ -132,7 +131,6 @@ describe("derived editability contract", () => {
       VISUAL_QA_STALE_RENDER: "hard",
       VISUAL_RENDER_PROVENANCE_UNKNOWN: "risk",
       RENDER_FONT_SUBSTITUTION: "risk",
-      ORGANIZATION_GRAMMAR_NOT_APPLIED: "hard",
     });
   });
 });

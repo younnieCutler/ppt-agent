@@ -25,19 +25,18 @@ export const elementOwnerships = ["master-owned", "layout-owned", "slide-body-ow
 export type ElementOwnership = (typeof elementOwnerships)[number];
 export type TemplateElement = { id: string; /** The raw PowerPoint shape name (`cNvPr@name`) — pptx-automizer selects/modifies/removes shapes by this exact name, never by `id` (a composite, JSON-key-safe string derived from it). */ name: string; slideId: string; type: "text" | "shape" | "line" | "image" | "chart" | "table"; role: SemanticRole | "unknown"; confidence: number; bounds: { x: number; y: number; w: number; h: number }; zIndex: number; ownership: ElementOwnership; styleRef?: string; assetRef?: string; offCanvasHelper?: boolean; grouped?: boolean; features: { charCount?: number; lineCount?: number; numericOnly?: boolean; placeholderToken?: string; placeholderType?: string; altText?: string } };
 // Two independent versions: the extractor that reads a PPTX into elements, and the compiler that
-// turns elements into grammar. Either can change without the other, and a pack whose grammar was
-// compiled by an older compiler is stale even when its elements are current.
-// Bumped to "5": elements now also retain observed shape fill/stroke and slide backgrounds for the
+// turns elements into grammar. Either can change without the other, and an artifact whose grammar
+// was compiled by an older compiler is stale even when its elements are current.
+// Bumped to "6": role-map sidecar provenance is gone; elements now retain observed shape fill/stroke and slide backgrounds for the
 // Design System artifact, in addition to `name`, the raw PowerPoint shape name pptx-automizer
 // needs to select/modify/remove a specific shape when cloning a source slide skeleton (PR D), plus
 // canonical coordinate-space metadata and explicit off-canvas-helper classification — an artifact
 // analyzed before these existed cannot drive the adaptive renderer path at all.
-// loadOrganizationPack already refuses a pack whose artifacts predate the current analyzer version,
-// so each bump *is* the migration path for any pack analyzed before the new field existed.
-export const TEMPLATE_ANALYZER_VERSION = "5";
+// A generated artifact analyzed before these fields existed cannot drive the adaptive renderer path.
+export const TEMPLATE_ANALYZER_VERSION = "6";
 export const TEMPLATE_GRAMMAR_COMPILER_VERSION = "2";
-/** Everything the analysis consumed, so a pack can prove its artifacts describe its current inputs. */
-export type AnalysisInputs = { templateDigest: string; roleOverridesDigest: string; analyzerVersion: string };
+/** Everything the analysis consumed, so an artifact can prove it describes its current input. */
+export type AnalysisInputs = { templateDigest: string; analyzerVersion: string };
 export type TemplateLayoutInfo = { index: number; name: string; masterIndex: number; elements: TemplateElement[]; background?: string };
 export type TemplateMasterInfo = { index: number; elements: TemplateElement[]; background?: string };
 // A template whose design lives in its masters/layouts (native_layout) needs no per-slide skeleton
@@ -89,12 +88,6 @@ const NAMED_ROLES: Array<[RegExp, SemanticRole]> = [
 
 export type TypographyContext = { sizePt?: number; maxSizePt?: number; medianSizePt?: number };
 
-/** Digest of the role overrides as the analyzer consumed them — order-independent, values only. */
-export function roleOverridesDigest(overrides: Record<string, SemanticRole> = {}): string {
-  const canonical = Object.keys(overrides).sort().map((key) => [key, overrides[key]]);
-  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
-}
-
 export function elementsDigest(artifact: TemplateElementsArtifact): string {
   return crypto.createHash("sha256").update(JSON.stringify(artifact)).digest("hex");
 }
@@ -111,11 +104,8 @@ export function elementsGeometryDigest(artifact: TemplateElementsArtifact): stri
 export function classifyTemplateElement(
   element: Pick<TemplateElement, "id" | "type" | "bounds" | "features">,
   slideSize: { w: number; h: number },
-  overrides: Record<string, SemanticRole> = {},
   typography: TypographyContext = {},
 ): Pick<TemplateElement, "role" | "confidence"> {
-  if (overrides[element.id]) return { role: overrides[element.id], confidence: 1 };
-
   const placeholderRole = PLACEHOLDER_ROLES[element.features.placeholderType ?? ""];
   if (placeholderRole) {
     // A footer placeholder parked in the middle of the canvas is a repurposed placeholder, not chrome.
@@ -178,16 +168,16 @@ function typographyContext(element: TemplateElement, siblings: TemplateElement[]
   return { sizePt: element.styleRef ? styles[element.styleRef]?.sizePt : undefined, maxSizePt: sizes[sizes.length - 1], medianSizePt: median(sizes) };
 }
 
-function classifyElements(elements: TemplateElement[], slideSize: { w: number; h: number }, overrides: Record<string, SemanticRole>, styles: Record<string, TemplateTextStyle>): TemplateElement[] {
-  return elements.map((element) => ({ ...element, ...classifyTemplateElement(element, slideSize, overrides, typographyContext(element, elements, styles)) }));
+function classifyElements(elements: TemplateElement[], slideSize: { w: number; h: number }, styles: Record<string, TemplateTextStyle>): TemplateElement[] {
+  return elements.map((element) => ({ ...element, ...classifyTemplateElement(element, slideSize, typographyContext(element, elements, styles)) }));
 }
 
-export function classifyTemplateElements(artifact: TemplateElementsArtifact, overrides: Record<string, SemanticRole> = {}): TemplateElementsArtifact {
+export function classifyTemplateElements(artifact: TemplateElementsArtifact): TemplateElementsArtifact {
   return {
     ...artifact,
-    slides: artifact.slides.map((slide) => ({ ...slide, elements: classifyElements(slide.elements, artifact.source.slideSize, overrides, artifact.styles) })),
-    layouts: artifact.layouts.map((layout) => ({ ...layout, elements: classifyElements(layout.elements, artifact.source.slideSize, overrides, artifact.styles) })),
-    masters: artifact.masters.map((master) => ({ ...master, elements: classifyElements(master.elements, artifact.source.slideSize, overrides, artifact.styles) })),
+    slides: artifact.slides.map((slide) => ({ ...slide, elements: classifyElements(slide.elements, artifact.source.slideSize, artifact.styles) })),
+    layouts: artifact.layouts.map((layout) => ({ ...layout, elements: classifyElements(layout.elements, artifact.source.slideSize, artifact.styles) })),
+    masters: artifact.masters.map((master) => ({ ...master, elements: classifyElements(master.elements, artifact.source.slideSize, artifact.styles) })),
   };
 }
 
@@ -578,7 +568,7 @@ export function detectTemplateStrategy(artifact: Pick<TemplateElementsArtifact, 
   return "hybrid";
 }
 
-export async function extractTemplateElements(pptxPath: string, overrides: Record<string, SemanticRole> = {}): Promise<TemplateElementsArtifact> {
+export async function extractTemplateElements(pptxPath: string): Promise<TemplateElementsArtifact> {
   const bytes = fs.readFileSync(path.resolve(pptxPath));
   const zip = await JSZip.loadAsync(bytes);
   const presentationXml = await zip.file("ppt/presentation.xml")?.async("string");
@@ -639,14 +629,14 @@ export async function extractTemplateElements(pptxPath: string, overrides: Recor
   const raw: TemplateElementsArtifact = {
     version: 1,
     source: { sha256: templateDigest, slideSize },
-    analysisInputs: { templateDigest, roleOverridesDigest: roleOverridesDigest(overrides), analyzerVersion: TEMPLATE_ANALYZER_VERSION },
+    analysisInputs: { templateDigest, analyzerVersion: TEMPLATE_ANALYZER_VERSION },
     slides,
     layouts: [...layoutCache.values()].sort((a, b) => a.index - b.index),
     masters: [...masterCache.values()].sort((a, b) => a.index - b.index),
     styles,
     strategy: "native_layout",
   };
-  const classified = classifyTemplateElements(raw, overrides);
+  const classified = classifyTemplateElements(raw);
   const canonicalized = canonicalizeTemplateElements(classified);
   return { ...canonicalized, strategy: detectTemplateStrategy(canonicalized) };
 }

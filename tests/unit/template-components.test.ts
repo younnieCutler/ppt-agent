@@ -28,7 +28,7 @@ function fixture(): TemplateElementsArtifact {
   return {
     version: 1,
     source: { sha256: sourceDigest, slideSize: { w: 13.333, h: 7.5 } },
-    analysisInputs: { templateDigest: sourceDigest, roleOverridesDigest: "b".repeat(64), analyzerVersion: "4" },
+    analysisInputs: { templateDigest: sourceDigest, analyzerVersion: "4" },
     slides: [
       { id: "S01", sourceSlidePart: "ppt/slides/slide1.xml", nativeLayout: { index: 1, name: "Blank", masterIndex: 1 }, elements: [
         element("S01-title", "S01", "text", "title", { x: 1, y: 0.5, w: 6, h: 0.6 }, "title"),

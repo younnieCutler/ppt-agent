@@ -8,7 +8,6 @@ export type ArtifactProvenance = {
   referenceSelectionDigest?: string;
   deckPlanDigest?: string;
   resolvedStyleDigest?: string;
-  templateGrammarDigest?: string;
   compositionPlanDigest?: string;
   templatePatternsDigest?: string;
   patternPlanDigest?: string;
@@ -19,12 +18,11 @@ export type ArtifactProvenance = {
    * verifies them.
    */
   referenceSelectionSource?: { contractDigest: string };
-  resolvedStyleSource?: { contractDigest: string; referenceSelectionDigest?: string; templateGrammarDigest?: string };
+  resolvedStyleSource?: { contractDigest: string; referenceSelectionDigest?: string };
 };
 
-// Removed rather than kept as decoration: organizationPackDigest, deckSpecDigest, and pptxDigest were
-// declared here but never produced or verified. The pack's identity is already carried by
-// templateGrammarDigest, and the rendered PPTX by visual/render-provenance.json.
+// Removed rather than kept as decoration: template-pack, deckSpecDigest, and pptxDigest were
+// declared here but never produced or verified. The rendered PPTX is carried by visual provenance.
 
 export function sha256(input: Buffer | string): string {
   return crypto.createHash("sha256").update(input).digest("hex");

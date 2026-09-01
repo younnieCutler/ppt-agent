@@ -27,7 +27,7 @@
 * Visual QA
 * slide-scoped repair
 * presentation archetypes
-* organization template packs
+* raw PPTX template runtime
 * 16:9 / 4:3 canvas support
 
 However, structural correctness is ahead of actual presentation quality.
@@ -434,7 +434,7 @@ misleading quantitative encoding
 required native object missing
 unreadable content
 off-canvas content
-organization template violation
+template fidelity violation
 ```
 
 ---
@@ -835,7 +835,7 @@ Traceability from this document to shipped work. Update with each PR in the init
 | §13 §14 | Token telemetry by phase, per-slide, repair overhead | done — boundaries recorded to `run.jsonl`, mtime inference kept only as fallback | `src/tokens.ts` |
 | §14 | Quality per 10k tokens | done — `qualityPer10kEffectiveTokens` in every history record | `src/score.ts` |
 | §20 | History as quality regression, not pass/fail | done — carries `tokensPerSlide`, `effectiveTokensPerSlide`, and `qualityPer10kEffectiveTokens` together | `record` command |
-| §1 | "16:9 / 4:3 canvas support" | **partial.** The default (no-organization) renderer is 16:9 only (`renderer.ts:607`); a plain 4:3 deck is rejected. Organization Template Packs support 16:9 **and** 4:3 as of PR5: `CANVAS_DIMENSIONS` (`organization.ts:14`) is the single source of physical size per ratio, `resolvePresentationStyle` cross-checks `contract.aspectRatio` against the pack's declared `aspectRatio` and hard-fails `ORGANIZATION_TEMPLATE_ASPECT_RATIO_MISMATCH` (`style.ts:301`), and `validateTemplateContract` checks the real `template.pptx` is exactly 10×7.5in for a 4:3 pack (`template.ts:83`). A 4:3 pack needs `template-map.json.aspectRatio: "4:3"` plus that 10×7.5in `template.pptx`. Covered by `tests/unit/style.test.ts`, `tests/unit/organization.test.ts`, `tests/integration/template-adapter.test.ts`. `SKILL.md` states this correctly. | — |
+| §1 | "16:9 / 4:3 canvas support" | **partial.** The generic renderer remains 16:9-only (`renderer.ts`); a plain 4:3 deck is rejected. A raw PPTX template is analyzed from its actual `p:sldSz` canvas and the adaptive runtime preserves that coordinate space, including 4:3 source templates. Covered by the coordinate-space and raw-PPTX adaptive tests. `SKILL.md` states this correctly. | — |
 | §16 | Stop re-injecting normalized artifacts | partial — CLI stdout diet only | `src/cli.ts` |
 | §3 G1, §6.3, §6.4 | Default design overhaul | **partial.** Content-fitted, vertically-centered bands replace fixed-height diagrams (`renderArchitectureZones`, `renderProcess` sequence branch); `architecture_zones` widens and accents whichever zone every edge converges on instead of staying uniformly equal-width (`architectureHubZone`, `src/schema.ts`); three new compositions (`central_hub`, `layered_stack`, `verdict_contrast`) give architecture/comparison slides a shape beyond equal columns. Composition selection is still authored upstream (interview/outline), not chosen automatically from message intent — that remains open. | `src/renderer.ts`, `src/schema.ts` |
 | — | Composition families and perceptual repetition | done — `compositionFamily` groups compositions by rendered shape, not name; `UNIFORM_CELL_RHYTHM` catches equal-cell repetition across families that each individually clear the old name-level variety/dominance thresholds (regression: `tests/unit/composition-family.test.ts` against a real 14-slide deck that passed those thresholds while still reading as 3 slides repeated) | `src/schema.ts`, `src/qa.ts` |

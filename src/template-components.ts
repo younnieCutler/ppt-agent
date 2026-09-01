@@ -1,4 +1,4 @@
-import { assertCanonicalTemplateElements, elementsDigest, elementsGeometryDigest, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
+import { assertCanonicalTemplateElements, elementsDigest, elementsGeometryDigest, TEMPLATE_ANALYZER_VERSION, type SemanticRole, type TemplateCoordinateSpace, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
 
 export const TEMPLATE_COMPONENTS_COMPILER_VERSION = "2";
 export const componentKinds = ["title_block", "subtitle_block", "body_block", "label", "metric", "surface", "card", "divider", "key_message", "list_item", "footer", "logo", "media_frame", "unknown"] as const;
@@ -155,7 +155,7 @@ function repeatGroupsForSlide(slideComponents: TemplateComponent[]): Array<{ com
 }
 
 export function compileTemplateComponents(artifact: TemplateElementsArtifact): TemplateComponentsArtifact {
-  if (artifact.coordinateSpace || artifact.analysisInputs?.analyzerVersion === "5") assertCanonicalTemplateElements(artifact);
+  if (artifact.coordinateSpace || artifact.analysisInputs?.analyzerVersion === TEMPLATE_ANALYZER_VERSION) assertCanonicalTemplateElements(artifact);
   if (artifact.coordinateSpace?.mode === "scaled" && artifact.slides.some((slide) => slide.elements.some((element) => element.grouped && !element.offCanvasHelper))) throw new Error("ADAPTIVE_COMPONENT_UNSUPPORTED: grouped components cannot be canonicalized losslessly in a scaled source coordinate space.");
   if (artifact.coordinateSpace?.mode === "scaled" && artifact.slides.some((slide) => {
     return slide.elements.some((element) => !element.offCanvasHelper && element.name && slide.elements.filter((candidate) => candidate.name === element.name).length > 1);

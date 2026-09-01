@@ -1,8 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse } from "yaml";
-import { loadBrandFile } from "./brand";
-import { loadOrganizationPack, type OrganizationPack, type TemplateMap } from "./organization";
 import type { TemplateGrammar } from "./template-analysis";
 import {
   themeV2Schema,
@@ -47,14 +45,7 @@ export type ResolvedPresentationStyle = {
   fonts: { heading: string; body: string; locked: boolean };
   logoPath?: string;
   footer: { showPageNumber: boolean; text: string };
-  organization?: {
-    id: string;
-    root: string;
-    templatePath: string;
-    map: TemplateMap;
-  };
   templateGrammar?: TemplateGrammar;
-  templateGrammarDigest?: string;
   grammar: ResolvedGrammar;
   reference?: ReferenceGrammar;
   locks: { palette: string[]; fonts: boolean };
@@ -192,17 +183,6 @@ function resolveGrammar(contract: GenerationContract, archetype: PresentationArc
   };
 }
 
-function applyTemplateGrammar(grammar: ResolvedGrammar, templateGrammar: TemplateGrammar | undefined): ResolvedGrammar {
-  if (!templateGrammar) return grammar;
-  const ratio = clamp(templateGrammar.typography.titleBodyRatio / 2, 0.85, 1.6);
-  return {
-    ...grammar,
-    spacingScale: clamp(grammar.spacingScale * templateGrammar.geometry.spacingScale, 0.72, 1.55),
-    headlineScale: clamp(grammar.headlineScale * ratio, 0.85, 1.6),
-    surfaceUsage: templateGrammar.surface.usage,
-  };
-}
-
 function blend(from: string, to: string, amount: number): string {
   const channels = [0, 2, 4].map((offset) => Math.round(parseInt(from.slice(offset, offset + 2), 16) * (1 - amount) + parseInt(to.slice(offset, offset + 2), 16) * amount));
   return channels.map((channel) => channel.toString(16).padStart(2, "0")).join("").toUpperCase();
@@ -239,17 +219,15 @@ function migrateEmbeddedTheme(base: ThemeTokensV2, legacy: ThemeTokens): Pick<Re
   };
 }
 
-function applyLegacyBrand(
+function resolveTokens(
   theme: ThemeTokensV2,
   contract: GenerationContract,
   projectDir: string,
-  organization?: OrganizationPack,
   embeddedTheme?: ThemeTokens,
 ): Pick<ResolvedPresentationStyle, "palette" | "data" | "fonts" | "logoPath" | "footer" | "locks"> {
-  const brand = organization?.brand ?? (contract.brand?.kind === "file" ? loadBrandFile(path.resolve(projectDir, contract.brand.path)) : undefined);
-  // A legacy embedded theme is a migration fallback only.  An explicit P3
+  // A legacy embedded theme is a migration fallback only. An explicit P3
   // archetype/reference request must win so users can restyle an old deck.
-  if (!brand && embeddedTheme && (!contract.presentationStyle || contract.presentationStyle === "auto")) {
+  if (embeddedTheme && (!contract.presentationStyle || contract.presentationStyle === "auto")) {
     const migrated = migrateEmbeddedTheme(theme, embeddedTheme);
     const fonts = { heading: contract.fonts.heading, body: contract.fonts.body, locked: migrated.fonts.locked };
     if (migrated.fonts.locked && (migrated.fonts.heading !== contract.fonts.heading || migrated.fonts.body !== contract.fonts.body)) {
@@ -259,47 +237,12 @@ function applyLegacyBrand(
     if (logoPath && !fs.existsSync(logoPath)) throw new Error(`Embedded theme logo not found: ${logoPath}`);
     return { ...migrated, fonts, logoPath };
   }
-  if (!brand) return { palette: theme.palette, data: theme.data, fonts: { heading: contract.fonts.heading, body: contract.fonts.body, locked: false }, footer: { showPageNumber: true, text: "" }, locks: { palette: [], fonts: false } };
-  const brandPath = organization?.root ? path.join(organization.root, "brand.yaml") : path.resolve(projectDir, contract.brand?.kind === "file" ? contract.brand.path : "brand.yaml");
-  const logoPath = brand.logo ? path.resolve(path.dirname(brandPath), brand.logo.path) : undefined;
-  if (logoPath && !fs.existsSync(logoPath)) throw new Error(`Brand logo not found: ${logoPath}`);
-  const fontsLocked = Boolean(brand.fonts?.locked || brand.locks?.fonts);
-  if (brand.locks?.fonts && !brand.fonts) {
-    throw new Error("Locked brand fonts require explicit heading and body font names in brand.yaml.");
-  }
-  if (fontsLocked && (brand.fonts?.heading !== contract.fonts.heading || brand.fonts?.body !== contract.fonts.body)) {
-    throw new Error("Locked brand fonts must be confirmed exactly in the GenerationContract.");
-  }
-  // A V2 brand.yaml already declares the full semantic palette explicitly — organization brand
-  // outranks archetype, so its own tokens must win outright, not get overwritten by a derivation
-  // pass meant only for migrating a legacy 7-token brand that never had these fields to begin with.
-  const palette: ThemePalette = "surfaceAlt" in brand.palette
-    ? { ...theme.palette, ...brand.palette }
-    : {
-        ...theme.palette,
-        ...brand.palette,
-        surfaceAlt: blend(brand.palette.surface, brand.palette.background, 0.6),
-        textSecondary: blend(brand.palette.text, brand.palette.muted, 0.45),
-        inverseText: theme.palette.inverseText,
-        accentSecondary: theme.palette.accentSecondary,
-        divider: blend(brand.palette.border, brand.palette.background, 0.5),
-        gridline: blend(brand.palette.border, brand.palette.background, 0.72),
-        mutedFill: blend(brand.palette.surface, brand.palette.background, 0.7),
-        highlightedRegion: blend(brand.palette.accent, brand.palette.background, 0.86),
-      };
-  const declaredPaletteLocks = brand.locks?.palette ?? brand.lockedPalette;
-  const paletteLocks = declaredPaletteLocks.length > 0
-    ? declaredPaletteLocks
-    : organization || brand.paletteLocked
-      ? ["background", "text", "primary", "accent", "muted", "border"]
-      : [];
   return {
-    palette,
-    data: brand.data ?? [brand.palette.primary, brand.palette.accent, theme.data[2], theme.data[3], theme.data[4], theme.data[5]],
-    fonts: { heading: contract.fonts.heading, body: contract.fonts.body, locked: fontsLocked },
-    logoPath,
-    footer: brand.footer,
-    locks: { palette: paletteLocks, fonts: fontsLocked },
+    palette: theme.palette,
+    data: theme.data,
+    fonts: { heading: contract.fonts.heading, body: contract.fonts.body, locked: false },
+    footer: { showPageNumber: true, text: "" },
+    locks: { palette: [], fonts: false },
   };
 }
 
@@ -308,13 +251,6 @@ export function resolvePresentationStyle(
   options: { projectDir?: string; referenceSelection?: ReferenceSelectionEntry[]; legacyTheme?: ThemeTokens } = {},
 ): ResolvedPresentationStyle {
   const projectDir = options.projectDir ?? process.cwd();
-  const organizationSpec = contract.organization ?? { kind: "none" as const };
-  const organization = organizationSpec.kind === "directory"
-    ? loadOrganizationPack(path.resolve(projectDir, organizationSpec.path))
-    : undefined;
-  if (organization && organization.map.aspectRatio !== contract.aspectRatio) {
-    throw new Error(`ORGANIZATION_TEMPLATE_ASPECT_RATIO_MISMATCH: contract.aspectRatio is '${contract.aspectRatio}' but organization pack '${organization.id}' declares aspectRatio '${organization.map.aspectRatio}'.`);
-  }
   const explicit = contract.presentationStyle ?? "auto";
   const themeId: PresentationArchetype = explicit === "auto" || explicit === "reference-first" ? autoArchetype(contract) : explicit;
   const requestedReference = contract.referenceIds?.[0];
@@ -323,22 +259,19 @@ export function resolvePresentationStyle(
     throw new Error(`REFERENCE_GRAMMAR_NOT_FOUND: primary reference '${requestedReference ?? "(missing)"}' does not contain P3 grammar metadata.`);
   }
   const theme = loadTheme(themeId);
-  const brand = applyLegacyBrand(theme, contract, projectDir, organization, options.legacyTheme);
+  const tokens = resolveTokens(theme, contract, projectDir, options.legacyTheme);
   const resolved: ResolvedPresentationStyle = {
     schemaVersion: 2,
     themeId,
     designDirection: contract.designDirection ?? "auto",
-    palette: brand.palette,
-    data: brand.data,
-    fonts: brand.fonts,
-    logoPath: brand.logoPath,
-    footer: brand.footer,
-    organization: organization ? { id: organization.id, root: organization.root, templatePath: organization.templatePath, map: organization.map } : undefined,
-    templateGrammar: organization?.templateGrammar,
-    templateGrammarDigest: organization?.templateGrammarDigest,
-    grammar: applyTemplateGrammar(resolveGrammar(contract, themeId, reference), organization?.templateGrammar),
+    palette: tokens.palette,
+    data: tokens.data,
+    fonts: tokens.fonts,
+    logoPath: tokens.logoPath,
+    footer: tokens.footer,
+    grammar: resolveGrammar(contract, themeId, reference),
     reference,
-    locks: brand.locks,
+    locks: tokens.locks,
     provenance: { requestedStyle: explicit, resolvedBy: explicit === "reference-first" ? "reference-first" : explicit === "auto" ? "auto" : "explicit" },
   };
   if (resolved.locks.palette.includes("text") && resolved.locks.palette.includes("background") && contrastRatio(resolved.palette.text, resolved.palette.background) < 4.5) {
@@ -354,7 +287,6 @@ export function styleContext(style: ResolvedPresentationStyle): Record<string, u
   return {
     themeId: style.themeId,
     designDirection: style.designDirection,
-    organization: style.organization ? { id: style.organization.id, templatePath: style.organization.templatePath, grammarDigest: style.templateGrammarDigest } : undefined,
     provenance: style.provenance,
     grammar: {
       density: style.grammar.copyBudget > 1.05 ? "dense" : style.grammar.copyBudget < 0.75 ? "sparse" : "balanced",
