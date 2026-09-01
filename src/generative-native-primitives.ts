@@ -156,9 +156,12 @@ export async function renderGenerativeNativePrimitives(
     const visible = info.slidesByTemplate("scene-source");
     if (visible.length !== 1) throw new Error(`GENERATIVE_NATIVE_INPUT_INVALID: expected one visible slide, found ${visible.length}.`);
     presentation.addSlide("scene-source", visible[0].number, (target: any) => {
-      for (const node of nodes) {
-        target.generate((slide: any, pptx: any) => drawPrimitive(slide, pptx, node, profile, assets), nativePrimitiveObjectName(node.id));
-      }
+      // Keep all generated native objects in one PptxGenJS drawing context. Calling target.generate
+      // once per node resets PptxGenJS's non-visual id allocation and can append duplicate cNvPr ids
+      // to the same slide after Automizer composition.
+      target.generate((slide: any, pptx: any) => {
+        for (const node of nodes) drawPrimitive(slide, pptx, node, profile, assets);
+      }, "generative-native-primitives");
     });
     await presentation.write(path.basename(resolvedOutput));
     if (!fs.existsSync(resolvedOutput)) throw new Error(`GENERATIVE_NATIVE_RENDER_FAILED: output was not produced at ${resolvedOutput}.`);
