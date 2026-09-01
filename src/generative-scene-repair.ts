@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { TemplateConstraintProfile } from "./brand-constraints";
-import { generativeSceneIntentSchema, resolveGenerativeScene, type GenerativeSceneIntent } from "./generative-scene";
+import { generativeSceneIntentSchema, isGenerativeNativePrimitiveNode, isGenerativeTextNode, resolveGenerativeScene, type GenerativeSceneIntent, type GenerativeSceneNode } from "./generative-scene";
 import type { GenerativeVisualCriticRequest, GenerativeVisualCriticResponse } from "./generative-visual-critic";
 import { sha256 } from "./provenance";
 import { componentKinds } from "./template-components";
@@ -135,44 +135,52 @@ function normalizedText(value: string | undefined): string {
 
 function textSignature(scene: GenerativeSceneIntent): string {
   return JSON.stringify(scene.layout.nodes
-    .filter((node) => node.role !== "surface" && node.role !== "divider")
+    .filter(isGenerativeTextNode)
     .map((node) => ({ id: node.id, role: node.role, text: normalizedText(node.text) }))
     .sort((a, b) => a.id.localeCompare(b.id)));
 }
 
+function cloneNodes(scene: GenerativeSceneIntent): GenerativeSceneNode[] {
+  return scene.layout.nodes.map((node) => ({ ...node, frame: { ...node.frame } })) as GenerativeSceneNode[];
+}
+
 function applyOperation(scene: GenerativeSceneIntent, operation: GenerativeSceneRepairOperation): GenerativeSceneIntent {
-  const nodes = scene.layout.nodes.map((node) => ({ ...node, frame: { ...node.frame } }));
+  const nodes = cloneNodes(scene);
   const index = "nodeId" in operation ? nodes.findIndex((node) => node.id === operation.nodeId) : -1;
   if ("nodeId" in operation && index < 0) throw new Error(`GENERATIVE_REPAIR_NODE_MISSING: '${operation.nodeId}'.`);
 
   switch (operation.op) {
     case "set_frame":
-      nodes[index] = { ...nodes[index], frame: { ...operation.frame } };
+      nodes[index] = { ...nodes[index], frame: { ...operation.frame } } as GenerativeSceneNode;
       break;
     case "set_emphasis":
-      nodes[index] = { ...nodes[index], emphasis: operation.emphasis };
+      nodes[index] = { ...nodes[index], emphasis: operation.emphasis } as GenerativeSceneNode;
       break;
     case "set_group": {
       const next = { ...nodes[index] } as Record<string, unknown>;
       if (operation.group === null) delete next.group;
       else next.group = operation.group;
-      nodes[index] = next as (typeof nodes)[number];
+      nodes[index] = next as GenerativeSceneNode;
       break;
     }
-    case "set_style_role":
-      if (nodes[index].role === "surface" || nodes[index].role === "divider") throw new Error(`GENERATIVE_REPAIR_TEXT_ONLY_OPERATION: '${operation.nodeId}' is structural.`);
-      nodes[index] = { ...nodes[index], styleRole: operation.styleRole };
+    case "set_style_role": {
+      const current = nodes[index];
+      if (!isGenerativeTextNode(current)) throw new Error(`GENERATIVE_REPAIR_TEXT_ONLY_OPERATION: '${operation.nodeId}' is not a text node.`);
+      nodes[index] = { ...current, styleRole: operation.styleRole };
       break;
+    }
     case "set_component_preference": {
-      const next = { ...nodes[index] } as Record<string, unknown>;
+      const current = nodes[index];
+      if (isGenerativeNativePrimitiveNode(current)) throw new Error(`GENERATIVE_REPAIR_NATIVE_COMPONENT_PREFERENCE_FORBIDDEN: '${operation.nodeId}' is a native primitive.`);
+      const next = { ...current } as Record<string, unknown>;
       if (operation.componentPreference === null) delete next.componentPreference;
       else next.componentPreference = operation.componentPreference;
-      nodes[index] = next as (typeof nodes)[number];
+      nodes[index] = next as GenerativeSceneNode;
       break;
     }
     case "add_structure":
       if (nodes.some((node) => node.id === operation.node.id)) throw new Error(`GENERATIVE_REPAIR_NODE_DUPLICATE: '${operation.node.id}'.`);
-      nodes.push({ ...operation.node } as (typeof nodes)[number]);
+      nodes.push(operation.node as GenerativeSceneNode);
       break;
     case "remove_structure":
       if (nodes[index].role !== "surface" && nodes[index].role !== "divider") throw new Error(`GENERATIVE_REPAIR_TEXT_NODE_REMOVAL_FORBIDDEN: '${operation.nodeId}'.`);
@@ -207,8 +215,6 @@ export function applyGenerativeSceneRepair(
     throw new Error("GENERATIVE_REPAIR_CONSTRAINT_DRIFT: patch weakened corporate template constraints.");
   }
 
-  // Re-run the deterministic brand/geometry gate after every patch. A critic may suggest a visually
-  // plausible move, but only the runtime decides whether it is legal inside the real content canvas.
   resolveGenerativeScene(repaired, brandProfile);
   return repaired;
 }
