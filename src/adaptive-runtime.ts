@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import Automizer from "pptx-automizer";
+import { adaptiveSlideIntentSchema, type AdaptiveSlideIntent } from "./adaptive-composition";
 import { applyPatternSkeleton } from "./template";
 import { transformTemplateComponents } from "./template-transform";
 import { adaptiveOperationsForPlan } from "./adaptive-statement";
@@ -49,6 +50,18 @@ function transformCost(decision: AdaptiveSelectionResult, components: TemplateCo
     if (!source) return Number.POSITIVE_INFINITY;
     return sum + Math.abs(placement.x - source.x) + Math.abs(placement.y - source.y) + Math.abs(placement.w - source.w) + Math.abs(placement.h - source.h);
   }, 0);
+}
+
+function comparisonIntentForSlide(slide: SlideSpec): AdaptiveSlideIntent | undefined {
+  if (slide.layout !== "comparison") return undefined;
+  const blocks: AdaptiveSlideIntent["blocks"] = [
+    { id: "left-label", role: "support", text: slide.content.left.label, group: "left", priority: 80, emphasis: "secondary" },
+    ...slide.content.left.items.map((text, index) => ({ id: `left-item-${index + 1}`, role: "item" as const, text, group: "left", priority: 50, emphasis: "supporting" as const })),
+    { id: "right-label", role: "support", text: slide.content.right.label, group: "right", priority: 80, emphasis: "secondary" },
+    ...slide.content.right.items.map((text, index) => ({ id: `right-item-${index + 1}`, role: "item" as const, text, group: "right", priority: 50, emphasis: "supporting" as const })),
+  ];
+  if (slide.content.delta) blocks.push({ id: "delta", role: "support", text: slide.content.delta, group: "right", priority: 90, emphasis: "primary", preferredComponentKind: "key_message" });
+  return adaptiveSlideIntentSchema.parse({ slideId: slide.id, family: "two_column", header: { text: slide.headline }, blocks });
 }
 
 function selectAdaptiveSource(input: AdaptiveRuntimeInput, slide: SlideSpec): { decision: AdaptiveSelectionResult; components: TemplateComponentsArtifact; sourceSlideId: string; sourceSlideNumber: number } {
@@ -132,7 +145,7 @@ export async function renderAdaptiveRuntime(input: AdaptiveRuntimeInput): Promis
       if (!plan) throw new Error(`ADAPTIVE_RUNTIME_PROVENANCE_MISSING: slide '${slide.id}' has no adaptive plan.`);
       const transformedTemplate = path.join(workspace, `adaptive-source-${String(index + 1).padStart(3, "0")}.pptx`);
       const sourceScopedPlan = { ...plan, slideId: selected.sourceSlideId };
-      const operations = adaptiveOperationsForPlan(sourceScopedPlan, selected.components);
+      const operations = adaptiveOperationsForPlan(sourceScopedPlan, selected.components, comparisonIntentForSlide(slide), slide.layout);
       await transformTemplateComponents(input.templatePath, transformedTemplate, input.components, operations);
       const adaptiveSourceSlides = new Map([[slide.id, { sourceSlideNumber: selected.sourceSlideNumber, family: plan.family }]]);
       const manifest = await applyPatternSkeleton(transformedTemplate, input.scratchPath, preparedPath, [slide], new Map(), { strategy: input.elements.strategy, adaptiveSourceSlides });
