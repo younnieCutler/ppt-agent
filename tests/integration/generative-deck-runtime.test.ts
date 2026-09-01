@@ -9,7 +9,7 @@ import { renderGenerativeDeckRuntime } from "../../src/generative-deck-runtime";
 import { generativeSceneIntentSchema } from "../../src/generative-scene";
 import { readPptxOoxml } from "../../src/ooxml";
 import type { SlideSpec } from "../../src/schema";
-import { compileTemplateGrammar, extractTemplateElements } from "../../src/template-analysis";
+import { compileTemplateGrammar, extractTemplateElements, type TemplateElementsArtifact } from "../../src/template-analysis";
 import { compileTemplateComponents } from "../../src/template-components";
 import { compileTemplateDesignSystem } from "../../src/template-design-system";
 import { compileTemplatePatterns } from "../../src/template-patterns";
@@ -41,6 +41,12 @@ async function fixture(): Promise<{ dir: string; template: string }> {
 
   await pptx.writeFile({ fileName: template });
   return { dir, template };
+}
+
+function markFirstSlideStructural(elements: TemplateElementsArtifact): void {
+  const content = elements.slides[0]?.elements.filter((element) => element.type === "text") ?? [];
+  if (content[0]) content[0].features.placeholderType = "title";
+  if (content[1]) content[1].features.placeholderType = "body";
 }
 
 function statementSlide(): SlideSpec {
@@ -80,6 +86,22 @@ function quantitativeSlide(): SlideSpec {
   };
 }
 
+function statementScene() {
+  return generativeSceneIntentSchema.parse({
+    version: 2,
+    slideId: "S10",
+    semanticIntent: "statement",
+    headline: "DECK EXACT TITLE",
+    layout: {
+      strategy: "model_authored",
+      nodes: [
+        { id: "headline", role: "headline", text: "DECK EXACT TITLE", frame: { x: 0, y: 0, w: 0.72, h: 0.15 }, emphasis: 1, styleRole: "title", componentPreference: "title_block" },
+        { id: "body", role: "body", text: "Exact body", frame: { x: 0, y: 0.28, w: 0.7, h: 0.28 }, emphasis: 0.7, styleRole: "body", componentPreference: "body_block" },
+      ],
+    },
+  });
+}
+
 function metricScene() {
   return generativeSceneIntentSchema.parse({
     version: 2,
@@ -116,10 +138,11 @@ async function visibleSlideXmls(pptxPath: string): Promise<string[]> {
 }
 
 describe("generative multi-slide deck runtime", () => {
-  it("uses exact_clone when proven, generative_scene otherwise, preserves order, and never falls back to the generic renderer", async () => {
+  it("uses exact_clone only for a structural placeholder-driven source, generative_scene otherwise, and preserves order", async () => {
     const source = await fixture();
     try {
       const elements = await extractTemplateElements(source.template);
+      markFirstSlideStructural(elements);
       const grammar = compileTemplateGrammar(elements);
       const designSystem = compileTemplateDesignSystem(elements, grammar);
       const components = compileTemplateComponents(elements);
@@ -157,6 +180,39 @@ describe("generative multi-slide deck runtime", () => {
       expect(slides[1]).toContain("15%");
       expect(slides.join("\n")).not.toContain("SOURCE ");
       expect([...fs.readdirSync(source.dir)].some((name) => name.startsWith(".ppt-agent-generative-deck-runtime-"))).toBe(false);
+    } finally {
+      fs.rmSync(source.dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("treats an otherwise exact-looking example source slide as reference-only when it has no structural placeholders", async () => {
+    const source = await fixture();
+    try {
+      const elements = await extractTemplateElements(source.template);
+      const grammar = compileTemplateGrammar(elements);
+      const designSystem = compileTemplateDesignSystem(elements, grammar);
+      const components = compileTemplateComponents(elements);
+      const patterns = compileTemplatePatterns(elements, grammar);
+      const slide = statementSlide();
+      const output = path.join(source.dir, "reference-only-output.pptx");
+
+      const result = await renderGenerativeDeckRuntime({
+        templatePath: source.template,
+        outputPath: output,
+        slides: [slide],
+        candidatesBySlide: new Map([[slide.id, [{ rank: 1, pattern: patterns.patterns[0] }]]]),
+        scenesBySlide: new Map([[slide.id, statementScene()]]),
+        elements,
+        designSystem,
+        components,
+      });
+
+      expect(result.decisions[0].mode).toBe("generative_scene");
+      expect(result.manifest).toEqual([{ slideId: "S10", mode: "generative_scene" }]);
+      const xml = (await visibleSlideXmls(output))[0];
+      expect(xml).toContain("DECK EXACT TITLE");
+      expect(xml).toContain("Exact body");
+      expect(xml).not.toContain("SOURCE EXACT");
     } finally {
       fs.rmSync(source.dir, { recursive: true, force: true });
     }
