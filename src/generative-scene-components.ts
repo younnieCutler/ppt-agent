@@ -1,5 +1,5 @@
 import type { TemplateConstraintProfile, ImmutableBrandRegion, Rect } from "./brand-constraints";
-import type { GenerativeSceneNode, ResolvedGenerativeScene } from "./generative-scene";
+import { isGenerativeNativePrimitiveNode, type GenerativeSceneNode, type GenerativeTextNode, type ResolvedGenerativeScene } from "./generative-scene";
 import type { ComponentTransformOperation } from "./template-transform";
 import type { ComponentKind, TemplateComponent, TemplateComponentsArtifact } from "./template-components";
 
@@ -20,7 +20,7 @@ export type GenerativeSceneComponentPlan = {
   preservedImmutableComponentIds: string[];
 };
 
-const textPreferences: Record<Exclude<GenerativeSceneNode["role"], "surface" | "divider">, ComponentKind[]> = {
+const textPreferences: Record<GenerativeTextNode["role"], ComponentKind[]> = {
   headline: ["title_block", "key_message", "body_block"],
   body: ["body_block", "key_message", "list_item", "label"],
   label: ["label", "body_block", "list_item"],
@@ -34,20 +34,11 @@ const textPreferences: Record<Exclude<GenerativeSceneNode["role"], "surface" | "
 const structuralKinds = new Set<ComponentKind>(["surface", "card", "divider", "footer", "logo"]);
 
 function usable(component: TemplateComponent): boolean {
-  return !component.offCanvasHelper
-    && !component.grouped
-    && component.shapeNames.length === 1
-    && component.kind !== "unknown"
-    && component.kind !== "media_frame";
+  return !component.offCanvasHelper && !component.grouped && component.shapeNames.length === 1 && component.kind !== "unknown" && component.kind !== "media_frame";
 }
 
-function near(left: number, right: number): boolean {
-  return Math.abs(left - right) <= 0.015;
-}
-
-function sameBounds(left: Rect, right: Rect): boolean {
-  return near(left.x, right.x) && near(left.y, right.y) && near(left.w, right.w) && near(left.h, right.h);
-}
+function near(left: number, right: number): boolean { return Math.abs(left - right) <= 0.015; }
+function sameBounds(left: Rect, right: Rect): boolean { return near(left.x, right.x) && near(left.y, right.y) && near(left.w, right.w) && near(left.h, right.h); }
 
 function immutableMatch(component: TemplateComponent, region: ImmutableBrandRegion): boolean {
   if (component.elementIds.includes(region.sourceElementId) && component.sourceSlideId === region.sourceSlideId) return true;
@@ -59,8 +50,7 @@ function immutableComponent(component: TemplateComponent, profile: TemplateConst
   return profile.immutableRegions.some((region) => immutableMatch(component, region));
 }
 
-function textPrototype(node: GenerativeSceneNode, artifact: TemplateComponentsArtifact): TemplateComponent {
-  if (node.role === "surface" || node.role === "divider") throw new Error(`GENERATIVE_COMPONENT_UNSUPPORTED: '${node.role}' is not a text node.`);
+function textPrototype(node: GenerativeTextNode, artifact: TemplateComponentsArtifact): TemplateComponent {
   const preferences = node.componentPreference ? [node.componentPreference] : textPreferences[node.role];
   const candidates = artifact.components.filter(usable).filter((component) => preferences.includes(component.kind) && component.assetProvenance.kind === "none");
   candidates.sort((left, right) => {
@@ -78,10 +68,8 @@ function textPrototype(node: GenerativeSceneNode, artifact: TemplateComponentsAr
   return selected;
 }
 
-function structuralPrototype(node: GenerativeSceneNode, artifact: TemplateComponentsArtifact): TemplateComponent {
-  const desired: ComponentKind[] = node.role === "surface"
-    ? (node.componentPreference ? [node.componentPreference] : ["card", "surface"])
-    : ["divider"];
+function structuralPrototype(node: Extract<GenerativeSceneNode, { role: "surface" | "divider" }>, artifact: TemplateComponentsArtifact): TemplateComponent {
+  const desired: ComponentKind[] = node.role === "surface" ? (node.componentPreference ? [node.componentPreference] : ["card", "surface"]) : ["divider"];
   const candidates = artifact.components.filter(usable).filter((component) => desired.includes(component.kind) && component.assetProvenance.kind === "none");
   candidates.sort((left, right) => desired.indexOf(left.kind) - desired.indexOf(right.kind) || right.confidence - left.confidence || left.sourceSlideId.localeCompare(right.sourceSlideId) || left.id.localeCompare(right.id));
   const selected = candidates[0];
@@ -89,30 +77,19 @@ function structuralPrototype(node: GenerativeSceneNode, artifact: TemplateCompon
   return selected;
 }
 
-function prototypeFor(node: GenerativeSceneNode, artifact: TemplateComponentsArtifact): TemplateComponent {
+function prototypeFor(node: Exclude<GenerativeSceneNode, { role: "connector" | "chart" | "image" | "icon" }>, artifact: TemplateComponentsArtifact): TemplateComponent {
   return node.role === "surface" || node.role === "divider" ? structuralPrototype(node, artifact) : textPrototype(node, artifact);
 }
 
-function aliasFor(nodeId: string): string {
-  return `generative.${nodeId}`;
-}
+function aliasFor(nodeId: string): string { return `generative.${nodeId}`; }
 
-function appendNode(operations: ComponentTransformOperation[], provenance: GenerativeComponentProvenance[], node: ResolvedGenerativeScene["nodes"][number], component: TemplateComponent, targetSlideId: string): void {
+function appendNode(operations: ComponentTransformOperation[], provenance: GenerativeComponentProvenance[], node: Exclude<ResolvedGenerativeScene["nodes"][number], { role: "connector" | "chart" | "image" | "icon" }>, component: TemplateComponent, targetSlideId: string): void {
   const alias = aliasFor(node.id);
   operations.push({ operation: "clone", componentId: component.id, targetSlideId, as: alias });
-  // Resize at the source component's known-safe position before moving. This avoids transient
-  // off-canvas geometry when a large template prototype is destined for a small free-form frame.
   operations.push({ operation: "resize", componentId: alias, w: node.bounds.w, h: node.bounds.h });
   operations.push({ operation: "move", componentId: alias, x: node.bounds.x, y: node.bounds.y });
-  const record: GenerativeComponentProvenance = {
-    sceneNodeId: node.id,
-    alias,
-    componentId: component.id,
-    componentKind: component.kind,
-    sourceSlideId: component.sourceSlideId,
-    bounds: { ...node.bounds },
-  };
-  if (node.text) {
+  const record: GenerativeComponentProvenance = { sceneNodeId: node.id, alias, componentId: component.id, componentKind: component.kind, sourceSlideId: component.sourceSlideId, bounds: { ...node.bounds } };
+  if ("text" in node && node.text) {
     const text = node.text.replace(/\s+/g, " ").trim();
     if (!text) throw new Error(`GENERATIVE_COMPONENT_UNSUPPORTED: Scene node '${node.id}' has no renderable text.`);
     operations.push({ operation: "replace_text", componentId: alias, text });
@@ -132,29 +109,16 @@ function sanitizableBase(targetSlideId: string, artifact: TemplateComponentsArti
 }
 
 export function compileGenerativeSceneComponentPlan(scene: ResolvedGenerativeScene, targetSlideId: string, artifact: TemplateComponentsArtifact, profile: TemplateConstraintProfile): GenerativeSceneComponentPlan {
-  if (artifact.sourceDigest !== profile.sourceDigest || artifact.elementsDigest !== profile.elementsDigest) {
-    throw new Error("GENERATIVE_COMPONENT_PROVENANCE_MISMATCH: component catalog and brand profile describe different template inputs.");
-  }
+  if (artifact.sourceDigest !== profile.sourceDigest || artifact.elementsDigest !== profile.elementsDigest) throw new Error("GENERATIVE_COMPONENT_PROVENANCE_MISMATCH: component catalog and brand profile describe different template inputs.");
   const { target, preserved } = sanitizableBase(targetSlideId, artifact, profile);
   const operations: ComponentTransformOperation[] = [];
   const provenance: GenerativeComponentProvenance[] = [];
-
-  // Structural/background nodes are cloned first so later text nodes naturally stay above them.
-  const ordered = [...scene.nodes].sort((left, right) => {
+  const componentNodes = scene.nodes.filter((node) => !isGenerativeNativePrimitiveNode(node)) as Array<Exclude<ResolvedGenerativeScene["nodes"][number], { role: "connector" | "chart" | "image" | "icon" }>>;
+  const ordered = [...componentNodes].sort((left, right) => {
     const layer = (role: GenerativeSceneNode["role"]): number => role === "surface" ? 0 : role === "divider" ? 1 : 2;
-    return layer(left.role) - layer(right.role) || scene.nodes.indexOf(left) - scene.nodes.indexOf(right);
+    return layer(left.role) - layer(right.role) || componentNodes.indexOf(left) - componentNodes.indexOf(right);
   });
   for (const node of ordered) appendNode(operations, provenance, node, prototypeFor(node, artifact), targetSlideId);
-
-  for (const component of target) {
-    if (preserved.has(component.id)) continue;
-    operations.push({ operation: "remove", componentId: component.id });
-  }
-
-  return {
-    targetSlideId,
-    operations,
-    provenance,
-    preservedImmutableComponentIds: [...preserved].sort(),
-  };
+  for (const component of target) if (!preserved.has(component.id)) operations.push({ operation: "remove", componentId: component.id });
+  return { targetSlideId, operations, provenance, preservedImmutableComponentIds: [...preserved].sort() };
 }
