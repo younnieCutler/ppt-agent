@@ -4,7 +4,7 @@ import path from "node:path";
 import Automizer from "pptx-automizer";
 import { diagnoseAdaptiveMode, type AdaptiveSelectionCandidate } from "./adaptive-selection";
 import type { GenerativeNativeAssetRegistry } from "./generative-native-primitives";
-import { generativeSceneIntentSchema, type GenerativeSceneIntent } from "./generative-scene";
+import { generativeSceneIntentSchema, isGenerativeTextNode, type GenerativeSceneIntent } from "./generative-scene";
 import { renderGenerativeSceneRuntime } from "./generative-scene-runtime";
 import { readPptxOoxml, pruneUnreachablePptxParts } from "./ooxml";
 import { assertPptxPackageIntegrity, type PackageIntegrityReport } from "./package-integrity";
@@ -92,8 +92,8 @@ function validateSceneForSlide(slide: SlideSpec, scene: GenerativeSceneIntent): 
   const expected = semanticIntentByLayout[slide.layout];
   if (parsed.semanticIntent !== expected) throw new Error(`GENERATIVE_DECK_SEMANTIC_MISMATCH: slide '${slide.id}' layout '${slide.layout}' requires semanticIntent '${expected}', received '${parsed.semanticIntent}'.`);
   if (normalizeText(parsed.headline) !== normalizeText(slide.headline)) throw new Error(`GENERATIVE_DECK_HEADLINE_MISMATCH: Scene '${slide.id}' headline must preserve the SlideSpec headline.`);
-  const headlineNodes = parsed.layout.nodes.filter((node) => node.role === "headline");
-  if (headlineNodes.length !== 1 || normalizeText(headlineNodes[0].text ?? "") !== normalizeText(slide.headline)) throw new Error(`GENERATIVE_DECK_HEADLINE_NODE_REQUIRED: Scene '${slide.id}' must render exactly one headline node matching the SlideSpec headline.`);
+  const headlineNodes = parsed.layout.nodes.filter(isGenerativeTextNode).filter((node) => node.role === "headline");
+  if (headlineNodes.length !== 1 || normalizeText(headlineNodes[0].text) !== normalizeText(slide.headline)) throw new Error(`GENERATIVE_DECK_HEADLINE_NODE_REQUIRED: Scene '${slide.id}' must render exactly one headline node matching the SlideSpec headline.`);
   return parsed;
 }
 
