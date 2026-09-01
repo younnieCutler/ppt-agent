@@ -115,6 +115,17 @@ describe("content-first adaptive composition planning", () => {
     expect(() => planAdaptiveSlide({ templateDigest, designSystem, components: stale, intent: intent("stack", [block("one", "body", "One")]) })).toThrow(/artifacts are stale/);
   });
 
+  it("rejects artifacts whose canonical coordinate spaces do not match", () => {
+    const mismatched = {
+      ...components,
+      coordinateSpace: {
+        ...components.coordinateSpace!,
+        sourceFrame: { ...components.coordinateSpace!.sourceFrame, w: components.coordinateSpace!.sourceFrame.w - 1 },
+      },
+    };
+    expect(() => planAdaptiveSlide({ templateDigest, designSystem, components: mismatched, intent: intent("stack", [block("one", "body", "One")]) })).toThrow(/coordinate spaces differ/);
+  });
+
   it("rejects a component that cannot safely resize into its calculated placement", () => {
     const unsafe = { ...components, components: components.components.map((candidate) => candidate.kind === "card" ? { ...candidate, resizeFeasibility: { horizontal: "unknown" as const, vertical: "unknown" as const } } : candidate) };
     expect(() => planAdaptiveSlide({ templateDigest, designSystem, components: unsafe, intent: intent("repeated_cards", [block("card", "item", "Card")]) })).toThrow(/lacks a safe resize capability/);

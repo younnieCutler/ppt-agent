@@ -206,6 +206,7 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
   assertTemplateCoordinateSpace(designSystem.coordinateSpace, designSystem.canvas);
   assertTemplateCoordinateSpace(components.coordinateSpace, components.canvas);
   if (Math.abs(designSystem.canvas.w - components.canvas.w) > 2 / 914400 || Math.abs(designSystem.canvas.h - components.canvas.h) > 2 / 914400) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog canvases differ.");
+  if (JSON.stringify(designSystem.coordinateSpace) !== JSON.stringify(components.coordinateSpace)) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog coordinate spaces differ.");
   const contentFrame = finiteRect(designSystem.geometry.contentFrame, designSystem.canvas);
   const spacing = observedGap(designSystem);
   const selected = chooseComponents(intent, usableComponents(components));
