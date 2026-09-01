@@ -8,7 +8,7 @@ import { transformTemplateComponents } from "./template-transform";
 import { assertCanonicalTemplateElements, compileTemplateGrammar, elementsDigest, extractTemplateElements, type TemplateElementsArtifact } from "./template-analysis";
 import { compileTemplateComponents, type TemplateComponentsArtifact, type TemplateComponent } from "./template-components";
 import { compileTemplateDesignSystem, type TemplateDesignSystemArtifact } from "./template-design-system";
-import { runAdaptiveQa, type AdaptiveQaCode } from "./adaptive-qa";
+import { hasExactAdaptiveTextNode, runAdaptiveQa, type AdaptiveQaCode } from "./adaptive-qa";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -155,9 +155,8 @@ async function qaAdaptiveStatement(templatePath: string, outputPath: string, pla
   const sourceExampleNames = new Set(components.components.filter((component) => !structural(component)).flatMap((component) => component.shapeNames));
   const sourceExamples = slideNodes(sourceRoot).filter((node) => sourceExampleNames.has(nameOf(node))).map(textOf).filter((text) => text.length > 0);
   const outputTextNodes = outputNodes.map(textOf).filter((text) => text.length > 0);
-  const outputText = all(outputRoot, A_NS, "t").map((text) => text.textContent ?? "").join(" ");
   sourceExamples.forEach((text) => { if (outputTextNodes.includes(text)) findings.push({ code: "ADAPTIVE_EXAMPLE_CONTENT_LEAK", message: `Template example text survived: '${text}'.` }); });
-  for (const allocation of plan.textAllocation) if (!outputText.includes(allocation.text)) findings.push({ code: "ADAPTIVE_CONTENT_DROPPED", message: `Adaptive content block '${allocation.blockId}' did not reach the output.` });
+  for (const allocation of plan.textAllocation) if (!hasExactAdaptiveTextNode(outputTextNodes, allocation.text)) findings.push({ code: "ADAPTIVE_CONTENT_DROPPED", message: `Adaptive content block '${allocation.blockId}' did not reach an output text node exactly.` });
   const removableMediaNames = new Set(components.components.filter((component) => !structural(component) && component.assetProvenance.kind !== "none" && component.id !== plan.media?.componentId).flatMap((component) => component.shapeNames));
   outputNodes.filter((node) => removableMediaNames.has(nameOf(node))).forEach((node) => findings.push({ code: "ADAPTIVE_EXAMPLE_CONTENT_LEAK", message: `Template example media survived: '${nameOf(node)}'.` }));
 
