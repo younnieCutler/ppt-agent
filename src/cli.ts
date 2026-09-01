@@ -24,6 +24,7 @@ import { compileTemplateComponents } from "./template-components";
 import { applyPatternLabels, assertTemplatePatternsArtifact, compileTemplatePatterns, patternLabelSchema, resolvePatternPlan, selectPatternsForSlides, type TemplatePattern, type TemplatePatternsArtifact } from "./template-patterns";
 import { checkTemplateFidelityUnproven, checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
 import { applyPatternSkeleton } from "./template";
+import { renderAdaptiveStatement } from "./adaptive-statement";
 import { templateMapSchema } from "./organization";
 import { resolveTemplateSourceSpec } from "./template-source";
 import { createRunWorkspace, removeRunWorkspace } from "./workspace";
@@ -124,6 +125,15 @@ function hasFlag(args: string[], name: string): boolean {
 
 function readJson(filePath: string): unknown {
   return JSON.parse(fs.readFileSync(path.resolve(filePath), "utf8"));
+}
+
+function physicalPath(filePath: string): string {
+  const absolute = path.resolve(filePath);
+  try {
+    return fs.realpathSync(absolute);
+  } catch {
+    return path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+  }
 }
 
 function loadContentModelIfExists(filePath: string): ContentModel | undefined {
@@ -287,7 +297,7 @@ export async function release(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|template-preview|pattern-label|plan-validate|composition-resolve|pattern-resolve|render-pattern-skeleton|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|template-preview|pattern-label|plan-validate|composition-resolve|pattern-resolve|render-pattern-skeleton|adaptive-statement|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
@@ -590,6 +600,34 @@ async function main(): Promise<void> {
     const manifestPath = path.join(runDir, "render-manifest.json");
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     emit({ status: "pass", outputPath: path.resolve(outPath), manifestPath, slides: manifest.length }, manifest);
+    return;
+  }
+
+  if (command === "adaptive-statement") {
+    const templatePath = option(args, "--template");
+    const elementsPath = option(args, "--elements");
+    const designSystemPath = option(args, "--design-system");
+    const componentsPath = option(args, "--components");
+    const intentPath = option(args, "--intent");
+    const outputPath = path.resolve(option(args, "--out"));
+    const planPath = path.resolve(optionalOption(args, "--plan-out") ?? `${outputPath}.adaptive-slide-plan.json`);
+    const qaPath = path.resolve(optionalOption(args, "--qa-out") ?? `${outputPath}.adaptive-qa.json`);
+    const outputTargets = [templatePath, elementsPath, designSystemPath, componentsPath, intentPath, outputPath, planPath, qaPath].map(physicalPath);
+    if (new Set(outputTargets).size !== outputTargets.length) throw new Error("ADAPTIVE_STATEMENT_OUTPUT_ALIAS: template, PPTX output, plan output, and QA output must be distinct physical paths.");
+    const result = await renderAdaptiveStatement(
+      templatePath,
+      outputPath,
+      readJson(designSystemPath) as Parameters<typeof renderAdaptiveStatement>[2],
+      readJson(componentsPath) as Parameters<typeof renderAdaptiveStatement>[3],
+      readJson(elementsPath) as Parameters<typeof renderAdaptiveStatement>[4],
+      readJson(intentPath),
+    );
+    fs.mkdirSync(path.dirname(planPath), { recursive: true });
+    fs.mkdirSync(path.dirname(qaPath), { recursive: true });
+    fs.writeFileSync(planPath, JSON.stringify(result.plan, null, 2));
+    fs.writeFileSync(qaPath, JSON.stringify(result.qa, null, 2));
+    print({ status: result.qa.status, outputPath: result.outputPath, planPath, qaPath, findings: result.qa.findings.map((finding) => finding.code) });
+    if (result.qa.status !== "pass") process.exitCode = 2;
     return;
   }
 
