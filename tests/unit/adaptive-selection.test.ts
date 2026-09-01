@@ -29,11 +29,11 @@ const designSystem = {
   spacing: { rhythm: [0.25] }, dividers: { orientations: [], thicknesses: [], lengths: [], strokeWidthsPt: [], colors: [] }, surfaces: { fills: [], borders: [], borderWidthsPt: [] }, alignmentAnchors: { x: [], y: [] },
 } as unknown as TemplateDesignSystemArtifact;
 
-const component = (id: string, kind: "title_block" | "body_block" | "label"): TemplateComponentsArtifact["components"][number] => ({
+const component = (id: string, kind: TemplateComponentsArtifact["components"][number]["kind"]): TemplateComponentsArtifact["components"][number] => ({
   id, kind, sourceSlideId: "S01", sourceSlidePart: "ppt/slides/slide1.xml", elementIds: [id], shapeNames: [id], sourceBounds: { x: 1, y: 1, w: 2, h: 1 }, semanticRoles: [], styleRefs: ["style"], assetProvenance: { kind: "none", sourceSlidePart: "ppt/slides/slide1.xml", sourceElementId: id }, repeatability: { signal: "repeatable", count: 3 }, resizeFeasibility: { horizontal: "safe", vertical: "safe" }, observedSiblings: [], groupPattern: "vertical_stack", confidence: 0.9,
 });
 
-const components = { version: 1, compilerVersion: "2", sourceDigest: digest, elementsDigest: "b".repeat(64), sourceGeometryDigest: "c".repeat(64), canvas: designSystem.canvas, coordinateSpace: designSystem.coordinateSpace, components: [component("title", "title_block"), component("body", "body_block"), component("label", "label")], repeatGroups: [] } as unknown as TemplateComponentsArtifact;
+const components = { version: 1, compilerVersion: "2", sourceDigest: digest, elementsDigest: "b".repeat(64), sourceGeometryDigest: "c".repeat(64), canvas: designSystem.canvas, coordinateSpace: designSystem.coordinateSpace, components: [component("title", "title_block"), component("body", "body_block"), component("label", "label"), component("card", "card"), component("metric", "metric")], repeatGroups: [] } as unknown as TemplateComponentsArtifact;
 
 describe("exact clone vs adaptive compose selection", () => {
   it("accepts exact_clone only when coverage, cardinality, capacity, and composition all fit", () => {
@@ -64,5 +64,88 @@ describe("exact clone vs adaptive compose selection", () => {
     ], designSystem, components });
     expect(selected.mode).toBe("adaptive_compose");
     expect(selected.rejectionReasons.filter((reason) => reason.patternId).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("plans comparison content with asymmetric groups and preserves an un-emphasized delta", () => {
+    const selected = selectAdaptiveMode({
+      templateDigest: digest,
+      slide: slide({
+        id: "S02",
+        layout: "comparison",
+        composition: "two_column",
+        content: {
+          left: { label: "Legacy", items: ["One constraint"] },
+          right: { label: "Adaptive", items: ["First constraint", "Second constraint", "Third constraint", "Fourth constraint"] },
+          delta: "Choose by constraint.",
+        },
+      }),
+      candidates: [],
+      designSystem,
+      components,
+    });
+    expect(selected.mode).toBe("adaptive_compose");
+    expect(selected.chosen?.componentFamily).toBe("two_column");
+    expect(selected.adaptiveContent).toMatchObject({ layout: "comparison", content: { left: { label: "Legacy" }, right: { items: ["First constraint", "Second constraint", "Third constraint", "Fourth constraint"] }, delta: "Choose by constraint." } });
+    const left = selected.adaptivePlan!.placements.filter((placement) => placement.blockId.startsWith("left-"));
+    const right = selected.adaptivePlan!.placements.filter((placement) => placement.blockId.startsWith("right-") || placement.blockId === "delta");
+    expect(left[0].w).not.toBe(right[0].w);
+    expect(selected.adaptivePlan!.textAllocation.map((allocation) => allocation.text)).toContain("Choose by constraint.");
+  });
+
+  it("uses a native emphasis component for comparison delta when one exists", () => {
+    const withEmphasis = { ...components, components: [...components.components, component("emphasis", "key_message")] };
+    const selected = selectAdaptiveMode({
+      templateDigest: digest,
+      slide: slide({
+        id: "S02",
+        layout: "comparison",
+        composition: "two_column",
+        content: { left: { label: "A", items: ["A item"] }, right: { label: "B", items: ["B item"] }, delta: "Delta" },
+      }),
+      candidates: [],
+      designSystem,
+      components: withEmphasis,
+    });
+    expect(selected.adaptivePlan!.placements.find((placement) => placement.blockId === "delta")?.componentKind).toBe("key_message");
+  });
+
+  it("reflows quantitative metrics and preserves period, comparison basis, and note", () => {
+    const metrics = Array.from({ length: 5 }, (_, index) => ({
+      label: `Metric ${index + 1}`,
+      value: index + 1,
+      unit: "%",
+      period: "Q2",
+      comparisonBasis: "Q1",
+      note: "Grounded note",
+    }));
+    const selected = selectAdaptiveMode({
+      templateDigest: digest,
+      slide: slide({ id: "S02", layout: "quantitative", composition: "kpi_row", content: { kind: "kpi", metrics } }),
+      candidates: [],
+      designSystem,
+      components,
+    });
+    expect(selected.mode).toBe("adaptive_compose");
+    expect(selected.chosen?.componentFamily).toBe("metric_row");
+    expect(selected.adaptiveContent).toMatchObject({ layout: "quantitative", content: { metrics } });
+    expect(selected.adaptivePlan!.placements).toHaveLength(5);
+    expect(selected.adaptivePlan!.rows).toBeGreaterThan(1);
+    expect(selected.adaptivePlan!.textAllocation[0].text).toContain("Q2");
+    expect(selected.adaptivePlan!.textAllocation[0].text).toContain("Q1");
+    expect(selected.adaptivePlan!.textAllocation[0].text).toContain("Grounded note");
+  });
+
+  it("hard-fails quantitative adaptive composition without a native metric component", () => {
+    const noMetrics = { ...components, components: components.components.filter((candidate) => candidate.kind !== "metric") };
+    const diagnosis = diagnoseAdaptiveMode({
+      templateDigest: digest,
+      slide: slide({ id: "S02", layout: "quantitative", composition: "kpi_row", content: { kind: "kpi", metrics: [{ label: "Metric", value: 10, unit: "%", period: "Q2" }] } }),
+      candidates: [],
+      designSystem,
+      components: noMetrics,
+    });
+    expect(diagnosis.mode).toBe("unsupported");
+    expect(diagnosis.rejectionReasons.map((reason) => reason.code)).toContain("adaptive_capability");
+    expect(() => selectAdaptiveMode({ templateDigest: digest, slide: slide({ id: "S02", layout: "quantitative", composition: "kpi_row", content: { kind: "kpi", metrics: [{ label: "Metric", value: 10, unit: "%", period: "Q2" }] } }), candidates: [], designSystem, components: noMetrics })).toThrow(/TEMPLATE_COMPOSITION_UNSUPPORTED/);
   });
 });

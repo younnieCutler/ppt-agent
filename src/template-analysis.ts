@@ -81,6 +81,7 @@ const NAMED_ROLES: Array<[RegExp, SemanticRole]> = [
   [/subtitle|sub-title/, "subtitle"],
   [/eyebrow|kicker/, "eyebrow"],
   [/caption/, "caption"],
+  [/panel|card|surface/, "surface"],
   [/source|출처|出典/, "source"],
   [/metric|kpi/, "metric"],
   [/heading/, "heading"],

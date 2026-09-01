@@ -17,6 +17,7 @@ const adaptiveBlockSchema = z.object({
   priority: z.number().int().min(0).max(100).default(50),
   group: z.string().min(1).optional(),
   emphasis: z.enum(adaptiveEmphasis).default("supporting"),
+  preferredComponentKind: z.enum(componentKinds).optional(),
 }).strict();
 
 export const adaptiveSlideIntentSchema = z.object({
@@ -65,7 +66,7 @@ const planningInputSchema = z.object({
 
 const familyKinds: Record<AdaptiveCompositionFamily, ComponentKind[]> = {
   stack: ["body_block", "key_message", "list_item", "label", "title_block"],
-  two_column: ["card", "surface", "body_block", "key_message"],
+  two_column: ["card", "surface", "body_block", "key_message", "label", "list_item"],
   metric_row: ["metric"],
   repeated_cards: ["card", "surface", "list_item", "body_block"],
 };
@@ -97,8 +98,9 @@ function usableComponents(components: TemplateComponentsArtifact): TemplateCompo
 
 function rankedCandidates(block: AdaptiveSlideIntent["blocks"][number], family: AdaptiveCompositionFamily, preferred: ComponentKind | undefined, components: TemplateComponent[]): TemplateComponent[] {
   const familySet = new Set(familyKinds[family]);
-  const kinds = preferred ? [preferred, ...roleKinds[block.role], ...familyKinds[family]] : [...roleKinds[block.role], ...familyKinds[family]];
-  return components.filter((component) => kinds.includes(component.kind) && familySet.has(component.kind)).sort((left, right) => {
+  const preferredKind = block.preferredComponentKind ?? preferred;
+  const kinds = preferredKind ? [preferredKind, ...roleKinds[block.role], ...familyKinds[family]] : [...roleKinds[block.role], ...familyKinds[family]];
+  return components.filter((component) => kinds.includes(component.kind) && familySet.has(component.kind) && !(component.semanticRoles.includes("surface") && ["card", "surface"].includes(component.kind))).sort((left, right) => {
     const leftRank = kinds.indexOf(left.kind);
     const rightRank = kinds.indexOf(right.kind);
     return leftRank - rightRank || right.confidence - left.confidence || left.sourceBounds.y - right.sourceBounds.y || left.sourceBounds.x - right.sourceBounds.x || left.id.localeCompare(right.id);
@@ -150,12 +152,18 @@ function cell(frame: Rect, gap: number, column: number, row: number, columns: nu
   return { x, y: frame.y + (height + gap) * row, w: width, h: height };
 }
 
+function metricColumns(frame: Rect, gap: number, count: number, selected: Map<string, TemplateComponent>): number {
+  const sourceWidths = [...selected.values()].filter((component) => component.kind === "metric").map((component) => component.sourceBounds.w).filter((width) => width > 0);
+  const minimumWidth = Math.min(...sourceWidths);
+  return Math.max(1, Math.min(count, Math.floor((frame.w + gap) / (minimumWidth + gap))));
+}
+
 function layoutOrder(blocks: AdaptiveSlideIntent["blocks"]): AdaptiveSlideIntent["blocks"] {
   const emphasisRank: Record<(typeof adaptiveEmphasis)[number], number> = { primary: 0, secondary: 1, supporting: 2 };
   return blocks.map((block, index) => ({ block, index })).sort((left, right) => emphasisRank[left.block.emphasis] - emphasisRank[right.block.emphasis] || right.block.priority - left.block.priority || left.index - right.index).map(({ block }) => block);
 }
 
-function placementsFor(intent: AdaptiveSlideIntent, frame: Rect, gap: number): { rows: number; columns: number; bounds: Map<string, Rect> } {
+function placementsFor(intent: AdaptiveSlideIntent, frame: Rect, gap: number, selected: Map<string, TemplateComponent>): { rows: number; columns: number; bounds: Map<string, Rect> } {
   const bounds = new Map<string, Rect>();
   if (intent.family === "stack") {
     const ordered = layoutOrder(intent.blocks);
@@ -174,9 +182,10 @@ function placementsFor(intent: AdaptiveSlideIntent, frame: Rect, gap: number): {
     return { rows: Math.max(left.length, right.length), columns: 2, bounds };
   }
   if (intent.family === "metric_row") {
-    const columns = intent.blocks.length;
-    intent.blocks.forEach((block, index) => bounds.set(block.id, cell(frame, gap, index, 0, columns, 1)));
-    return { rows: 1, columns, bounds };
+    const columns = metricColumns(frame, gap, intent.blocks.length, selected);
+    const rows = Math.ceil(intent.blocks.length / columns);
+    intent.blocks.forEach((block, index) => bounds.set(block.id, cell(frame, gap, index % columns, Math.floor(index / columns), columns, rows)));
+    return { rows, columns, bounds };
   }
   const ordered = layoutOrder(intent.blocks);
   const columns = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
@@ -206,11 +215,17 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
   assertTemplateCoordinateSpace(designSystem.coordinateSpace, designSystem.canvas);
   assertTemplateCoordinateSpace(components.coordinateSpace, components.canvas);
   if (Math.abs(designSystem.canvas.w - components.canvas.w) > 2 / 914400 || Math.abs(designSystem.canvas.h - components.canvas.h) > 2 / 914400) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog canvases differ.");
-  if (JSON.stringify(designSystem.coordinateSpace) !== JSON.stringify(components.coordinateSpace)) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog coordinate spaces differ.");
   const contentFrame = finiteRect(designSystem.geometry.contentFrame, designSystem.canvas);
-  const spacing = observedGap(designSystem);
   const selected = chooseComponents(intent, usableComponents(components));
-  const grid = placementsFor(intent, contentFrame, spacing.gap);
+  let spacing = observedGap(designSystem);
+  if (intent.family === "metric_row" && spacing.gap > 0) {
+    const sourceHeights = [...selected.values()].filter((component) => component.kind === "metric").map((component) => component.sourceBounds.h).filter((height) => height > 0);
+    const minimumHeight = Math.min(...sourceHeights);
+    const columns = metricColumns(contentFrame, spacing.gap, intent.blocks.length, selected);
+    const rows = Math.ceil(intent.blocks.length / columns);
+    if (rows > 1 && (contentFrame.h - spacing.gap * (rows - 1)) / rows < minimumHeight) spacing = { gap: 0, source: "none" };
+  }
+  const grid = placementsFor(intent, contentFrame, spacing.gap, selected);
   const placements = intent.blocks.map((block, order) => {
     const component = selected.get(block.id)!;
     const bounds = grid.bounds.get(block.id)!;
