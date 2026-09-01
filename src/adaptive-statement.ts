@@ -8,6 +8,7 @@ import { transformTemplateComponents } from "./template-transform";
 import { assertCanonicalTemplateElements, compileTemplateGrammar, elementsDigest, extractTemplateElements, type TemplateElementsArtifact } from "./template-analysis";
 import { compileTemplateComponents, type TemplateComponentsArtifact, type TemplateComponent } from "./template-components";
 import { compileTemplateDesignSystem, type TemplateDesignSystemArtifact } from "./template-design-system";
+import { hasExactAdaptiveTextNode, runAdaptiveQa, type AdaptiveQaCode } from "./adaptive-qa";
 
 const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -16,7 +17,7 @@ const STRUCTURAL_ROLES = new Set(["surface", "divider", "footer", "logo"]);
 
 type Rect = { x: number; y: number; w: number; h: number };
 type ComparisonPanelTarget = { component: TemplateComponent; group: string; bounds: Rect };
-export type AdaptiveStatementFinding = { code: "ADAPTIVE_GEOMETRY_OVERFLOW" | "ADAPTIVE_CONTENT_DROPPED" | "ADAPTIVE_EXAMPLE_CONTENT_LEAK" | "ADAPTIVE_STYLE_SOURCE_VIOLATION" | "ADAPTIVE_TEMPLATE_PROVENANCE_MISSING" | "OOXML_INVALID"; message: string };
+export type AdaptiveStatementFinding = { code: AdaptiveQaCode | "ADAPTIVE_GEOMETRY_OVERFLOW" | "ADAPTIVE_CONTENT_DROPPED" | "ADAPTIVE_EXAMPLE_CONTENT_LEAK" | "ADAPTIVE_STYLE_SOURCE_VIOLATION" | "ADAPTIVE_TEMPLATE_PROVENANCE_MISSING" | "OOXML_INVALID"; message: string };
 export type AdaptiveStatementQa = { status: "pass" | "fail"; findings: AdaptiveStatementFinding[] };
 export type AdaptiveStatementResult = { outputPath: string; plan: AdaptiveSlidePlan; qa: AdaptiveStatementQa };
 export type AdaptiveRenderableLayout = "title" | "statement" | "comparison" | "process" | "quantitative" | "timeline" | "evidence";
@@ -31,10 +32,6 @@ function all(scope: Document | Element, namespace: string, name: string): Elemen
 
 function first(scope: Document | Element, namespace: string, name: string): Element | undefined {
   return all(scope, namespace, name)[0];
-}
-
-function children(node: Element): Element[] {
-  return Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1) as Element[];
 }
 
 function nameOf(node: Element): string {
@@ -179,9 +176,8 @@ async function qaAdaptiveStatement(templatePath: string, outputPath: string, pla
   const sourceExampleNames = new Set(components.components.filter((component) => !structural(component)).flatMap((component) => component.shapeNames));
   const sourceExamples = slideNodes(sourceRoot).filter((node) => sourceExampleNames.has(nameOf(node))).map(textOf).filter((text) => text.length > 0);
   const outputTextNodes = outputNodes.map(textOf).filter((text) => text.length > 0);
-  const outputText = all(outputRoot, A_NS, "t").map((text) => text.textContent ?? "").join(" ");
   sourceExamples.forEach((text) => { if (outputTextNodes.includes(text)) findings.push({ code: "ADAPTIVE_EXAMPLE_CONTENT_LEAK", message: `Template example text survived: '${text}'.` }); });
-  for (const allocation of plan.textAllocation) if (!outputText.includes(allocation.text)) findings.push({ code: "ADAPTIVE_CONTENT_DROPPED", message: `Adaptive content block '${allocation.blockId}' did not reach the output.` });
+  for (const allocation of plan.textAllocation) if (!hasExactAdaptiveTextNode(outputTextNodes, allocation.text)) findings.push({ code: "ADAPTIVE_CONTENT_DROPPED", message: `Adaptive content block '${allocation.blockId}' did not reach an output text node exactly.` });
   const removableMediaNames = new Set(components.components.filter((component) => !structural(component) && component.assetProvenance.kind !== "none" && component.id !== plan.media?.componentId).flatMap((component) => component.shapeNames));
   outputNodes.filter((node) => removableMediaNames.has(nameOf(node))).forEach((node) => findings.push({ code: "ADAPTIVE_EXAMPLE_CONTENT_LEAK", message: `Template example media survived: '${nameOf(node)}'.` }));
 
@@ -225,7 +221,10 @@ export async function renderAdaptiveContent(templatePath: string, outputPath: st
   const temporary = `${resolvedOutput}.${process.pid}.adaptive.tmp`;
   try {
     await transformTemplateComponents(templatePath, temporary, components, operations);
-    const qa = await qaAdaptiveStatement(templatePath, temporary, plan, components);
+    const legacyQa = await qaAdaptiveStatement(templatePath, temporary, plan, components);
+    const adaptiveQa = await runAdaptiveQa({ templatePath, outputPath: temporary, plan, components });
+    const findings: AdaptiveStatementFinding[] = [...legacyQa.findings, ...adaptiveQa.findings.map((finding) => ({ code: finding.code, message: finding.message }))];
+    const qa = { status: findings.length > 0 ? "fail" as const : "pass" as const, findings };
     if (qa.status === "pass") fs.renameSync(temporary, resolvedOutput);
     return { outputPath: resolvedOutput, plan, qa };
   } finally {
