@@ -67,6 +67,11 @@ export type GenerativeSceneRepairRequest = {
     allowedOperations: readonly GenerativeSceneRepairOperation["op"][];
   };
   findings: Array<{ code: string; message: string; nodeIds: string[] }>;
+  deckFindings: Array<{
+    code: "LAYOUT_REPETITION" | "INCONSISTENT_SECTION_RHYTHM";
+    message: string;
+    slideIds: string[];
+  }>;
   scores: Record<string, number>;
   scene: GenerativeSceneIntent;
 };
@@ -104,6 +109,9 @@ export function buildGenerativeSceneRepairRequest(
       allowedOperations: ["set_frame", "set_emphasis", "set_group", "set_style_role", "set_component_preference", "add_structure", "remove_structure"],
     },
     findings: judgment.findings.filter((finding) => finding.repairable).map((finding) => ({ code: finding.code, message: finding.message, nodeIds: [...finding.nodeIds] })),
+    deckFindings: criticResponse.deckFindings
+      .filter((finding) => finding.slideIds.includes(slideId))
+      .map((finding) => ({ code: finding.code, message: finding.message, slideIds: [...finding.slideIds] })),
     scores: { ...judgment.scores },
     scene: requestSlide.scene,
   };
