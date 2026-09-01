@@ -48,10 +48,10 @@ function strings(values: Array<string | undefined>): string[] {
 
 function partsOf(artifact: TemplateElementsArtifact): TemplateElement[][] {
   return [
-    ...artifact.slides.map((slide) => slide.elements.filter((element) => !element.offCanvasHelper)),
-    ...artifact.layouts.map((layout) => layout.elements.filter((element) => !element.offCanvasHelper)),
-    ...artifact.masters.map((master) => master.elements.filter((element) => !element.offCanvasHelper)),
-  ];
+    ...artifact.slides.map((slide) => slide.elements),
+    ...artifact.layouts.map((layout) => layout.elements),
+    ...artifact.masters.map((master) => master.elements),
+  ].map((elements) => elements.filter((element) => !element.offCanvasHelper));
 }
 
 function elementsOf(artifact: TemplateElementsArtifact): TemplateElement[] {
@@ -88,8 +88,6 @@ function gaps(elements: TemplateElement[]): number[] {
 }
 
 function observedGaps(artifact: TemplateElementsArtifact): number[] {
-  // A spacing value is observed only when both elements coexist in the same physical OOXML part.
-  // Never manufacture a gap between unrelated slides/layouts/masters that merely share coordinates.
   return uniqueSorted(partsOf(artifact).flatMap((elements) => gaps(elements)));
 }
 

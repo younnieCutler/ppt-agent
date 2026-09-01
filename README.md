@@ -21,7 +21,7 @@ node dist/cli.js qa --spec tests/fixtures/deck.json --pptx output/example.pptx -
 
 `contract.presentationStyle` selects `auto`, `corporate`, `executive`, `analytical`, `editorial`, `product`, `stage`, or `reference-first`. `auto` maps the contract purpose to an archetype and resolves the V2 palette/grammar in code; the DeckSpec does not need to repeat HEX tokens. `node dist/cli.js style --contract contract.json --run-dir output/run` writes the resolved style and compact model context.
 
-An organisation pack is selected with `contract.organization: { kind: "directory", path: "organizations/acme" }` and contains `template.pptx`, `brand.yaml`, and `template-map.json`. The default renderer is 16:9 only, but an organisation pack may be 16:9 or 4:3 — a 4:3 pack sets `template-map.json`'s `aspectRatio: "4:3"` and ships a 10×7.5in `template.pptx`, and `contract.aspectRatio` must match or style resolution hard-fails. The shared semantic renderer writes a scratch deck, then `pptx-automizer` applies native masters/layouts without an organisation-specific renderer fork.
+When a template is supplied, set `contract.template: { kind: "pptx", path: "<path-to>.pptx" }`. The raw PPTX is analyzed directly; its source slides, native components, typography, and visual language are the only template inputs. No brand or layout sidecar is required. The generic renderer remains 16:9-only; a 4:3 raw template is rendered through the source-slide adaptive runtime.
 
 Each slide's `sourceRefs` reference an excerpt `id` from a `content-model.json` you provide via `--run-dir`; excerpt text lives there once instead of being duplicated on every slide. A `chart` layout slide's `content.dataRef` similarly resolves against a `datasets` entry in the same `content-model.json`, so its values render as an editable native PowerPoint chart instead of DeckSpec-authored numbers.
 
@@ -48,7 +48,7 @@ node dist/cli.js repair-apply --spec <deck.json> --run-dir <run-dir> --slide S04
 
 The visual backend probes PowerPoint COM capability on Windows and falls back to a real LibreOffice -> PDF -> Poppler PNG pipeline when both `soffice` and `pdftoppm` are available. Native charts use the six `theme.data` colors only; structural tokens are never categorical colors.
 
-Core QA reads the rendered package as XML (namespace-based, not by prefix) so an arbitrary organisation template is inspected safely, and hard-fails a gradient fill authored on a semantic shape or native chart — template master chrome and source images are exempt.
+Core QA reads the rendered package as XML (namespace-based, not by prefix) so an arbitrary raw template is inspected safely, and hard-fails a gradient fill authored on a semantic shape or native chart — template master chrome and source images are exempt.
 
 ```bash
 node dist/cli.js metrics --spec <deck.json> --run-dir <run-dir>

@@ -8,16 +8,14 @@ import { release } from "../../src/cli";
 import { createRunWorkspace } from "../../src/workspace";
 import { buildPatternFixture } from "../fixtures/pattern-template";
 
-// Full raw-.pptx-only pipeline, end to end: no Organization Pack, no brand.yaml, no
-// template-map.json anywhere in this test — a template.pptx and a goal are the only inputs, the
+// Full raw-.pptx-only pipeline, end to end: a template.pptx and a goal are the only inputs, the
 // ChatGPT-shaped UX this whole feature exists for. Proves, against a real run:
 //   1. every slide reaches a real cloned source-slide pattern (zero generic-renderer fallback —
 //      the hard-fail path this branch added would have thrown well before this point otherwise),
 //   2. qa.json passes clean,
 //   3. release deletes the whole run workspace on success and leaves exactly the deliverable
 //      behind, the same "hidden workspace, final .pptx only" contract raw-pptx-fidelity-gate.test.ts
-//      and organization-pack-fidelity-gate.test.ts each prove one slice of, assembled here into one
-//      run from contract to release.
+//      proves one slice of, assembled here into one run from contract to release.
 
 const repoRoot = path.resolve(__dirname, "../..");
 const tsxPackage = createRequire(__filename).resolve("tsx/package.json");
@@ -45,14 +43,14 @@ const contract = {
 const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-raw-pptx-e2e-"));
 afterAll(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
 
-describe("raw .pptx E2E: template.pptx + goal, no Organization Pack anywhere", () => {
+describe("raw .pptx E2E: template.pptx + goal", () => {
   it(
     "clones every slide from the template's own patterns, passes qa clean, and release leaves exactly the deliverable behind",
     async () => {
       const templatePath = await buildPatternFixture();
       const { runDir } = createRunWorkspace(projectRoot, "raw-pptx-e2e");
       try {
-        // contract.template names the raw .pptx directly — contract.organization is never set.
+        // contract.template names the raw .pptx directly.
         fs.writeFileSync(path.join(runDir, "contract.json"), JSON.stringify({ ...contract, template: { kind: "pptx", path: templatePath } }, null, 2));
 
         const contentModel = { version: 1, sources: [{ sourceId: "prompt", excerpts: [{ id: "R001", locator: "1", text: "Grounded fact." }] }] };
@@ -73,7 +71,7 @@ describe("raw .pptx E2E: template.pptx + goal, no Organization Pack anywhere", (
         cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
         cli(["style", "--contract", path.join(runDir, "contract.json"), "--run-dir", runDir]);
         cli(["composition-resolve", "--plan", path.join(runDir, "deck-plan.json"), "--style-context", path.join(runDir, "style-context.json"), "--run-dir", runDir]);
-        // The raw-pptx entry point: analyze the file directly, no organization pack anywhere.
+        // The raw-pptx entry point: analyze the file directly.
         const analyzeOutput = JSON.parse(cli(["template-analyze", "--input", templatePath, "--out", path.join(runDir, "template")]));
         expect(analyzeOutput.strategy).toBe("source_slide_pattern");
         cli(["pattern-resolve", "--plan", path.join(runDir, "deck-plan.json"), "--run-dir", runDir]);
@@ -120,7 +118,7 @@ describe("raw .pptx E2E: template.pptx + goal, no Organization Pack anywhere", (
         expect(fs.existsSync(runDir)).toBe(false);
         // Exactly the one deliverable exists — no PDF was requested, no leftover artifacts.
         expect(fs.readdirSync(path.dirname(outPath))).toEqual(["raw-pptx-e2e.pptx"]);
-        // The template itself, and organizations/ (this test never touches it), are untouched.
+        // The template itself is untouched.
         expect(fs.readdirSync(path.dirname(templatePath))).toEqual(["template.pptx"]);
       } finally {
         fs.rmSync(runDir, { recursive: true, force: true });

@@ -8,11 +8,8 @@ import { renderDeck } from "../../src/renderer";
 import { applyPatternSkeleton } from "../../src/template";
 import { buildPatternFixture } from "../fixtures/pattern-template";
 
-// RED->GREEN for the raw-pptx first-class input path specifically: `qa` used to resolve the
-// template it checks leakage against from `style.organization?.templatePath`, which is only ever
-// populated for a pre-built Organization Pack (contract.organization). A deck authored against
-// `contract.template: {kind:"pptx"}` (the ChatGPT-shaped "just a .pptx, no pack" entry point) had
-// its leakage/fidelity gate silently skipped end to end — proven here through the real `qa` CLI
+// RED->GREEN for the raw-pptx first-class input path specifically: `qa` resolves the
+// template it checks leakage against from `contract.template` — proven here through the real `qa` CLI
 // command, not just the fidelity-check functions in isolation (see template-fidelity-leak.test.ts).
 
 const repoRoot = path.resolve(__dirname, "../..");
@@ -47,7 +44,7 @@ function filler(id: string): unknown {
   return deckSlide({ id, layout: "statement", headline: `Filler ${id}`, content: { body: "Filler body.", proofs: [] } });
 }
 
-describe("qa: template fidelity gate for the raw-pptx entry point (contract.template, no organization pack)", () => {
+describe("qa: template fidelity gate for the raw-pptx entry point", () => {
   it(
     "fires TEMPLATE_EXAMPLE_CONTENT_LEAK on an unsanitized output and stays clean once sanitized — both reached through `qa`, not called directly",
     async () => {

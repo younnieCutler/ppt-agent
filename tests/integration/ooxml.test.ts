@@ -68,7 +68,7 @@ describe("OOXML-based Core QA", () => {
     return outputPath;
   }
 
-  it("reads an organization template's parts by namespace, not by the prefix it happens to bind", async () => {
+  it("reads a source template's parts by namespace, not by the prefix it happens to use", async () => {
     // An arbitrary template may bind presentationml to any prefix; a regex over `<p:sp>` would
     // silently see zero shapes and pass a slide it never actually inspected.
     const outputPath = await rewriteSlide("rebound-prefix.pptx", (xml) => xml.replace(/<(\/?)p:/g, "<$1pp:").replace(/xmlns:p=/g, "xmlns:pp="));

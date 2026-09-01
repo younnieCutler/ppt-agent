@@ -18,7 +18,7 @@
     {
       "id": 3,
       "name": "font-hard-fail",
-      "prompt": "/ppt Use the supplied brand.yaml and create a proposal deck. The brand requests a missing font; do not silently substitute it. Ask me to choose an installed heading/body pair or stop before rendering.",
+      "prompt": "/ppt Use the supplied raw PPTX template and create a proposal deck. The contract requests a missing font; do not silently substitute it. Ask me to choose an installed heading/body pair or stop before rendering.",
       "expected_output": "The skill blocks generation until both confirmed fonts are installed and never reports a fallback deck as complete.",
       "files": []
     },

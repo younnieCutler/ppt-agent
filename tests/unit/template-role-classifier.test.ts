@@ -24,10 +24,10 @@ describe("template role classifier", () => {
   it("falls back to typographic rank before giving up", () => {
     const bounds = { x: 1, y: 2, w: 6, h: 1 };
     const typography = { maxSizePt: 40, medianSizePt: 16 };
-    expect(classifyTemplateElement({ id: "S01-Rectangle-1", type: "text", bounds, features: {} }, slideSize, {}, { ...typography, sizePt: 40 }).role).toBe("title");
-    expect(classifyTemplateElement({ id: "S01-Rectangle-2", type: "text", bounds, features: {} }, slideSize, {}, { ...typography, sizePt: 22 }).role).toBe("heading");
-    expect(classifyTemplateElement({ id: "S01-Rectangle-3", type: "text", bounds, features: {} }, slideSize, {}, { ...typography, sizePt: 16 }).role).toBe("body");
-    expect(classifyTemplateElement({ id: "S01-Rectangle-4", type: "text", bounds, features: {} }, slideSize, {}, { ...typography, sizePt: 10 }).role).toBe("caption");
+    expect(classifyTemplateElement({ id: "S01-Rectangle-1", type: "text", bounds, features: {} }, slideSize, { ...typography, sizePt: 40 }).role).toBe("title");
+    expect(classifyTemplateElement({ id: "S01-Rectangle-2", type: "text", bounds, features: {} }, slideSize, { ...typography, sizePt: 22 }).role).toBe("heading");
+    expect(classifyTemplateElement({ id: "S01-Rectangle-3", type: "text", bounds, features: {} }, slideSize, { ...typography, sizePt: 16 }).role).toBe("body");
+    expect(classifyTemplateElement({ id: "S01-Rectangle-4", type: "text", bounds, features: {} }, slideSize, { ...typography, sizePt: 10 }).role).toBe("caption");
     // Without typography there is nothing left to claim, and an invented role is worse than none.
     expect(classifyTemplateElement({ id: "S01-Rectangle-5", type: "text", bounds, features: {} }, slideSize).role).toBe("unknown");
   });
@@ -37,8 +37,7 @@ describe("template role classifier", () => {
     expect(classifyTemplateElement({ id: "S01-Footer-1", type: "text", bounds: { x: 0.5, y: 2, w: 2, h: 0.2 }, features: {} }, slideSize).role).toBe("unknown");
   });
 
-  it("classifies numeric focal text as a metric and lets explicit overrides win", () => {
+  it("classifies numeric focal text as a metric", () => {
     expect(classifyTemplateElement({ id: "S01-value-1", type: "text", bounds: { x: 1, y: 1, w: 3, h: 1 }, features: { numericOnly: true } }, slideSize).role).toBe("metric");
-    expect(classifyTemplateElement({ id: "S01-value-1", type: "text", bounds: { x: 1, y: 1, w: 3, h: 1 }, features: { numericOnly: true } }, slideSize, { "S01-value-1": "heading" }).role).toBe("heading");
   });
 });

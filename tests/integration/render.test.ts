@@ -57,6 +57,6 @@ describe("editable PPTX integration", () => {
 
   it("refuses to resize a 4:3 deck through the 16:9 renderer", async () => {
     const templateDeck = deckSchema.parse({ ...fixture, contract: { ...fixture.contract, aspectRatio: "4:3" } });
-    await expect(renderDeck(templateDeck, path.join(runDir, "must-not-render.pptx"), process.cwd())).rejects.toThrow(/native-template-fill/i);
+    await expect(renderDeck(templateDeck, path.join(runDir, "must-not-render.pptx"), process.cwd())).rejects.toThrow(/raw PPTX/i);
   });
 });

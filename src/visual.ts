@@ -263,7 +263,7 @@ async function writeVisualArtifacts(outputDir: string, backend: VisualRenderBack
   await writeMontage(renderDir, rendered);
 }
 
-export type RenderProvenance = { pptxSha256: string; specSha256: string; renderedAt: string; slideIds: string[]; templateGrammarDigest?: string };
+export type RenderProvenance = { pptxSha256: string; specSha256: string; renderedAt: string; slideIds: string[] };
 
 function sha256OfFile(filePath: string): string {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
@@ -273,13 +273,12 @@ function sha256OfDeck(deck: DeckSpec): string {
   return crypto.createHash("sha256").update(JSON.stringify(deck)).digest("hex");
 }
 
-function writeRenderProvenance(runDir: string, pptxPath: string, deck: DeckSpec, slideIds: string[], style?: ResolvedPresentationStyle): void {
+function writeRenderProvenance(runDir: string, pptxPath: string, deck: DeckSpec, slideIds: string[]): void {
   const provenance: RenderProvenance = {
     pptxSha256: sha256OfFile(pptxPath),
     specSha256: sha256OfDeck(deck),
     renderedAt: new Date().toISOString(),
     slideIds,
-    ...(style?.templateGrammarDigest ? { templateGrammarDigest: style.templateGrammarDigest } : {}),
   };
   fs.writeFileSync(path.join(renderDirFor(runDir), "render-provenance.json"), JSON.stringify(provenance, null, 2));
 }
@@ -291,7 +290,7 @@ function writeRenderProvenance(runDir: string, pptxPath: string, deck: DeckSpec,
  * *after* judgment is mistaken for the judged one. Absence of provenance (runs made before this
  * existed) degrades to a non-blocking risk rather than a hard failure.
  */
-export function verifyRenderProvenance(runDir: string, pptxPath: string, deck: DeckSpec, style?: ResolvedPresentationStyle): QaFinding[] {
+export function verifyRenderProvenance(runDir: string, pptxPath: string, deck: DeckSpec): QaFinding[] {
   const provenancePath = path.join(renderDirFor(runDir), "render-provenance.json");
   if (!fs.existsSync(provenancePath)) {
     return [{ severity: "risk", code: "VISUAL_RENDER_PROVENANCE_UNKNOWN", message: "No render-provenance.json found in visual/. Cannot confirm the rendered artifacts match the current PPTX and DeckSpec — re-run `visual` to produce one." }];
@@ -301,9 +300,6 @@ export function verifyRenderProvenance(runDir: string, pptxPath: string, deck: D
   const specMatches = provenance.specSha256 === sha256OfDeck(deck);
   if (!pptxMatches || !specMatches) {
     return [{ severity: "hard", code: "VISUAL_QA_STALE_RENDER", message: `Rendered artifacts in ${path.join(runDir, "visual")} were produced at ${provenance.renderedAt} from a different PPTX or DeckSpec than the one being judged now. Re-run \`visual\` before \`visual-qa\`.` }];
-  }
-  if (style?.templateGrammarDigest && provenance.templateGrammarDigest !== style.templateGrammarDigest) {
-    return [{ severity: "hard", code: "ORGANIZATION_GRAMMAR_NOT_APPLIED", message: "Rendered artifacts were not produced with the current Organization Template Grammar. Re-render before visual QA." }];
   }
   return [];
 }
@@ -334,7 +330,7 @@ export async function renderVisual(deck: DeckSpec, pptxPath: string, runDir: str
   const probe = backend.probe();
   const rendered = await backend.render(pptxPath, runDir, slideMap);
   await writeVisualArtifacts(runDir, backend, probe, rendered, deck.contract.fonts);
-  writeRenderProvenance(runDir, pptxPath, deck, ids, style);
+  writeRenderProvenance(runDir, pptxPath, deck, ids);
   return rendered;
 }
 
@@ -347,10 +343,6 @@ export function buildDeckContext(deck: DeckSpec, renderedIds: Iterable<string>, 
     presentationStyle: deck.contract.presentationStyle,
     resolvedStyle: style ? {
       themeId: style.themeId,
-      organization: style.organization ? {
-        id: style.organization.id,
-        chromeOwnership: style.organization.map.chromeOwnership,
-      } : undefined,
       grammar: {
         surfaceUsage: style.grammar.surfaceUsage,
         chartTreatment: style.grammar.chartTreatment,

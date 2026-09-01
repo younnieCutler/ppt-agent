@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { createRunWorkspace, removeRunWorkspace } from "../../src/workspace";
 
 // Regression class this guards against: a cleanup bug that resolves outside .ppt-agent/runs/ and
-// deletes something that is not run-scoped (organizations/, outputs/, the project root). The guard
+// deletes something that is not run-scoped (outputs/ or the project root). The guard
 // is structural (does runDir's own path end in .ppt-agent/runs/<id>?), not dependent on a
 // separately supplied "project dir" that could disagree with where runDir actually lives.
 
@@ -47,13 +47,6 @@ describe("removeRunWorkspace containment guard", () => {
     fs.mkdirSync(outputs, { recursive: true });
     expect(() => removeRunWorkspace(outputs)).toThrow(/Refusing to remove workspace/);
     expect(fs.existsSync(outputs)).toBe(true);
-  });
-
-  it("refuses to remove organizations/ even if passed directly as runDir", () => {
-    const orgs = path.join(root, "organizations");
-    fs.mkdirSync(orgs, { recursive: true });
-    expect(() => removeRunWorkspace(orgs)).toThrow(/Refusing to remove workspace/);
-    expect(fs.existsSync(orgs)).toBe(true);
   });
 
   it("refuses a path-traversal runDir that escapes .ppt-agent/runs/ via ..", () => {

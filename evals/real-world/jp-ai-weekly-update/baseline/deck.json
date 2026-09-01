@@ -15,7 +15,6 @@
     "language": "ja-JP",
     "slideCount": 8,
     "brand": { "kind": "default" },
-    "organization": { "kind": "none" },
     "fonts": { "heading": "Meiryo", "body": "Meiryo" },
     "fontDelivery": "managed_device",
     "editability": "native_editable",

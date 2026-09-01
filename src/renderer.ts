@@ -6,8 +6,7 @@ import { assertFontsInstalled } from "./fonts";
 import { architectureHubZone, deckSchema, type ContentModel, type DeckSpec, type SlideSpec } from "./schema";
 import { drawGauge, drawSparkline } from "./visuals";
 import { resolvePresentationStyle, type ReferenceSelectionEntry, type ResolvedPresentationStyle } from "./style";
-import { applyOrganizationTemplate } from "./template";
-import { bindingForLayout, semanticLayouts, CANVAS_DIMENSIONS } from "./organization";
+import { CANVAS_DIMENSIONS } from "./geometry";
 
 const SLIDE_W = 13.333;
 const SLIDE_H = 7.5;
@@ -21,22 +20,8 @@ const CONTENT_H = 5.2;
 const CHROME_LOGO_RIGHT_MARGIN = SLIDE_W - 12.05;
 const CHROME_PAGE_NUM_RIGHT_MARGIN = SLIDE_W - 12.1;
 
-// The coordinate space every layout function below is authored against. When an organization
-// template binds a semantic layout to a different `contentRegion`, ctx.transform maps this
-// canonical box onto that region so content actually lands inside the template's declared
-// safe area — not just alongside it. Top is 0.48 (the headline row), not CONTENT_Y, because the
-// headline is part of the content a template's contentRegion is meant to contain.
-const CANON_X = MARGIN_X;
-const CANON_TOP = 0.48;
-const CANON_W = 11.85;
-const CANON_H = CONTENT_Y + CONTENT_H - CANON_TOP;
-
-// The contentRegion an organization template can declare to reproduce the renderer's own default
-// geometry exactly (an identity transform). Declaring the old body-only box here — {x:0.72,
-// y:1.42, w:11.85, h:5.2} — would silently push the headline down and compress body content,
-// since that box excludes the headline row this canonical space now includes.
-export const defaultContentRegion = { x: CANON_X, y: CANON_TOP, w: CANON_W, h: CANON_H };
-
+// The coordinate space every generic layout function below is authored against. Top is 0.48 (the
+// headline row), not CONTENT_Y, because the headline is part of the content frame.
 type Pptx = any;
 type Slide = any;
 type Decoration = "filled" | "flat" | "outline";
@@ -53,7 +38,7 @@ type RenderDeck = Omit<DeckSpec, "theme"> & { theme: ResolvedPresentationStyle }
 
 export type RenderContext = {
   style: StyleScale;
-  /** Maps a rect authored in canonical content-space into this slide's actual geometry. Identity when no organization template binds this layout. */
+  /** Maps a rect authored in the generic content-space. */
   transform: (rect: { x: number; y: number; w: number; h: number }) => { x: number; y: number; w: number; h: number };
 };
 
@@ -69,36 +54,10 @@ function styleScaleFor(theme: ResolvedPresentationStyle): StyleScale {
   };
 }
 
-// Independent per-axis scaling: a rectangle-to-rectangle mapping is the correct generalization
-// for arbitrary content regions. A circle (gauge arc) can end up a slight ellipse when a
-// template's region aspect ratio diverges sharply from canonical — acceptable given no
-// organization fixture requires exact circularity; revisit if one ever does.
-export function contextFor(theme: ResolvedPresentationStyle, layout: (typeof semanticLayouts)[number]): RenderContext {
-  const style = styleScaleFor(theme);
-  const organization = theme.organization;
-  if (!organization) return { style, transform: (rect) => rect };
-  const region = organization.map.layouts[layout]?.contentRegion
-    ?? theme.templateGrammar?.geometry.contentFrame
-    ?? bindingForLayout(organization.map, layout).contentRegion;
-  // Bypass the arithmetic entirely for the declared-identity case: floating-point round-trip
-  // through a mathematically-1.0 scale and mathematically-0 offset can still perturb the last bit,
-  // and a template that explicitly asked for the renderer's own geometry should get it exactly.
-  if (region.x === CANON_X && region.y === CANON_TOP && region.w === CANON_W && region.h === CANON_H) {
-    return { style, transform: (rect) => rect };
-  }
-  const scaleX = region.w / CANON_W;
-  const scaleY = region.h / CANON_H;
-  return {
-    style,
-    transform: ({ x, y, w, h }) => x === CANON_X && y === CANON_TOP && w === CANON_W && h === CANON_H
-      ? { ...region }
-      : {
-          x: region.x + (x - CANON_X) * scaleX,
-          y: region.y + (y - CANON_TOP) * scaleY,
-          w: w * scaleX,
-          h: h * scaleY,
-        },
-  };
+// The generic renderer uses its canonical frame directly; template-native composition has its own
+// coordinate-space contract in template-analysis/adaptive-composition.
+export function contextFor(theme: ResolvedPresentationStyle, _layout: SlideSpec["layout"]): RenderContext {
+  return { style: styleScaleFor(theme), transform: (rect) => rect };
 }
 
 const identityContext = (style: StyleScale): RenderContext => ({ style, transform: (rect) => rect });
@@ -176,24 +135,21 @@ export function addLine(slide: Slide, pptx: Pptx, x: number, y: number, w: numbe
 
 function addChrome(slide: Slide, pptx: Pptx, deck: RenderDeck, page: number, rects: Rect[], ctx: RenderContext, canvas: { w: number; h: number }): void {
   const theme = deck.theme;
-  const ownership = theme.organization?.map.chromeOwnership;
-  // Chrome sits at fixed slide-edge coordinates regardless of any layout's contentRegion — an
-  // organization template owns or doesn't own it via chromeOwnership, it never gets stretched.
   const chromeCtx = identityContext(ctx.style);
-  if (theme.logoPath && (!ownership || ownership.logo === "renderer")) {
+  if (theme.logoPath) {
     slide.addImage({ path: theme.logoPath, x: canvas.w - CHROME_LOGO_RIGHT_MARGIN, y: 0.22, w: 0.58, h: 0.34, altText: "ppt-agent-logo" });
   }
-  if (theme.footer.text && (!ownership || ownership.footer === "renderer")) {
+  if (theme.footer.text) {
     // Capped at the original design width (8.8in, unchanged on the 16:9 canvas this was authored
     // against) but shrunk further when a narrower canvas plus a visible page number would
     // otherwise overlap it — footer is left-anchored, page number is right-anchored.
-    const pageNumberShown = theme.footer.showPageNumber && (!ownership || ownership.pageNumber === "renderer");
+    const pageNumberShown = theme.footer.showPageNumber;
     const footerRightGap = 0.25;
     const availableW = pageNumberShown ? canvas.w - CHROME_PAGE_NUM_RIGHT_MARGIN - footerRightGap - MARGIN_X : canvas.w - MARGIN_X * 2;
     const footerW = Math.min(8.8, availableW);
     addText(slide, theme.footer.text, { x: MARGIN_X, y: 7.12, w: footerW, h: 0.18, fontSize: 8, valign: "mid" }, rects, `footer-${page}`, theme.fonts.body, theme.palette.muted, chromeCtx);
   }
-  if (theme.footer.showPageNumber && (!ownership || ownership.pageNumber === "renderer")) {
+  if (theme.footer.showPageNumber) {
     addText(slide, String(page), { x: canvas.w - CHROME_PAGE_NUM_RIGHT_MARGIN, y: 7.08, w: 0.48, h: 0.22, fontSize: 9, align: "right", name: "ppt-agent-page-number" }, rects, `page-${page}`, theme.fonts.body, theme.palette.muted, chromeCtx);
   }
 }
@@ -771,9 +727,7 @@ function renderChart(slide: Slide, pptx: Pptx, deck: RenderDeck, spec: Extract<S
 function renderSlide(pptx: Pptx, deck: RenderDeck, projectDir: string, spec: SlideSpec, page: number, contentModel: ContentModel | undefined, canvas: { w: number; h: number }): { rects: Rect[] } {
   const slide = pptx.addSlide();
   const ctx = contextFor(deck.theme, spec.layout);
-  if (!deck.theme.organization || deck.theme.organization.map.chromeOwnership.background === "renderer") {
-    slide.background = { color: hex(deck.theme.palette.background) };
-  }
+  slide.background = { color: hex(deck.theme.palette.background) };
   const rects: Rect[] = [];
   if (spec.layout === "title") {
     renderTitle(slide, pptx, deck, projectDir, spec, rects, ctx);
@@ -802,8 +756,8 @@ export type RenderResult = { outputPath: string; slideRects: Record<string, Rect
 export async function renderDeck(input: unknown, outputPath: string, projectDir = process.cwd(), options: { pageLimit?: number; contentModel?: ContentModel; referenceSelection?: ReferenceSelectionEntry[] } = {}): Promise<RenderResult> {
   const parsedDeck = deckSchema.parse(input);
   const deck: RenderDeck = { ...parsedDeck, theme: resolvePresentationStyle(parsedDeck.contract, { projectDir, referenceSelection: options.referenceSelection, legacyTheme: parsedDeck.theme }) };
-  if (!deck.theme.organization && deck.contract.aspectRatio !== "16:9") {
-    throw new Error("The deterministic renderer only supports 16:9. A 4:3 Company Template Pack must use the native-template-fill workflow.");
+  if (deck.contract.aspectRatio !== "16:9") {
+    throw new Error("The deterministic renderer only supports 16:9. Use a raw PPTX template for 4:3 output.");
   }
   if (!options.pageLimit && deck.contract.slideCount !== deck.slides.length) throw new Error(`Contract slideCount ${deck.contract.slideCount} does not match ${deck.slides.length} slides.`);
   assertFontsInstalled(deck.theme.fonts);
@@ -824,16 +778,6 @@ export async function renderDeck(input: unknown, outputPath: string, projectDir 
   });
   const resolvedOutput = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
-  const scratchPath = deck.theme.organization
-    ? path.join(path.dirname(resolvedOutput), `.ppt-agent-semantic-${process.pid}-${Date.now()}.pptx`)
-    : resolvedOutput;
-  await pptx.writeFile({ fileName: scratchPath });
-  if (deck.theme.organization) {
-    try {
-      await applyOrganizationTemplate(scratchPath, resolvedOutput, deck.theme, deck.slides.slice(0, options.pageLimit));
-    } finally {
-      if (fs.existsSync(scratchPath)) fs.rmSync(scratchPath, { force: true });
-    }
-  }
+  await pptx.writeFile({ fileName: resolvedOutput });
   return { outputPath: resolvedOutput, slideRects };
 }

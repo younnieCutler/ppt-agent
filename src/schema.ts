@@ -130,39 +130,17 @@ export const contractSchema = z.object({
   storyline: z.array(storyBeatSchema).min(3).max(9),
   language: z.string().regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/, "language must be a BCP-47-like tag"),
   slideCount: z.number().int().min(3).max(30),
-  brand: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("default") }),
-    z.object({ kind: z.literal("file"), path: z.string().min(1) }),
-  ]),
-  organization: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("none") }),
-    z.object({ kind: z.literal("directory"), path: z.string().min(1) }),
-  ]).default({ kind: "none" }),
-  // A pre-built Organization Pack (brand.yaml + template-map.json, above) is the advanced/reusable
-  // mode. `template` is the first-class ChatGPT-shaped entry point: one raw .pptx and nothing else.
-  // Optional and additive — `organization: {kind:"directory"}` keeps working forever unchanged;
-  // resolveTemplateSourceSpec (src/template-source.ts) is the single place that normalizes both
-  // into one shape so nothing downstream has to know which field the caller used.
-  template: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("pptx"), path: z.string().min(1) }),
-    z.object({ kind: z.literal("organization"), path: z.string().min(1) }),
-  ]).optional(),
+  brand: z.object({ kind: z.literal("default") }),
+  // A raw .pptx is the only template contract. Its analyzed Design DNA and native
+  // components are derived from the file at runtime; no sidecar brand/map is accepted.
+  template: z.object({ kind: z.literal("pptx"), path: z.string().min(1) }).optional(),
   fonts: z.object({ heading: z.string().min(1), body: z.string().min(1) }),
   fontDelivery: z.enum(["managed_device", "portable"]).default("managed_device"),
   editability: z.literal("native_editable").default("native_editable"),
   aspectRatio: z.enum(["16:9", "4:3"]),
-}).superRefine((contract, ctx) => {
+}).strict().superRefine((contract, ctx) => {
   if ((contract.designDirection === "reference" || contract.presentationStyle === "reference-first") && (!contract.referenceIds || contract.referenceIds.length === 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["referenceIds"], message: "designDirection 'reference' requires at least one referenceIds entry." });
-  }
-  if (contract.organization.kind === "directory" && contract.brand.kind === "file") {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["organization"], message: "Organization packs own brand.yaml; do not combine organization.directory with brand.file." });
-  }
-  if (contract.template?.kind === "organization" && contract.organization.kind === "directory" && contract.template.path !== contract.organization.path) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["template"], message: "contract.template and contract.organization both name an organization pack but disagree on its path." });
-  }
-  if (contract.template?.kind === "pptx" && contract.brand.kind === "file") {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["template"], message: "A raw pptx template has no brand.yaml of its own; do not combine template.pptx with brand.file (use brand.default, or use an organization pack)." });
   }
 });
 
@@ -217,31 +195,6 @@ export const themeV2Schema = z.object({
   id: presentationArchetypeSchema,
   palette: themePaletteSchema,
   data: z.tuple([hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema]),
-});
-
-export const brandFileSchema = z.object({
-  name: z.string().min(1),
-  palette: paletteSchema,
-  // Optional: an organisation's own categorical chart colors. Without this, chart series 3-6 fall
-  // back to the archetype's data colors, which can visibly clash with a brand's identity colors
-  // (series 1-2). Organization Brand outranks Archetype, so a brand that cares about its chart
-  // palette should declare all six here.
-  data: z.tuple([hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema, hexColorSchema]).optional(),
-  fonts: z
-    .object({ heading: z.string().min(1), body: z.string().min(1), locked: z.boolean().default(false) })
-    .optional(),
-  logo: z
-    .object({ path: z.string().min(1) })
-    .optional(),
-  footer: z
-    .object({ showPageNumber: z.boolean().default(true), text: z.string().default("") })
-    .default({ showPageNumber: true, text: "" }),
-  // Optional lock metadata is ignored by legacy callers but lets an
-  // organisation pack declare which identity tokens may not be replaced by
-  // an archetype or reference grammar.
-  paletteLocked: z.boolean().default(false),
-  lockedPalette: z.array(z.string()).default([]),
-  locks: z.object({ palette: z.array(z.string()).default([]), fonts: z.boolean().optional() }).optional(),
 });
 
 // Named countable collections a `visualProof` can point at, one per layout that has a natural
@@ -612,7 +565,6 @@ export type ContentModel = z.infer<typeof contentModelSchema>;
 export type Claim = z.infer<typeof claimSchema>;
 export type Source = z.infer<typeof sourceSchema>;
 export type GenerationContract = z.infer<typeof contractSchema>;
-export type BrandFile = z.infer<typeof brandFileSchema>;
 export type ThemeTokens = z.infer<typeof themeSchema>;
 export type LegacyThemeTokens = z.infer<typeof legacyThemeSchema>;
 export type ThemePalette = z.infer<typeof themePaletteSchema>;

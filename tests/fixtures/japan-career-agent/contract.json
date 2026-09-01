@@ -36,9 +36,6 @@
   "brand": {
     "kind": "default"
   },
-  "organization": {
-    "kind": "none"
-  },
   "fonts": {
     "heading": "Helvetica Neue",
     "body": "Helvetica Neue"

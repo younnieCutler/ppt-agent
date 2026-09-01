@@ -4,8 +4,6 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { renderDeck } from "../../src/renderer";
-import { loadOrganizationPack } from "../../src/organization";
 
 const repoRoot = path.resolve(__dirname, "../..");
 const deckFixture = JSON.parse(fs.readFileSync(path.join(repoRoot, "tests/fixtures/deck.json"), "utf8"));
@@ -46,66 +44,6 @@ const plan = {
   })),
 };
 
-async function packWithTemplate(): Promise<string> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-analyze-"));
-  await renderDeck(deckFixture, path.join(dir, "template.pptx"), repoRoot);
-  return dir;
-}
-
-describe("template-analyze CLI", () => {
-  it("applies the pack's elementRoleOverrides to the analyzed elements", async () => {
-    const pack = await packWithTemplate();
-    cli(["template-analyze", "--input", path.join(pack, "template.pptx"), "--out", pack]);
-    const baseline = JSON.parse(fs.readFileSync(path.join(pack, "template-elements.json"), "utf8")) as { slides: Array<{ elements: Array<{ id: string; role: string; confidence: number }> }> };
-    const target = baseline.slides.flatMap((slide) => slide.elements).find((element) => element.role !== "annotation");
-    expect(target).toBeDefined();
-
-    fs.writeFileSync(path.join(pack, "template-map.json"), JSON.stringify({
-      version: 2,
-      aspectRatio: "16:9",
-      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
-      layouts: {},
-      requiredElements: [],
-      elementRoleOverrides: { [target!.id]: "annotation" },
-    }));
-    const output = cli(["template-analyze", "--input", path.join(pack, "template.pptx"), "--out", pack]);
-    expect(JSON.parse(output).roleOverrides).toBe(1);
-
-    const overridden = JSON.parse(fs.readFileSync(path.join(pack, "template-elements.json"), "utf8")) as typeof baseline;
-    const applied = overridden.slides.flatMap((slide) => slide.elements).find((element) => element.id === target!.id);
-    expect(applied).toMatchObject({ role: "annotation", confidence: 1 });
-  }, 120000);
-
-
-  it("keeps the pack loadable only while its artifacts match the current overrides", async () => {
-    const pack = await packWithTemplate();
-    const mapPath = path.join(pack, "template-map.json");
-    const map = {
-      version: 2,
-      aspectRatio: "16:9",
-      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
-      layouts: {},
-      requiredElements: [],
-      elementRoleOverrides: {} as Record<string, string>,
-    };
-    fs.writeFileSync(mapPath, JSON.stringify(map));
-    fs.writeFileSync(path.join(pack, "brand.yaml"), ["name: Analyze Test", "palette:", '  background: "FFFFFF"', '  surface: "FFFFFF"', '  text: "111111"', '  primary: "123456"', '  accent: "654321"', '  muted: "666666"', '  border: "DDDDDD"'].join("\n"));
-    cli(["template-analyze", "--input", path.join(pack, "template.pptx"), "--out", pack]);
-    expect(() => loadOrganizationPack(pack)).not.toThrow();
-
-    // template.pptx is untouched; only an analysis input in the map moved.
-    const elements = JSON.parse(fs.readFileSync(path.join(pack, "template-elements.json"), "utf8")) as { slides: Array<{ elements: Array<{ id: string }> }> };
-    const targetId = elements.slides.flatMap((slide) => slide.elements)[0].id;
-    fs.writeFileSync(mapPath, JSON.stringify({ ...map, elementRoleOverrides: { [targetId]: "annotation" } }));
-    expect(() => loadOrganizationPack(pack)).toThrow(/elementRoleOverrides/);
-
-    cli(["template-analyze", "--input", path.join(pack, "template.pptx"), "--out", pack]);
-    expect(() => loadOrganizationPack(pack)).not.toThrow();
-  }, 120000);
-});
-
 describe("run recovery when root inputs change", () => {
   function writeRun(contractValue: unknown): { runDir: string; contractPath: string; planPath: string; contentModelPath: string } {
     const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-agent-recovery-"));
@@ -136,34 +74,6 @@ describe("run recovery when root inputs change", () => {
     cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
     expect(fs.existsSync(path.join(runDir, "reference-selection.json"))).toBe(false);
     expect(JSON.parse(fs.readFileSync(path.join(runDir, "artifact-provenance.json"), "utf8")).referenceSelectionDigest).toBeUndefined();
-
-    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
-    expect(cli(resolveArgsFor(runDir))).toContain("composition-plan.json");
-  }, 180000);
-
-  it("recovers when an organization deck becomes a plain one", async () => {
-    const pack = await packWithTemplate();
-    fs.writeFileSync(path.join(pack, "brand.yaml"), ["name: Recovery Test", "palette:", '  background: "FFFFFF"', '  surface: "FFFFFF"', '  text: "111111"', '  primary: "123456"', '  accent: "654321"', '  muted: "666666"', '  border: "DDDDDD"'].join("\n"));
-    fs.writeFileSync(path.join(pack, "template-map.json"), JSON.stringify({
-      version: 2,
-      aspectRatio: "16:9",
-      chromeOwnership: { background: "template", logo: "template", footer: "template", pageNumber: "template" },
-      defaultLayout: { nativeLayout: "DEFAULT", canvasColor: "FFFFFF", contentRegion: { x: 0.72, y: 0.48, w: 11.85, h: 6.14 }, reservedRegions: [] },
-      layouts: {},
-      requiredElements: [],
-      elementRoleOverrides: {},
-    }));
-    cli(["template-analyze", "--input", path.join(pack, "template.pptx"), "--out", pack]);
-
-    const { runDir, contractPath, planPath, contentModelPath } = writeRun({ ...contract, organization: { kind: "directory", path: pack } });
-    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
-    cli(["style", "--contract", contractPath, "--run-dir", runDir]);
-    expect(fs.existsSync(path.join(runDir, "template-grammar.json"))).toBe(true);
-
-    fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
-    cli(["plan-validate", "--plan", planPath, "--content-model", contentModelPath, "--run-dir", runDir]);
-    expect(fs.existsSync(path.join(runDir, "template-grammar.json"))).toBe(false);
-    expect(JSON.parse(fs.readFileSync(path.join(runDir, "artifact-provenance.json"), "utf8")).templateGrammarDigest).toBeUndefined();
 
     cli(["style", "--contract", contractPath, "--run-dir", runDir]);
     expect(cli(resolveArgsFor(runDir))).toContain("composition-plan.json");

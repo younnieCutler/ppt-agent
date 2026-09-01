@@ -3,7 +3,6 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { assertFontsInstalled, listInstalledFonts } from "./fonts";
-import { resolveTheme } from "./brand";
 import { renderDeck } from "./renderer";
 import { contentModelSchema, contractSchema, deckSchema, type ContentModel } from "./schema";
 import { mergeFindings, mergeQa, ooxmlQa, runPowerPointQa, structuralQa, verifySourceRefs } from "./qa";
@@ -26,7 +25,6 @@ import { checkTemplateFidelityUnproven, checkTemplatePatternNotFound, checkTempl
 import { applyPatternSkeleton } from "./template";
 import { renderAdaptiveStatement } from "./adaptive-statement";
 import { renderAdaptiveRuntime } from "./adaptive-runtime";
-import { templateMapSchema } from "./organization";
 import { resolveTemplateSourceSpec } from "./template-source";
 import { createRunWorkspace, removeRunWorkspace } from "./workspace";
 
@@ -34,12 +32,12 @@ import { createRunWorkspace, removeRunWorkspace } from "./workspace";
  * Everything downstream of the plan, and the provenance that describes it. Listed once so an added
  * phase cannot forget to clear its own output.
  */
-const DERIVED_ARTIFACTS = ["reference-selection.json", "resolved-style.json", "style-context.json", "template-grammar.json", "composition-plan.json", "pattern-plan.json"] as const;
-const DERIVED_PROVENANCE = ["referenceSelectionDigest", "referenceSelectionSource", "resolvedStyleDigest", "resolvedStyleSource", "templateGrammarDigest", "compositionPlanDigest", "patternPlanDigest"] as const;
+const DERIVED_ARTIFACTS = ["reference-selection.json", "resolved-style.json", "style-context.json", "composition-plan.json", "pattern-plan.json"] as const;
+const DERIVED_PROVENANCE = ["referenceSelectionDigest", "referenceSelectionSource", "resolvedStyleDigest", "resolvedStyleSource", "compositionPlanDigest", "patternPlanDigest"] as const;
 
 /**
  * Root inputs changed, so everything derived from them is obsolete — including artifacts the new
- * contract no longer produces at all (a deck that dropped its references, or its organization pack).
+ * contract no longer produces at all (for example, a deck that dropped its references).
  * Leaving those behind is what made a run unrecoverable without deleting files by hand: their
  * provenance is gone, but `assertFresh` still sees the file. Clearing both together is the recovery
  * path, and it is deterministic: after `plan-validate`, the run holds only what its inputs imply.
@@ -80,7 +78,6 @@ function assertDerivedFrom(provenance: ArtifactProvenance): void {
   if (!styleSource) throw new Error("Composition resolution blocked: the resolved style records no inputs. Re-run `style --run-dir`.");
   if (styleSource.contractDigest !== provenance.contractDigest) throw new Error("Composition resolution blocked: the resolved style was derived from a different contract than the one recorded at planning. Re-run `style --run-dir`.");
   if ((styleSource.referenceSelectionDigest ?? undefined) !== (provenance.referenceSelectionDigest ?? undefined)) throw new Error("Composition resolution blocked: the resolved style was derived from a different reference selection. Re-run `style --run-dir`.");
-  if ((styleSource.templateGrammarDigest ?? undefined) !== (provenance.templateGrammarDigest ?? undefined)) throw new Error("Composition resolution blocked: the resolved style was derived from a different template grammar. Re-run `style --run-dir`.");
   const referenceSource = provenance.referenceSelectionSource;
   if (provenance.referenceSelectionDigest) {
     if (!referenceSource) throw new Error("Composition resolution blocked: the reference selection records no inputs. Re-run `reference --run-dir`.");
@@ -298,7 +295,7 @@ export async function release(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [, , command, ...args] = process.argv;
   if (!command) {
-    throw new Error("Usage: cli.js <fonts|style|theme|reference|template-analyze|template-preview|pattern-label|plan-validate|composition-resolve|pattern-resolve|render-pattern-skeleton|adaptive-statement|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
+    throw new Error("Usage: cli.js <fonts|style|reference|template-analyze|template-preview|pattern-label|plan-validate|composition-resolve|pattern-resolve|render-pattern-skeleton|adaptive-statement|workspace-open|validate|first-page|render|qa|visual|visual-qa|repair-context|repair-apply|metrics|tokens|score|record|release> ...");
   }
   fullOutput = hasFlag(args, "--print");
 
@@ -315,16 +312,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "theme") {
-    const contractPath = option(args, "--contract");
-    const contract = contractSchema.parse(readJson(contractPath));
-    const projectDir = projectDirectory();
-    const legacyTheme = resolveTheme(contract, projectDir);
-    assertFontsInstalled(legacyTheme.fonts);
-    print(legacyTheme);
-    return;
-  }
-
   if (command === "style") {
     const contractPath = option(args, "--contract");
     const runDir = optionalOption(args, "--run-dir");
@@ -338,19 +325,12 @@ async function main(): Promise<void> {
       const contractDigest = assertRunContract(runDir, contractPath);
       fs.writeFileSync(path.join(path.resolve(runDir), "resolved-style.json"), JSON.stringify(style, null, 2));
       fs.writeFileSync(path.join(path.resolve(runDir), "style-context.json"), JSON.stringify(styleContext(style), null, 2));
-      // composition-resolve reads the run directory's grammar, so style writes the copy it recorded:
-      // a digest describing a file nobody put there would block every run with a v2 pack.
-      const grammarRunPath = path.join(path.resolve(runDir), "template-grammar.json");
-      if (style.templateGrammar) fs.writeFileSync(grammarRunPath, JSON.stringify(style.templateGrammar, null, 2));
       const referencePath = path.join(path.resolve(runDir), "reference-selection.json");
-      const templateGrammarDigest = style.templateGrammar ? sha256File(grammarRunPath) : undefined;
       recordProvenance(runDir, {
         resolvedStyleDigest: sha256File(path.join(path.resolve(runDir), "style-context.json")),
-        templateGrammarDigest,
         resolvedStyleSource: {
           contractDigest,
           referenceSelectionDigest: fs.existsSync(referencePath) ? sha256File(referencePath) : undefined,
-          templateGrammarDigest,
         },
       });
       markPhase(runDir, "styleResolution");
@@ -385,12 +365,7 @@ async function main(): Promise<void> {
   if (command === "template-analyze") {
     const input = option(args, "--input");
     const out = path.resolve(option(args, "--out"));
-    // The pack's own template-map.json is the only place a human can correct a misread role, so the
-    // analyzer reads it: overrides that never reach the classifier are a contract nobody honours.
-    const mapPath = optionalOption(args, "--map") ?? path.join(out, "template-map.json");
-    const map = fs.existsSync(mapPath) ? templateMapSchema.parse(readJson(mapPath)) : undefined;
-    const overrides = map?.version === 2 ? map.elementRoleOverrides : {};
-    const elements = await extractTemplateElements(input, overrides);
+    const elements = await extractTemplateElements(input);
     const grammar = compileTemplateGrammar(elements);
     const designSystem = compileTemplateDesignSystem(elements, grammar);
     const components = compileTemplateComponents(elements);
@@ -408,7 +383,7 @@ async function main(): Promise<void> {
       { path: componentsPath, contents: JSON.stringify(components, null, 2) },
       { path: patternsPath, contents: JSON.stringify(patterns, null, 2) },
     ]);
-    print({ status: "pass", outputPath, grammarPath, designSystemPath, componentsPath, patternsPath, slides: elements.slides.length, strategy: elements.strategy, patterns: patterns.patterns.length, components: components.components.length, roleOverrides: Object.keys(overrides).length });
+    print({ status: "pass", outputPath, grammarPath, designSystemPath, componentsPath, patternsPath, slides: elements.slides.length, strategy: elements.strategy, patterns: patterns.patterns.length, components: components.components.length });
     return;
   }
 
@@ -492,7 +467,6 @@ async function main(): Promise<void> {
       ["contractDigest", "contract.json"],
       ["contentModelDigest", "content-model.json"],
       ["referenceSelectionDigest", "reference-selection.json"],
-      ["templateGrammarDigest", "template-grammar.json"],
     ]);
     // Style resolution is a prerequisite phase, and the style actually passed here is the one that
     // must match it — checking only the run directory's copy would miss a --style-context pointing
@@ -502,9 +476,7 @@ async function main(): Promise<void> {
     assertDerivedFrom(provenance);
     if (provenance.deckPlanDigest !== deckPlanDigest(readJson(planPath))) throw new Error("Composition resolution blocked: deck plan digest is stale.");
     const styleContext = readJson(styleContextPath);
-    const grammarPath = path.join(runDir, "template-grammar.json");
-    const grammar = fs.existsSync(grammarPath) ? readJson(grammarPath) : {};
-    const compositionPlan = resolveCompositionPlan(readJson(planPath), styleContext as never, grammar as never);
+    const compositionPlan = resolveCompositionPlan(readJson(planPath), styleContext as never, {} as never);
     const outputPath = path.join(runDir, "composition-plan.json");
     fs.writeFileSync(outputPath, JSON.stringify(compositionPlan, null, 2));
     // Hash the bytes actually on disk, not a re-serialization of the in-memory object: JSON.stringify
@@ -674,7 +646,7 @@ async function main(): Promise<void> {
     const projectDir = projectDirectory();
     const references = loadReferenceSelectionIfExists(path.join(path.resolve(runDir), "reference-selection.json"));
     const style = resolvePresentationStyle(deck.contract, { projectDir, referenceSelection: references, legacyTheme: deck.theme });
-    const provenance: ProvenanceFinding[] = verifyRenderProvenance(runDir, pptxPath, deck, style).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId }));
+    const provenance: ProvenanceFinding[] = verifyRenderProvenance(runDir, pptxPath, deck).map(({ code, message, slideId }) => ({ code: code as ProvenanceFinding["code"], message, slideId }));
     const backendPath = path.join(path.resolve(runDir), "visual", "backend.json");
     if (fs.existsSync(backendPath)) {
       const backendInfo = JSON.parse(fs.readFileSync(backendPath, "utf8")) as { substitutedFonts?: string[] | "unknown" };
@@ -887,52 +859,30 @@ async function main(): Promise<void> {
     const renderManifestPath = path.join(path.resolve(runDir), "render-manifest.json");
     const renderManifest = fs.existsSync(renderManifestPath) ? (readJson(renderManifestPath) as import("./template-fidelity").RenderManifestEntry[]) : undefined;
     const patternRenderedSlideIds = new Set((renderManifest ?? []).filter((entry) => entry.mode.startsWith("pattern:")).map((entry) => entry.slideId));
-    // style.templateGrammar only exists for a v2 Organization Pack (its own cached grammar). A run
-    // that just analyzed a v1 pack's template.pptx (or a raw pptx with no pack at all) still has a
-    // fresh <run-dir>/template/template-grammar.json — read it directly rather than requiring the
-    // pack to be "promoted" to v2 before its own fonts are recognized as its own.
+    // A raw template's own grammar is the source of its native font vocabulary. Read the run-scoped
+    // artifact directly so cloned source-slide typography is not mistaken for substitution.
     const runGrammarPath = path.join(path.resolve(runDir), "template", "template-grammar.json");
     const runTemplateFonts = fs.existsSync(runGrammarPath) ? ((readJson(runGrammarPath) as { typography?: { families?: string[] } }).typography?.families ?? []) : [];
-    const styleForFonts = runTemplateFonts.length > 0
-      ? { ...style, templateGrammar: { ...style.templateGrammar, typography: { ...style.templateGrammar?.typography, families: [...(style.templateGrammar?.typography.families ?? []), ...runTemplateFonts] } } }
-      : style;
+    const styleForFonts = runTemplateFonts.length > 0 ? { ...style, templateGrammar: { typography: { families: runTemplateFonts } } } : style;
     const ooxmlFindings = fs.existsSync(path.resolve(pptxPath))
       ? await ooxmlQa(pptxPath, canonicalDeck, undefined, styleForFonts as never, patternRenderedSlideIds)
       : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
     let report = mergeFindings(structural, ooxmlFindings);
-    // style.organization is only populated for contract.organization (a pre-built Organization
-    // Pack) — the raw-pptx entry point (contract.template: {kind:"pptx"}) has no organization pack
-    // at all, and leakage/fidelity checking was silently skipped for it. resolveTemplateSourceSpec
-    // is the one place both input shapes normalize to a template.pptx path.
+    // The raw template path is the only source-slide fidelity source.
     const templateSource = resolveTemplateSourceSpec(canonicalDeck.contract);
     const sourceTemplatePath = templateSource
-      ? path.resolve(projectDir, templateSource.kind === "organization" ? path.join(templateSource.path, "template.pptx") : templateSource.path)
+      ? path.resolve(projectDir, templateSource.path)
       : undefined;
     // `render-pattern-skeleton` never even ran: no render-manifest.json exists at all. The block
     // below (templateFidelityQa, which itself calls checkTemplateFidelityUnproven) only runs when
     // renderManifest is truthy, so that check was entirely unreachable in exactly the case it
-    // exists to catch — going straight from an Organization Pack's brand.yaml to `render`+`qa`
-    // silently reproduces the original failure this whole feature exists to fix: a
-    // source_slide_pattern template (design lives in slide-body shapes, not the master/layout —
-    // GAO is this shape) rendered generically from scratch, passing Core QA clean. Determine
-    // strategy directly (from a cached template-elements.json if template-analyze happened to run
-    // anyway, else fresh) and treat every slide as generically-rendered, since none of them went
-    // through a pattern at all.
+    // exists to catch — going straight from a raw template to `render`+`qa` would otherwise allow
+    // a source_slide_pattern template to be redrawn generically without a manifest.
     if (!renderManifest && sourceTemplatePath && fs.existsSync(sourceTemplatePath)) {
       const elementsPathForStrategy = path.join(path.resolve(runDir), "template", "template-elements.json");
-      // An Organization Pack's own template-map.json elementRoleOverrides change semantic roles
-      // (and therefore the detected strategy) without changing template.pptx's bytes — the same
-      // reason `template-analyze` reads them (above) before ever calling extractTemplateElements.
-      // Skipping them here would let overrides that resolve a template to native_layout still get
-      // mis-flagged source_slide_pattern (or the reverse), in exactly the "pack skipped straight to
-      // render+qa" scenario this whole check exists for.
-      const orgOverridesPath = templateSource?.kind === "organization" ? path.join(templateSource.path, "template-map.json") : undefined;
-      const orgOverrides = orgOverridesPath && fs.existsSync(orgOverridesPath)
-        ? (() => { const map = templateMapSchema.parse(readJson(orgOverridesPath)); return map.version === 2 ? map.elementRoleOverrides : {}; })()
-        : {};
       const strategy = fs.existsSync(elementsPathForStrategy)
         ? (readJson(elementsPathForStrategy) as { strategy: import("./template-analysis").TemplateStrategy }).strategy
-        : (await extractTemplateElements(sourceTemplatePath, orgOverrides)).strategy;
+        : (await extractTemplateElements(sourceTemplatePath)).strategy;
       const allGenericManifest = deck.slides.map((slide) => ({ slideId: slide.id, mode: "renderer" }));
       report = mergeFindings(report, checkTemplateFidelityUnproven(strategy, allGenericManifest));
     }

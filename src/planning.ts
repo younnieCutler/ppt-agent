@@ -186,14 +186,14 @@ export function resolveCompositionPlan(planInput: unknown, styleInput: StyleReso
         .filter((entry) => layoutsByFunction[intent.function].includes(entry.layout))
         .map((entry) => ({
           entry,
-          organization: grammarConfidence(entry, intent, grammar),
+          template: grammarConfidence(entry, intent, grammar),
           reference: style.referenceCompositionPreferences?.includes(entry.composition) ? 1 : 0,
           visual: entry.visualIntents.includes(intent.visualIntent) ? 1 : 0,
           density: entry.densities.includes(intent.density) ? 1 : 0,
           rhythm: recommendedFamilies.includes(entry.family) ? 0 : 1,
           archetype: style.archetypeCompositionPreferences?.includes(entry.composition) ? 1 : 0,
         }))
-        .sort((left, right) => right.organization - left.organization
+        .sort((left, right) => right.template - left.template
           || right.reference - left.reference
           || right.visual - left.visual
           || right.density - left.density
@@ -201,12 +201,12 @@ export function resolveCompositionPlan(planInput: unknown, styleInput: StyleReso
           || right.archetype - left.archetype
           || `${left.entry.layout}:${left.entry.composition}`.localeCompare(`${right.entry.layout}:${right.entry.composition}`))
         .slice(0, 3)
-        .map(({ entry, organization, reference, visual, density, rhythm, archetype }, index) => ({
+        .map(({ entry, template, reference, visual, density, rhythm, archetype }, index) => ({
           layout: entry.layout,
           composition: entry.composition,
           family: entry.family,
           rank: (index + 1) as 1 | 2 | 3,
-          reasons: [organization ? "organization grammar" : "", reference ? "reference preference" : "", visual ? "visual intent" : "", density ? "density" : "", rhythm ? "deck rhythm" : "", archetype ? "archetype preference" : ""].filter(Boolean),
+          reasons: [template ? "template grammar" : "", reference ? "reference preference" : "", visual ? "visual intent" : "", density ? "density" : "", rhythm ? "deck rhythm" : "", archetype ? "archetype preference" : ""].filter(Boolean),
         }));
       recommendedFamilies.push(candidates[0].family);
       if (recommendedFamilies.length > 2) recommendedFamilies.shift();

@@ -13,7 +13,7 @@ maintained copy.
 Two environment variables cover host differences; both are optional and both fall back to the
 Claude Code behaviour that existed before them:
 
-- `PPT_AGENT_PROJECT_DIR` — project root for brand, theme, and organization pack resolution
+- `PPT_AGENT_PROJECT_DIR` — project root for theme and raw-template resolution
   (falls back to `CLAUDE_PROJECT_DIR`, then the working directory).
 - `PPT_AGENT_TRANSCRIPT_DIR` — directory of host session `.jsonl` transcripts read by `tokens`
   (falls back to Claude Code's `~/.claude/projects/<slug>`).
@@ -60,42 +60,21 @@ node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
 
 ## Template input: a raw .pptx — the only supported path
 
-`contract.template: { kind: "pptx", path: "<path-to>.pptx" }`. Nothing else is required: no
-`brand.yaml`, no `template-map.json`. Analyze the file itself directly; the template's own
+`contract.template: { kind: "pptx", path: "<path-to>.pptx" }`. Analyze the file itself directly; the template's own
 master/layout/theme and its actual source slides are the design, not a hand-authored
 reconstruction of it.
 
-**Organization Pack (`contract.organization`, `brand.yaml` + `template-map.json`) is deprecated.**
-It still runs — deleting a load-bearing subsystem out from under existing packs and their tests in
-one pass is a bigger, riskier change than this note — but do not start a new one, and migrate an
-existing one to raw `.pptx` when you touch it next: point `contract.template` straight at the
-pack's own `template.pptx` and drop `brand.yaml`/`template-map.json`. The pack's whole reason to
-exist was letting a human hand-describe a template's chrome (`chromeOwnership`, `defaultLayout`,
-per-layout `contentRegion`) well enough that the generic renderer could redraw something
-on-brand — and a redraw, however careful, is not the template. `template-analyze` extracting the
-template's own real slides directly and cloning them (below) is strictly more faithful than any
-hand-authored map could ever describe, for every strategy a template can have, not just
-`source_slide_pattern`.
-
-**Run `template-analyze` always, before deciding how to render — never assume `native_layout`**
-**just because a brand.yaml/template-map.json happened to exist for this template once.** Brand
-tokens say nothing about where a template's *design* lives; a real company template routinely has
-design that lives entirely in its example slide bodies (GAO is exactly this —
-`strategy: source_slide_pattern` with 16 real patterns). Skipping straight to `render` reproduces
-the original failure this whole workflow exists to fix: the template's real slides never get
-reused, `render` silently redraws a generic deck in the brand's colors instead, and it *looks*
-on-brand enough to not obviously be wrong. `qa` hard-fails this (`TEMPLATE_FIDELITY_UNPROVEN`,
-unconditional — fires even if `render-pattern-skeleton` was never run at all, not just when it
-produced a generically-rendered slide) and `render-pattern-skeleton` itself now refuses to fall
-back to the generic renderer for a slide on a `source_slide_pattern` template at all — but
-analyzing first is the one action that avoids ever reaching either failure:
+**Run `template-analyze` always, before deciding how to render.** Template tokens say nothing about
+where a template's *design* lives; a real company template routinely has design that lives entirely
+in its example slide bodies (GAO is exactly this — `strategy: source_slide_pattern` with 16 real
+patterns). The raw runtime reuses those source slides and hard-fails unsupported composition rather
+than silently falling back to a generic redraw:
 
 ```sh
 node dist/cli.js template-analyze --input <path-to>.pptx --out <run-dir>/template
 # → <run-dir>/template/{template-elements,template-grammar,template-design-system,template-components,template-patterns}.json, printed strategy:
-#   "native_layout" | "source_slide_pattern" | "hybrid". Deleted with the rest of the run
-#   workspace on a successful release — nothing about a template is cached outside a deprecated
-#   v2/v3 Organization Pack's own cache.
+#   "native_layout" | "source_slide_pattern" | "hybrid". Deleted with the rest of the run workspace
+#   on a successful release.
 ```
 
 When the printed `strategy` is `source_slide_pattern` (design lives in the example
@@ -121,11 +100,9 @@ node dist/cli.js pattern-label --run-dir <run-dir> --labels <run-dir>/pattern-la
 
 Aspect ratio:
 
-- **default / no-organization renderer: 16:9 only** — a plain 4:3 deck is rejected.
-- **Organization Template Pack: 16:9 or 4:3.** A 4:3 pack requires `template-map.json`'s `aspectRatio: "4:3"` **and** a real `template.pptx` sized exactly 10×7.5in.
-- `contract.aspectRatio` and the pack's declared `aspectRatio` must agree, or style resolution hard-fails with `ORGANIZATION_TEMPLATE_ASPECT_RATIO_MISMATCH`.
-
-It cannot be combined with a standalone `brand.kind: "file"`, and a locked identity conflict hard-fails rather than falling back.
+- **generic renderer: 16:9 only** — a plain 4:3 deck is rejected.
+- **raw PPTX runtime:** the source file's actual `p:sldSz` canvas is authoritative, including 4:3
+  templates; adaptive final bounds must remain inside that canvas.
 
 ## The run, in dependency order
 
@@ -252,7 +229,7 @@ node dist/cli.js repair-apply --spec <deck.json> --run-dir <run-dir> --slide S04
 
 After a repair: re-run `qa` (Core QA, full deck — it's free), then `visual`/`visual-qa` scoped to `regressionScope`.
 
-A repair replaces exactly one `SlideSpec`. It cannot change `organization`, `brand`, `presentationStyle`, `designDirection`, or the reference grammar — those live in the contract and are resolved once. If a finding can only be fixed by changing the style, stop and re-run the interview instead of repairing.
+A repair replaces exactly one `SlideSpec`. It cannot change `brand`, `presentationStyle`, `designDirection`, or the reference grammar — those live in the contract and are resolved once. If a finding can only be fixed by changing the style, stop and re-run the interview instead of repairing.
 
 ## Composition families: choose by what the slide argues, not by "architecture" vs "process"
 
@@ -278,7 +255,7 @@ Text budgets are measured in **display columns**, not codepoints, so a Japanese 
 ## Template fidelity gates
 
 `qa` runs these automatically whenever `<run-dir>/render-manifest.json` exists (i.e. after
-`render-pattern-skeleton`) and the deck used an Organization Pack — no separate command. All are
+`render-pattern-skeleton`) and the deck used a raw template — no separate command. All are
 deterministic (`src/template-fidelity.ts`); none of them is a judgment call:
 
 - `TEMPLATE_EXAMPLE_CONTENT_LEAK` (hard) — verbatim source example text from a slot the pattern
@@ -292,9 +269,9 @@ deterministic (`src/template-fidelity.ts`); none of them is a judgment call:
 - `TEMPLATE_FIDELITY_UNPROVEN` (hard) — a `source_slide_pattern` template rendered a slide with the
   generic renderer instead of a cloned pattern. Never fires for `hybrid`, where mixing both is
   legitimate.
-- `TEMPLATE_PATTERN_NOT_FOUND` (hard on the legacy skeleton path) — an empty exact-clone shortlist
-  remains unresolved. Raw adaptive runtime runs may defer an empty exact shortlist to
-  `TEMPLATE_COMPOSITION_UNSUPPORTED`, which is hard only when adaptive composition also fails.
+- `TEMPLATE_PATTERN_NOT_FOUND` (hard) — an empty exact-clone shortlist remains unresolved. Raw
+  adaptive runtime runs may defer an empty exact shortlist to `TEMPLATE_COMPOSITION_UNSUPPORTED`,
+  which is hard only when adaptive composition also fails.
 - `TEMPLATE_SLOT_OVERFLOW` (hard) / `TEMPLATE_SLOT_TRUNCATED` (risk) — injected content exceeds a
   slot's estimated capacity (`maxChars`, from the slot's own geometry — approximate, same caveat as
   every other text-budget check above). Hard when the slot is `required`; risk otherwise, since a

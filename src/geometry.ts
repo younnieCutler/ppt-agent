@@ -1,6 +1,11 @@
 export type Rect = { id: string; x: number; y: number; w: number; h: number; allowOverlap?: boolean };
 export type GeometryIssue = { code: "OFF_CANVAS" | "COLLISION"; ids: string[]; message: string };
 
+export const CANVAS_DIMENSIONS = {
+  "16:9": { w: 13.333, h: 7.5, pptxLayout: "LAYOUT_WIDE" },
+  "4:3": { w: 10, h: 7.5, pptxLayout: "LAYOUT_4x3" },
+} as const;
+
 const EPSILON = 0.01;
 
 export function overlaps(a: Rect, b: Rect): boolean {

@@ -11,9 +11,8 @@ adaptive path is verified end to end.
 > The template controls visual language; content controls composition.
 
 The raw `.pptx` is the only style source. Its masters, layouts, themes, source-slide bodies,
-typography, geometry, surfaces, dividers, colors, and assets are authoritative. `brand.yaml`,
-`template-map.json`, an Organization Pack, or a host-authored palette cannot invent or override
-visual language for an Adaptive raw-template run.
+typography, geometry, surfaces, dividers, colors, and assets are authoritative. There is no
+sidecar brand or layout map in the Adaptive raw-template contract.
 
 ## Runtime modes
 
