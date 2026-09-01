@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileSceneComponentPlan } from "../../src/scene-components";
 import { composeDefaultScene, resolveSceneGeometry } from "../../src/scene";
+import type { ComponentTransformOperation } from "../../src/template-transform";
 import type { TemplateComponentsArtifact, TemplateComponent } from "../../src/template-components";
 import type { TemplateDesignSystemArtifact } from "../../src/template-design-system";
 
@@ -69,6 +70,18 @@ function metricScene() {
   }), designSystem());
 }
 
+function moveFor(operations: ComponentTransformOperation[], componentId: string): Extract<ComponentTransformOperation, { operation: "move" }> {
+  const operation = operations.find((candidate): candidate is Extract<ComponentTransformOperation, { operation: "move" }> => candidate.operation === "move" && candidate.componentId === componentId);
+  if (!operation) throw new Error(`missing move for ${componentId}`);
+  return operation;
+}
+
+function resizeFor(operations: ComponentTransformOperation[], componentId: string): Extract<ComponentTransformOperation, { operation: "resize" }> {
+  const operation = operations.find((candidate): candidate is Extract<ComponentTransformOperation, { operation: "resize" }> => candidate.operation === "resize" && candidate.componentId === componentId);
+  if (!operation) throw new Error(`missing resize for ${componentId}`);
+  return operation;
+}
+
 describe("vNext scene component planner", () => {
   it("selects template-native prototypes across source slides instead of binding composition to one slide", () => {
     const components = catalog([
@@ -105,6 +118,33 @@ describe("vNext scene component planner", () => {
       expect(plan.operations).toContainEqual({ operation: "move", componentId: `scene.m${index + 1}`, x: zone.bounds.x, y: zone.bounds.y });
       expect(plan.operations).toContainEqual({ operation: "resize", componentId: `scene.m${index + 1}`, w: zone.bounds.w, h: zone.bounds.h });
     }
+  });
+
+  it("stacks multiple nodes inside one semantic zone instead of overlapping them", () => {
+    const components = catalog([
+      component({ id: "surface-S01", kind: "surface", sourceSlideId: "S01", semanticRoles: ["surface"] }),
+      component({ id: "old-body-S01", kind: "body_block", sourceSlideId: "S01", semanticRoles: ["body"] }),
+      component({ id: "title-S02", kind: "title_block", sourceSlideId: "S02", semanticRoles: ["title"], confidence: 0.9 }),
+      component({ id: "item-S03", kind: "list_item", sourceSlideId: "S03", semanticRoles: ["step"], confidence: 0.95 }),
+    ]);
+    const scene = resolveSceneGeometry(composeDefaultScene({
+      slideId: "S07",
+      kind: "split",
+      headline: "Human vs Agent",
+      blocks: [
+        { id: "h1", role: "item", text: "판단", group: "human", emphasis: "primary" },
+        { id: "h2", role: "item", text: "맥락", group: "human" },
+        { id: "a1", role: "item", text: "반복 실행", group: "agent" },
+        { id: "a2", role: "item", text: "대량 처리", group: "agent" },
+      ],
+    }), designSystem());
+    const plan = compileSceneComponentPlan(scene, "Human vs Agent", "S01", components);
+    const h1Move = moveFor(plan.operations, "scene.h1");
+    const h1Resize = resizeFor(plan.operations, "scene.h1");
+    const h2Move = moveFor(plan.operations, "scene.h2");
+
+    expect(h1Move.y + h1Resize.h).toBeLessThan(h2Move.y);
+    expect(moveFor(plan.operations, "scene.a1").x).toBeGreaterThan(h1Move.x);
   });
 
   it("hard-fails when a base slide contains non-chrome content that cannot be sanitized losslessly", () => {
