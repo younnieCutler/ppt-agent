@@ -83,8 +83,12 @@ function appendPlacement(operations: ComponentTransformOperation[], provenance: 
   if (!normalizedText) throw new Error(`SCENE_COMPONENT_UNSUPPORTED: scene node '${sceneNodeId}' has no renderable text.`);
   operations.push({ operation: "clone", componentId: component.id, targetSlideId, as: alias });
   provenance.push({ sceneNodeId, alias, componentId: component.id, componentKind: component.kind, sourceSlideId: component.sourceSlideId, bounds, text: normalizedText });
-  operations.push({ operation: "move", componentId: alias, x: bounds.x, y: bounds.y });
+  // A cross-slide prototype may be much wider/taller than its Scene destination. Resize while it
+  // still sits at the source's known-safe coordinates, then move it. Moving the original geometry
+  // first can temporarily leave the canvas and correctly trip the transform engine's hard gate
+  // before the following resize ever gets a chance to make the clone fit.
   operations.push({ operation: "resize", componentId: alias, w: bounds.w, h: bounds.h });
+  operations.push({ operation: "move", componentId: alias, x: bounds.x, y: bounds.y });
   operations.push({ operation: "replace_text", componentId: alias, text: normalizedText });
 }
 
@@ -125,8 +129,8 @@ function decorationPlan(scene: ResolvedScene, targetSlideId: string, artifact: T
     scene.zones.forEach((zone, index) => {
       const alias = `scene.decor.card.${index + 1}`;
       operations.push({ operation: "clone", componentId: card.id, targetSlideId, as: alias });
-      operations.push({ operation: "move", componentId: alias, x: zone.bounds.x, y: zone.bounds.y });
       operations.push({ operation: "resize", componentId: alias, w: zone.bounds.w, h: zone.bounds.h });
+      operations.push({ operation: "move", componentId: alias, x: zone.bounds.x, y: zone.bounds.y });
     });
   }
 
@@ -142,8 +146,8 @@ function decorationPlan(scene: ResolvedScene, targetSlideId: string, artifact: T
       const y = left.bounds.y + left.bounds.h / 2 - height / 2;
       const alias = `scene.decor.connector.${index + 1}`;
       operations.push({ operation: "clone", componentId: divider.id, targetSlideId, as: alias });
-      operations.push({ operation: "move", componentId: alias, x: start, y });
       operations.push({ operation: "resize", componentId: alias, w: width, h: height });
+      operations.push({ operation: "move", componentId: alias, x: start, y });
     });
   }
   return operations;
