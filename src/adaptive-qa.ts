@@ -75,6 +75,15 @@ function add(findings: AdaptiveQaFinding[], code: AdaptiveQaCode, message: strin
   findings.push({ severity: "hard", code, message });
 }
 
+export function normalizeAdaptiveText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+export function hasExactAdaptiveTextNode(textNodes: string[], expected: string): boolean {
+  const normalizedExpected = normalizeAdaptiveText(expected);
+  return textNodes.some((text) => normalizeAdaptiveText(text) === normalizedExpected);
+}
+
 export async function runAdaptiveQa(input: AdaptiveQaInput): Promise<AdaptiveQaReport> {
   const findings: AdaptiveQaFinding[] = [];
   const epsilon = 2 / EMU_PER_INCH;
@@ -95,7 +104,6 @@ export async function runAdaptiveQa(input: AdaptiveQaInput): Promise<AdaptiveQaR
   const sourceNames = new Set(input.components.components.flatMap((component) => component.shapeNames));
   const outputNames = new Set(outputNodes.map(nameOf));
   const byId = new Map(input.components.components.map((component) => [component.id, component]));
-  const usedIds = new Set([...input.plan.placements.map((placement) => placement.componentId), ...(input.plan.media ? [input.plan.media.componentId] : [])]);
   const plannedTexts = new Set(input.plan.textAllocation.map((allocation) => allocation.text));
 
   for (const placement of input.plan.placements) {
@@ -121,9 +129,8 @@ export async function runAdaptiveQa(input: AdaptiveQaInput): Promise<AdaptiveQaR
     if (rect && (rect.x < -epsilon || rect.y < -epsilon || rect.x + rect.w > input.components.canvas.w + epsilon || rect.y + rect.h > input.components.canvas.h + epsilon)) add(findings, "ADAPTIVE_GEOMETRY_OVERFLOW", `Output visual object '${name || "(unnamed)"}' escaped the template canvas: ${JSON.stringify(rect)}.`);
   }
 
-  const outputTextNodes = outputNodes.map(textOf).filter((text) => text.length > 0);
-  const outputText = outputTextNodes.join(" ");
-  input.plan.textAllocation.forEach((allocation) => { if (!outputText.includes(allocation.text)) add(findings, "ADAPTIVE_CONTENT_DROPPED", `Adaptive content block '${allocation.blockId}' did not reach the output.`); });
+  const outputTextNodes = outputNodes.map(textOf).filter((text) => normalizeAdaptiveText(text).length > 0);
+  input.plan.textAllocation.forEach((allocation) => { if (!hasExactAdaptiveTextNode(outputTextNodes, allocation.text)) add(findings, "ADAPTIVE_CONTENT_DROPPED", `Adaptive content block '${allocation.blockId}' did not reach an output text node exactly.`); });
   for (const component of input.components.components.filter((candidate) => !candidate.offCanvasHelper && !structural(candidate))) {
     const sourceTexts = sourceNodes.filter((node) => component.shapeNames.includes(nameOf(node))).map(textOf).filter((text) => text.length > 0);
     sourceTexts.forEach((text) => { if (!plannedTexts.has(text) && outputTextNodes.includes(text)) add(findings, "ADAPTIVE_EXAMPLE_CONTENT_LEAK", `Template example text survived: '${text}'.`); });
