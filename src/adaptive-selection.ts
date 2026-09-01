@@ -9,8 +9,12 @@ export type AdaptiveSelectionCandidate = { rank: number; pattern: TemplatePatter
 export type AdaptiveSelectionReasonCode = "semantic_coverage" | "slot_capacity" | "required_cardinality" | "media_capability" | "composition_compatibility" | "no_exact_candidate" | "adaptive_capability";
 export type AdaptiveSelectionReason = { code: AdaptiveSelectionReasonCode; patternId?: string; message: string };
 export type AdaptiveSelectionContent =
+  | { layout: "title"; content: Extract<SlideSpec, { layout: "title" }>["content"] }
   | { layout: "comparison"; content: Extract<SlideSpec, { layout: "comparison" }>["content"] }
-  | { layout: "quantitative"; content: Extract<SlideSpec, { layout: "quantitative" }>["content"] };
+  | { layout: "quantitative"; content: Extract<SlideSpec, { layout: "quantitative" }>["content"] }
+  | { layout: "process"; content: Extract<SlideSpec, { layout: "process" }>["content"] }
+  | { layout: "timeline"; content: Extract<SlideSpec, { layout: "timeline" }>["content"] }
+  | { layout: "evidence"; content: Extract<SlideSpec, { layout: "evidence" }>["content"] };
 export type AdaptiveSelectionResult = {
   slideId: string;
   mode: "exact_clone" | "adaptive_compose" | "unsupported";
@@ -93,6 +97,54 @@ function quantitativeIntent(slide: Extract<SlideSpec, { layout: "quantitative" }
   });
 }
 
+function joinedText(parts: Array<string | undefined>): string {
+  return parts.filter((part): part is string => Boolean(part)).join(" · ");
+}
+
+function processIntent(slide: Extract<SlideSpec, { layout: "process" }>): AdaptiveSlideIntent {
+  return adaptiveSlideIntentSchema.parse({
+    slideId: slide.id,
+    family: "repeated_cards",
+    blocks: slide.content.steps.map((step, index) => ({
+      id: `step-${step.id}`,
+      role: "item",
+      text: joinedText([step.label, step.detail, step.members?.length ? `members: ${step.members.join(", ")}` : undefined]),
+      priority: index === 0 ? 80 : 50,
+      emphasis: index === 0 ? "primary" : "supporting",
+      preferredComponentKind: "list_item",
+    })),
+  });
+}
+
+function timelineIntent(slide: Extract<SlideSpec, { layout: "timeline" }>): AdaptiveSlideIntent {
+  return adaptiveSlideIntentSchema.parse({
+    slideId: slide.id,
+    family: "repeated_cards",
+    blocks: slide.content.milestones.map((milestone, index) => ({
+      id: `milestone-${index + 1}`,
+      role: "item",
+      text: joinedText([milestone.date, milestone.label, milestone.detail]),
+      priority: index === 0 ? 80 : 50,
+      emphasis: index === 0 ? "primary" : "supporting",
+      preferredComponentKind: "list_item",
+    })),
+  });
+}
+
+function evidenceIntent(slide: Extract<SlideSpec, { layout: "evidence" }>): AdaptiveSlideIntent {
+  const blocks: AdaptiveSlideIntent["blocks"] = [];
+  if (slide.content.caption) blocks.push({ id: "caption", role: "support", text: slide.content.caption, priority: 80, emphasis: "secondary", preferredComponentKind: "label" });
+  blocks.push(...slide.content.bullets.map((text, index) => ({ id: `bullet-${index + 1}`, role: "item" as const, text, priority: 50, emphasis: "supporting" as const })));
+  return adaptiveSlideIntentSchema.parse({ slideId: slide.id, family: "stack", blocks, ...(slide.content.assetPath ? { mediaPath: slide.content.assetPath } : {}) });
+}
+
+function titleIntent(slide: Extract<SlideSpec, { layout: "title" }>): AdaptiveSlideIntent {
+  const blocks: AdaptiveSlideIntent["blocks"] = [{ id: "headline", role: "headline", text: slide.headline, priority: 100, emphasis: "primary" }];
+  if (slide.content.kicker) blocks.push({ id: "kicker", role: "support", text: slide.content.kicker, priority: 90, emphasis: "secondary", preferredComponentKind: "label" });
+  if (slide.content.subtitle) blocks.push({ id: "subtitle", role: "body", text: slide.content.subtitle, priority: 70, emphasis: "secondary" });
+  return adaptiveSlideIntentSchema.parse({ slideId: slide.id, family: "stack", blocks, ...(slide.content.imagePath ? { mediaPath: slide.content.imagePath } : {}) });
+}
+
 function adaptiveResult(input: AdaptiveSelectionInput, rejectionReasons: AdaptiveSelectionReason[]): AdaptiveSelectionResult {
   const usable = input.components.components.filter((component) => !component.offCanvasHelper && !component.grouped && component.kind !== "unknown");
   let intent: AdaptiveSlideIntent;
@@ -109,9 +161,27 @@ function adaptiveResult(input: AdaptiveSelectionInput, rejectionReasons: Adaptiv
     if (!usable.some((component) => component.kind === "metric")) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: "Adaptive quantitative composition requires a template-native metric component." }] };
     intent = quantitativeIntent(input.slide);
     adaptiveContent = { layout: "quantitative", content: input.slide.content };
+  } else if (input.slide.layout === "process") {
+    if (!usable.some((component) => ["list_item", "body_block", "label"].includes(component.kind))) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: "Adaptive process composition requires a template-native step or text component." }] };
+    intent = processIntent(input.slide);
+    adaptiveContent = { layout: "process", content: input.slide.content };
+  } else if (input.slide.layout === "timeline") {
+    if (!usable.some((component) => ["list_item", "body_block", "label"].includes(component.kind))) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: "Adaptive timeline composition requires a template-native step or label component." }] };
+    intent = timelineIntent(input.slide);
+    adaptiveContent = { layout: "timeline", content: input.slide.content };
+  } else if (input.slide.layout === "evidence") {
+    if (!input.slide.content.caption && input.slide.content.bullets.length === 0) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: "Adaptive evidence composition requires a caption or bullet content block; media-only evidence is not supported in Goal 8." }] };
+    intent = evidenceIntent(input.slide);
+    adaptiveContent = { layout: "evidence", content: input.slide.content };
+  } else if (input.slide.layout === "title") {
+    if (!usable.some((component) => component.kind === "title_block")) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: "Adaptive title composition requires a template-native title component." }] };
+    if (input.slide.content.kicker && !usable.some((component) => component.kind === "label")) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: "Title kicker requires a matching template-native label component." }] };
+    intent = titleIntent(input.slide);
+    adaptiveContent = { layout: "title", content: input.slide.content };
   } else {
-    return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: `Adaptive compose currently supports statement, comparison, and quantitative slides only; '${input.slide.layout}' is outside Goal 7.` }] };
+    return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: `Adaptive compose currently supports text-representable layouts only; '${input.slide.layout}' remains outside Goal 8.` }] };
   }
+  if (intent.mediaPath && !usable.some((component) => component.kind === "media_frame")) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "media_capability", message: `Layout '${input.slide.layout}' requires a template-native media_frame capability for '${intent.mediaPath}'.` }] };
   try {
     const adaptivePlan = planAdaptiveSlide({ templateDigest: input.templateDigest, designSystem: input.designSystem, components: input.components, intent });
     if (adaptivePlan.textAllocation.some((allocation) => allocation.fits === "no")) return { slideId: input.slide.id, mode: "unsupported", rejectionReasons: [...rejectionReasons, { code: "adaptive_capability", message: "Adaptive composition cannot fit all text allocations in the available native component placements." }] };

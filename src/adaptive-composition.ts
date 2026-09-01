@@ -25,6 +25,7 @@ export const adaptiveSlideIntentSchema = z.object({
   family: z.enum(adaptiveCompositionFamilies),
   blocks: z.array(adaptiveBlockSchema).min(1).max(100),
   preferredComponentKind: z.enum(componentKinds).optional(),
+  mediaPath: z.string().min(1).optional(),
 }).strict().superRefine((intent, context) => {
   const ids = intent.blocks.map((block) => block.id);
   if (new Set(ids).size !== ids.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ["blocks"], message: "Adaptive content block ids must be unique." });
@@ -36,6 +37,7 @@ export type AdaptiveSlideIntent = z.infer<typeof adaptiveSlideIntentSchema>;
 type Rect = { x: number; y: number; w: number; h: number };
 
 export type AdaptivePlacement = Rect & { blockId: string; componentId: string; componentKind: ComponentKind; priority: number; emphasis: (typeof adaptiveEmphasis)[number]; order: number; resize: { horizontal: boolean; vertical: boolean } };
+export type AdaptiveMediaPlacement = Rect & { componentId: string; assetPath: string };
 export type AdaptiveTextAllocation = { blockId: string; componentId: string; text: string; charCount: number; maxChars?: number; maxLines?: number; fits: "yes" | "no" | "unknown" };
 export type AdaptiveSlidePlan = {
   version: 1;
@@ -48,6 +50,7 @@ export type AdaptiveSlidePlan = {
   columns: number;
   placements: AdaptivePlacement[];
   textAllocation: AdaptiveTextAllocation[];
+  media?: AdaptiveMediaPlacement;
 };
 
 type PlanningInput = {
@@ -112,7 +115,8 @@ function chooseComponents(intent: AdaptiveSlideIntent, components: TemplateCompo
   const usage = new Map<string, number>();
   for (const block of intent.blocks) {
     const candidates = rankedCandidates(block, intent.family, intent.preferredComponentKind, components);
-    const component = candidates.find((candidate) => !usage.has(candidate.id)) ?? candidates.find((candidate) => candidate.repeatability.signal === "repeatable");
+    const reusablePreferred = block.preferredComponentKind ? candidates.find((candidate) => candidate.kind === block.preferredComponentKind && usage.has(candidate.id) && candidate.repeatability.signal === "repeatable") : undefined;
+    const component = reusablePreferred ?? candidates.find((candidate) => !usage.has(candidate.id)) ?? candidates.find((candidate) => candidate.repeatability.signal === "repeatable");
     if (!component) throw new Error(`ADAPTIVE_COMPOSITION_UNSUPPORTED: no template-native component capability for '${block.role}' in family '${intent.family}'.`);
     const count = usage.get(component.id) ?? 0;
     usage.set(component.id, count + 1);
@@ -217,6 +221,8 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
   if (Math.abs(designSystem.canvas.w - components.canvas.w) > 2 / 914400 || Math.abs(designSystem.canvas.h - components.canvas.h) > 2 / 914400) throw new Error("ADAPTIVE_COMPOSITION_PROVENANCE_MISMATCH: Design System and component catalog canvases differ.");
   const contentFrame = finiteRect(designSystem.geometry.contentFrame, designSystem.canvas);
   const selected = chooseComponents(intent, usableComponents(components));
+  const mediaComponent = intent.mediaPath ? usableComponents(components).find((component) => component.kind === "media_frame") : undefined;
+  if (intent.mediaPath && !mediaComponent) throw new Error("ADAPTIVE_COMPOSITION_UNSUPPORTED: mediaPath requires a template-native media_frame component.");
   let spacing = observedGap(designSystem);
   if (intent.family === "metric_row" && spacing.gap > 0) {
     const sourceHeights = [...selected.values()].filter((component) => component.kind === "metric").map((component) => component.sourceBounds.h).filter((height) => height > 0);
@@ -249,5 +255,6 @@ export function planAdaptiveSlide(input: PlanningInput): AdaptiveSlidePlan {
     columns: grid.columns,
     placements,
     textAllocation: intent.blocks.map((block) => textAllocation(block, grid.bounds.get(block.id)!, selected.get(block.id)!, designSystem)),
+    ...(mediaComponent && intent.mediaPath ? { media: { componentId: mediaComponent.id, assetPath: intent.mediaPath, ...mediaComponent.sourceBounds } } : {}),
   };
 }

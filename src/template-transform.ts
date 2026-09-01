@@ -11,6 +11,8 @@ const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+const CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types";
+const IMAGE_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const EMU_PER_INCH = 914400;
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -32,7 +34,8 @@ export type ComponentTransformOperation =
   | { operation: "resize"; componentId: string; w: number; h: number }
   | { operation: "repeat"; componentId: string; count: number; offset: { x: number; y: number }; targetSlideId?: string; as?: string }
   | { operation: "remove"; componentId: string }
-  | { operation: "replace_text"; componentId: string; text: string };
+  | { operation: "replace_text"; componentId: string; text: string }
+  | { operation: "replace_media"; componentId: string; assetPath: string };
 
 export type ComponentTransformResult = { outputPath: string; appliedOperations: number; createdComponents: string[] };
 
@@ -85,6 +88,10 @@ function validateOperation(input: unknown, index: number): ComponentTransformOpe
       assertOperationFields(input, ["operation", "componentId", "text"], index);
       if (typeof input.text !== "string") throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} replace_text requires a string text.`);
       if (/[\r\n]/.test(input.text)) throw new Error(`COMPONENT_TRANSFORM_INVALID: operation ${index} replace_text text must not contain a newline.`);
+      return input as ComponentTransformOperation;
+    case "replace_media":
+      assertOperationFields(input, ["operation", "componentId", "assetPath"], index);
+      optionalString(input.assetPath, "assetPath", index);
       return input as ComponentTransformOperation;
     case "remove":
       assertOperationFields(input, ["operation", "componentId"], index);
@@ -377,6 +384,61 @@ function replaceText(node: Element, text: string, componentId: string): void {
   runs.slice(1).forEach((run) => { run.textContent = ""; });
 }
 
+function imageFormat(assetPath: string): { extension: string; contentType: string } {
+  const extension = path.extname(assetPath).toLowerCase().replace(/^\./, "");
+  const formats: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml" };
+  const contentType = formats[extension];
+  if (!contentType) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: media asset '${assetPath}' must be png, jpg, jpeg, gif, or svg.`);
+  return { extension: extension === "jpeg" ? "jpg" : extension, contentType };
+}
+
+async function ensureContentType(zip: JSZip, extension: string, contentType: string): Promise<void> {
+  const contentTypesPath = "[Content_Types].xml";
+  const xml = await zip.file(contentTypesPath)?.async("string");
+  if (!xml) throw new Error("COMPONENT_RELATION_MISSING: PPTX content types part is missing.");
+  const document = parseXml(xml);
+  const existing = all(document, CONTENT_TYPES_NS, "Default").find((entry) => (entry.getAttribute("Extension") ?? "").toLowerCase() === extension);
+  if (!existing) {
+    const entry = document.createElementNS(CONTENT_TYPES_NS, "Default");
+    entry.setAttribute("Extension", extension);
+    entry.setAttribute("ContentType", contentType);
+    document.documentElement.appendChild(entry);
+    zip.file(contentTypesPath, serializeXml(document));
+  } else if (existing.getAttribute("ContentType") !== contentType) {
+    throw new Error(`COMPONENT_RELATION_MISSING: PPTX extension '${extension}' has content type '${existing.getAttribute("ContentType")}', not '${contentType}'.`);
+  }
+}
+
+function nextRelationshipId(document: Document): string {
+  const used = new Set(all(document, REL_NS, "Relationship").map((relationship) => relationship.getAttribute("Id") ?? ""));
+  let index = 1;
+  while (used.has(`rId${index}`)) index += 1;
+  return `rId${index}`;
+}
+
+async function replaceMedia(node: Element, state: SlideState, zip: JSZip, component: TemplateComponent, assetPath: string): Promise<void> {
+  if (component.kind !== "media_frame" || node.localName !== "pic") throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: component '${component.id}' is not a replaceable native media frame.`);
+  const absoluteAssetPath = path.resolve(assetPath);
+  if (!fs.existsSync(absoluteAssetPath) || !fs.statSync(absoluteAssetPath).isFile()) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: media asset not found: ${absoluteAssetPath}`);
+  const bytes = fs.readFileSync(absoluteAssetPath);
+  const { extension, contentType } = imageFormat(absoluteAssetPath);
+  const digest = crypto.createHash("sha256").update(bytes).digest("hex");
+  const mediaPart = `ppt/media/adaptive-${digest}.${extension}`;
+  zip.file(mediaPart, bytes);
+  await ensureContentType(zip, extension, contentType);
+  const blip = first(node, A_NS, "blip");
+  if (!blip) throw new Error(`ADAPTIVE_COMPONENT_UNSUPPORTED: media frame '${component.id}' has no image relationship.`);
+  const oldId = blip.getAttributeNS(R_NS, "embed") ?? blip.getAttribute("r:embed") ?? "";
+  if (!oldId || !relById(state.relationships, oldId)) throw new Error(`COMPONENT_RELATION_MISSING: media frame '${component.id}' references undefined relationship '${oldId}'.`);
+  const relationshipId = nextRelationshipId(state.relationships);
+  const relationship = state.relationships.createElementNS(REL_NS, "Relationship");
+  relationship.setAttribute("Id", relationshipId);
+  relationship.setAttribute("Type", IMAGE_RELATIONSHIP_TYPE);
+  relationship.setAttribute("Target", relativeTarget(state.partPath, mediaPart));
+  state.relationships.documentElement.appendChild(relationship);
+  blip.setAttributeNS(R_NS, "r:embed", relationshipId);
+}
+
 async function validatePackageRelationships(pptxPath: string): Promise<void> {
   const zip = await JSZip.loadAsync(fs.readFileSync(pptxPath));
   const presentationXml = await zip.file("ppt/presentation.xml")?.async("string");
@@ -540,6 +602,9 @@ export async function transformTemplateComponents(
       setRect(node, state.partPath, next);
     } else if (operation.operation === "replace_text") {
       replaceText(node, operation.text, operation.componentId);
+    } else if (operation.operation === "replace_media") {
+      if (!handle.component) throw new Error(`ADAPTIVE_COMPONENT_PROVENANCE_MISSING: component '${operation.componentId}' has no catalog entry.`);
+      await replaceMedia(node, state, zip, handle.component, operation.assetPath);
     } else if (operation.operation === "remove") {
       node.parentNode?.removeChild(node);
       handles.delete(operation.componentId);
