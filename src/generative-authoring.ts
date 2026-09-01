@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { TemplateConstraintProfile } from "./brand-constraints";
-import { generativeSceneIntentSchema, type GenerativeSceneIntent } from "./generative-scene";
+import { generativeSceneIntentSchema, isGenerativeTextNode, type GenerativeSceneIntent } from "./generative-scene";
 import { sha256 } from "./provenance";
 import { slideSchema, type SlideSpec } from "./schema";
 import type { ComponentKind, TemplateComponentsArtifact } from "./template-components";
@@ -17,6 +17,9 @@ type ContentAtom = {
   group?: string;
 };
 type AuthoringRelationship = { kind: "sequence" | "edge"; fromGroup: string; toGroup: string; labelRef?: string };
+type NativePrimitiveRequirement =
+  | { kind: "image"; assetRef: string }
+  | { kind: "chart"; datasetRef: string; chartType: "bar" | "horizontal_bar" | "stacked_bar" | "line" | "pie" | "donut" };
 type ReferenceSlideSummary = {
   slideId: string;
   usage: "structural_template" | "reference_only";
@@ -35,6 +38,7 @@ type AuthoringSlide = {
   compositionHint: string;
   contentAtoms: ContentAtom[];
   relationships: AuthoringRelationship[];
+  nativePrimitives: NativePrimitiveRequirement[];
 };
 
 export type GenerativeAuthoringRequest = {
@@ -47,7 +51,9 @@ export type GenerativeAuthoringRequest = {
     coordinateSpace: "normalized_content_region_0_1";
     sourceSlideGeometry: "reference_only";
     preserveAllContentAtoms: true;
+    preserveRequiredNativePrimitives: true;
     forbidInventedText: true;
+    forbidInventedNativeAssets: true;
     chrome: "immutable";
     colors: "template_only";
     fonts: "template_only";
@@ -99,13 +105,10 @@ function atom(id: string, text: string, roleHint: TextNodeRole, importance: Cont
   return { id, text: normalized, roleHint, importance, ...(group ? { group } : {}) };
 }
 
-function slideAtoms(slide: SlideSpec): { atoms: ContentAtom[]; relationships: AuthoringRelationship[] } {
-  if (slide.layout === "chart") throw new Error(`GENERATIVE_AUTHORING_CHART_UNSUPPORTED: slide '${slide.id}' requires a native chart primitive that Generative Scene v2 does not expose.`);
-  if (slide.layout === "title" && slide.content.imagePath) throw new Error(`GENERATIVE_AUTHORING_MEDIA_UNSUPPORTED: title slide '${slide.id}' contains imagePath but Generative Scene v2 has no media node.`);
-  if (slide.layout === "evidence" && slide.content.assetPath) throw new Error(`GENERATIVE_AUTHORING_MEDIA_UNSUPPORTED: evidence slide '${slide.id}' contains assetPath but Generative Scene v2 has no media node.`);
-
+function slideAtoms(slide: SlideSpec): { atoms: ContentAtom[]; relationships: AuthoringRelationship[]; nativePrimitives: NativePrimitiveRequirement[] } {
   const atoms: ContentAtom[] = [atom(`${slide.id}.headline`, slide.headline, "headline", "primary", "headline")];
   const relationships: AuthoringRelationship[] = [];
+  const nativePrimitives: NativePrimitiveRequirement[] = [];
   const add = (suffix: string, text: string | undefined, role: TextNodeRole, importance: ContentAtom["importance"] = "supporting", group?: string): string | undefined => {
     if (!text || !normalizedText(text)) return undefined;
     const id = `${slide.id}.${suffix}`;
@@ -117,6 +120,7 @@ function slideAtoms(slide: SlideSpec): { atoms: ContentAtom[]; relationships: Au
     case "title":
       add("kicker", slide.content.kicker, "label", "supporting", "title");
       add("subtitle", slide.content.subtitle, "body", "supporting", "title");
+      if (slide.content.imagePath) nativePrimitives.push({ kind: "image", assetRef: `${slide.id}.image` });
       break;
     case "statement":
       add("body", slide.content.body, "body", "primary", "statement");
@@ -188,9 +192,14 @@ function slideAtoms(slide: SlideSpec): { atoms: ContentAtom[]; relationships: Au
     case "evidence":
       add("caption", slide.content.caption, "body", "supporting", "evidence");
       slide.content.bullets.forEach((bullet, index) => add(`bullet.${index + 1}`, bullet, "evidence", "primary", "evidence"));
+      if (slide.content.assetPath) nativePrimitives.push({ kind: "image", assetRef: `${slide.id}.image` });
+      break;
+    case "chart":
+      add("caption", slide.content.caption, "body", "supporting", "chart");
+      nativePrimitives.push({ kind: "chart", datasetRef: slide.content.dataRef, chartType: slide.content.chartType });
       break;
   }
-  return { atoms, relationships };
+  return { atoms, relationships, nativePrimitives };
 }
 
 function normalizedBlockedRegions(profile: TemplateConstraintProfile): GenerativeAuthoringRequest["brand"]["blockedRegions"] {
@@ -204,10 +213,7 @@ function normalizedBlockedRegions(profile: TemplateConstraintProfile): Generativ
     const x2 = Math.min(frame.x + frame.w, item.bounds.x + item.bounds.w);
     const y2 = Math.min(frame.y + frame.h, item.bounds.y + item.bounds.h);
     if (x2 <= x1 || y2 <= y1) return [];
-    return [{
-      role: item.role,
-      frame: { x: round((x1 - frame.x) / frame.w), y: round((y1 - frame.y) / frame.h), w: round((x2 - x1) / frame.w), h: round((y2 - y1) / frame.h) },
-    }];
+    return [{ role: item.role, frame: { x: round((x1 - frame.x) / frame.w), y: round((y1 - frame.y) / frame.h), w: round((x2 - x1) / frame.w), h: round((y2 - y1) / frame.h) } }];
   });
 }
 
@@ -246,7 +252,7 @@ export function buildGenerativeAuthoringRequest(input: GenerativeAuthoringInput)
   const unknownExact = [...exactIds].filter((id) => !slideIds.has(id));
   if (unknownExact.length > 0) throw new Error(`GENERATIVE_AUTHORING_UNKNOWN_EXACT_SLIDE: ${unknownExact.join(", ")}`);
   const targetSlides = slides.filter((slide) => !exactIds.has(slide.id)).map((slide): AuthoringSlide => {
-    const { atoms, relationships } = slideAtoms(slide);
+    const { atoms, relationships, nativePrimitives } = slideAtoms(slide);
     return {
       id: slide.id,
       semanticIntent: semanticIntentByLayout[slide.layout],
@@ -257,6 +263,7 @@ export function buildGenerativeAuthoringRequest(input: GenerativeAuthoringInput)
       compositionHint: slide.composition,
       contentAtoms: atoms,
       relationships,
+      nativePrimitives,
     };
   });
   if (targetSlides.length === 0) throw new Error("GENERATIVE_AUTHORING_NO_TARGETS: every slide is exact; no Generative Scene authoring is required.");
@@ -280,7 +287,9 @@ export function buildGenerativeAuthoringRequest(input: GenerativeAuthoringInput)
       coordinateSpace: "normalized_content_region_0_1",
       sourceSlideGeometry: "reference_only",
       preserveAllContentAtoms: true,
+      preserveRequiredNativePrimitives: true,
       forbidInventedText: true,
+      forbidInventedNativeAssets: true,
       chrome: "immutable",
       colors: "template_only",
       fonts: "template_only",
@@ -310,11 +319,29 @@ const responseSchema = z.object({
 
 export type GenerativeAuthoringResponse = z.infer<typeof responseSchema>;
 
+function validateNativePrimitives(slide: AuthoringSlide, scene: GenerativeSceneIntent): void {
+  const imageNodes = scene.layout.nodes.filter((node): node is Extract<(typeof scene.layout.nodes)[number], { role: "image" | "icon" }> => node.role === "image" || node.role === "icon");
+  const chartNodes = scene.layout.nodes.filter((node): node is Extract<(typeof scene.layout.nodes)[number], { role: "chart" }> => node.role === "chart");
+  const requiredImages = slide.nativePrimitives.filter((item): item is Extract<NativePrimitiveRequirement, { kind: "image" }> => item.kind === "image");
+  const requiredCharts = slide.nativePrimitives.filter((item): item is Extract<NativePrimitiveRequirement, { kind: "chart" }> => item.kind === "chart");
+
+  for (const requirement of requiredImages) {
+    const matches = imageNodes.filter((node) => node.role === "image" && node.assetRef === requirement.assetRef);
+    if (matches.length !== 1) throw new Error(`GENERATIVE_AUTHORING_NATIVE_DROPPED: Scene '${scene.slideId}' must contain exactly one image '${requirement.assetRef}'.`);
+  }
+  for (const requirement of requiredCharts) {
+    const matches = chartNodes.filter((node) => node.datasetRef === requirement.datasetRef && node.chartType === requirement.chartType);
+    if (matches.length !== 1) throw new Error(`GENERATIVE_AUTHORING_NATIVE_DROPPED: Scene '${scene.slideId}' must contain exactly one ${requirement.chartType} chart '${requirement.datasetRef}'.`);
+  }
+  const allowedImageRefs = new Set(requiredImages.map((item) => item.assetRef));
+  const allowedChartRefs = new Set(requiredCharts.map((item) => `${item.datasetRef}|${item.chartType}`));
+  if (imageNodes.some((node) => node.role === "icon" || !allowedImageRefs.has(node.assetRef))) throw new Error(`GENERATIVE_AUTHORING_NATIVE_REF_UNKNOWN: Scene '${scene.slideId}' invented an image/icon asset reference.`);
+  if (chartNodes.some((node) => !allowedChartRefs.has(`${node.datasetRef}|${node.chartType}`))) throw new Error(`GENERATIVE_AUTHORING_NATIVE_REF_UNKNOWN: Scene '${scene.slideId}' invented a chart dataset/type reference.`);
+}
+
 export function parseGenerativeAuthoringResponse(request: GenerativeAuthoringRequest, responseInput: unknown): Map<string, GenerativeSceneIntent> {
   const response = responseSchema.parse(responseInput);
-  if (response.requestDigest !== request.requestDigest || response.sourceDigest !== request.sourceDigest) {
-    throw new Error("GENERATIVE_AUTHORING_RESPONSE_STALE: response does not belong to the current authoring request/template.");
-  }
+  if (response.requestDigest !== request.requestDigest || response.sourceDigest !== request.sourceDigest) throw new Error("GENERATIVE_AUTHORING_RESPONSE_STALE: response does not belong to the current authoring request/template.");
   const expected = new Map(request.slides.map((slide) => [slide.id, slide]));
   const receivedIds = response.scenes.map((entry) => entry.scene.slideId);
   if (new Set(receivedIds).size !== receivedIds.length) throw new Error("GENERATIVE_AUTHORING_DUPLICATE_SCENE: each target slide must be authored exactly once.");
@@ -326,16 +353,13 @@ export function parseGenerativeAuthoringResponse(request: GenerativeAuthoringReq
   for (const entry of response.scenes) {
     const scene = generativeSceneIntentSchema.parse(entry.scene);
     const slide = expected.get(scene.slideId)!;
-    if (scene.semanticIntent !== slide.semanticIntent || normalizedText(scene.headline) !== slide.headline) {
-      throw new Error(`GENERATIVE_AUTHORING_SCENE_DRIFT: Scene '${scene.slideId}' changed semantic intent or headline.`);
-    }
-    if (scene.contentRegionId !== request.brand.contentRegionId || scene.constraints.chrome !== "immutable" || scene.constraints.colors !== "template_only" || scene.constraints.fonts !== "template_only") {
-      throw new Error(`GENERATIVE_AUTHORING_CONSTRAINT_DRIFT: Scene '${scene.slideId}' weakened the corporate template constraints.`);
-    }
+    if (scene.semanticIntent !== slide.semanticIntent || normalizedText(scene.headline) !== slide.headline) throw new Error(`GENERATIVE_AUTHORING_SCENE_DRIFT: Scene '${scene.slideId}' changed semantic intent or headline.`);
+    if (scene.contentRegionId !== request.brand.contentRegionId || scene.constraints.chrome !== "immutable" || scene.constraints.colors !== "template_only" || scene.constraints.fonts !== "template_only") throw new Error(`GENERATIVE_AUTHORING_CONSTRAINT_DRIFT: Scene '${scene.slideId}' weakened the corporate template constraints.`);
+
     const atoms = new Map(slide.contentAtoms.map((item) => [item.id, item]));
-    const textNodes = scene.layout.nodes.filter((node) => node.role !== "surface" && node.role !== "divider");
+    const textNodes = scene.layout.nodes.filter(isGenerativeTextNode);
     const textNodeIds = new Set(textNodes.map((node) => node.id));
-    if (entry.bindings.some((binding) => !textNodeIds.has(binding.nodeId))) throw new Error(`GENERATIVE_AUTHORING_BINDING_INVALID: Scene '${scene.slideId}' binds an unknown or structural node.`);
+    if (entry.bindings.some((binding) => !textNodeIds.has(binding.nodeId))) throw new Error(`GENERATIVE_AUTHORING_BINDING_INVALID: Scene '${scene.slideId}' binds an unknown or non-text node.`);
     if (new Set(entry.bindings.map((binding) => binding.nodeId)).size !== entry.bindings.length) throw new Error(`GENERATIVE_AUTHORING_NODE_BOUND_TWICE: Scene '${scene.slideId}' has duplicate node bindings.`);
     if (new Set(entry.bindings.map((binding) => binding.contentRef)).size !== entry.bindings.length) throw new Error(`GENERATIVE_AUTHORING_CONTENT_REUSED: Scene '${scene.slideId}' reuses a content atom.`);
     if (entry.bindings.length !== textNodes.length) throw new Error(`GENERATIVE_AUTHORING_UNGROUNDED_TEXT: every text node in Scene '${scene.slideId}' must bind exactly one content atom.`);
@@ -345,11 +369,12 @@ export function parseGenerativeAuthoringResponse(request: GenerativeAuthoringReq
       const contentRef = bindingByNode.get(node.id);
       const content = contentRef ? atoms.get(contentRef) : undefined;
       if (!content) throw new Error(`GENERATIVE_AUTHORING_CONTENT_REF_UNKNOWN: Scene '${scene.slideId}' node '${node.id}' references unplanned content.`);
-      if (normalizedText(node.text ?? "") !== content.text) throw new Error(`GENERATIVE_AUTHORING_TEXT_DRIFT: Scene '${scene.slideId}' node '${node.id}' changed content '${content.id}'.`);
+      if (normalizedText(node.text) !== content.text) throw new Error(`GENERATIVE_AUTHORING_TEXT_DRIFT: Scene '${scene.slideId}' node '${node.id}' changed content '${content.id}'.`);
       delivered.add(content.id);
     }
     const dropped = [...atoms.keys()].filter((id) => !delivered.has(id));
     if (dropped.length > 0) throw new Error(`GENERATIVE_AUTHORING_CONTENT_DROPPED: Scene '${scene.slideId}' omitted ${dropped.join(", ")}.`);
+    validateNativePrimitives(slide, scene);
     result.set(scene.slideId, scene);
   }
   return result;
