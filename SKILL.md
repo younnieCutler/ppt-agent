@@ -92,7 +92,7 @@ analyzing first is the one action that avoids ever reaching either failure:
 
 ```sh
 node dist/cli.js template-analyze --input <path-to>.pptx --out <run-dir>/template
-# → <run-dir>/template/{template-elements,template-grammar,template-design-system,template-patterns}.json, printed strategy:
+# → <run-dir>/template/{template-elements,template-grammar,template-design-system,template-components,template-patterns}.json, printed strategy:
 #   "native_layout" | "source_slide_pattern" | "hybrid". Deleted with the rest of the run
 #   workspace on a successful release — nothing about a template is cached outside a deprecated
 #   v2/v3 Organization Pack's own cache.
