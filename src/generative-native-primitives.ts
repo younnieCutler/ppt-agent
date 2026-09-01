@@ -28,11 +28,18 @@ function normalizedColor(value: string | undefined): string | undefined {
 }
 
 function templatePalette(profile: TemplateConstraintProfile): string[] {
-  return [...new Set([
-    ...profile.styleVocabulary.fillColors,
+  const backgrounds = new Set(profile.styleVocabulary.backgroundColors.map(normalizedColor).filter((color): color is string => Boolean(color)));
+  const foreground = [
     ...profile.styleVocabulary.strokeColors,
     ...profile.styleVocabulary.textColors,
-  ].map(normalizedColor).filter((color): color is string => Boolean(color)))];
+  ].map(normalizedColor).filter((color): color is string => Boolean(color));
+  const accentFills = profile.styleVocabulary.fillColors
+    .map(normalizedColor)
+    .filter((color): color is string => Boolean(color) && !backgrounds.has(color));
+  const fallbackFills = profile.styleVocabulary.fillColors
+    .map(normalizedColor)
+    .filter((color): color is string => Boolean(color));
+  return [...new Set([...foreground, ...accentFills, ...fallbackFills])];
 }
 
 function requireTemplateColor(profile: TemplateConstraintProfile): string {
@@ -118,7 +125,7 @@ function drawPrimitive(
       showTitle: false,
       showValue: false,
       showCatName: false,
-      ...(node.chartType === "stacked_bar" ? { catAxisLabelRotate: 0, showLegend: true } : {}),
+      ...(node.chartType === "stacked_bar" ? { barGrouping: "stacked", catAxisLabelRotate: 0, showLegend: true } : {}),
       ...(node.chartType === "donut" ? { holeSize: 55 } : {}),
     });
     return;
@@ -146,6 +153,10 @@ function generatedNativeTag(tag: string): boolean {
   return tagName(tag).startsWith("generative.native.");
 }
 
+function stableGeneratedNativeName(name: string): string {
+  return name.replace(/-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "");
+}
+
 async function normalizeGeneratedDrawingIds(pptxPath: string): Promise<void> {
   const zip = await JSZip.loadAsync(fs.readFileSync(pptxPath));
   let changed = false;
@@ -161,18 +172,26 @@ async function normalizeGeneratedDrawingIds(pptxPath: string): Promise<void> {
 
     const normalized = original.replace(/<p:cNvPr\b[^>]*>/g, (tag) => {
       if (!generatedNativeTag(tag)) return tag;
-      const id = tagId(tag);
-      if (id === undefined) return tag;
+      let nextTag = tag;
+      const name = tagName(nextTag);
+      const stableName = stableGeneratedNativeName(name);
+      if (stableName !== name) {
+        nextTag = nextTag.replace(/\bname="[^"]*"/, `name="${stableName}"`);
+        changed = true;
+      }
+
+      const id = tagId(nextTag);
+      if (id === undefined) return nextTag;
       if (!used.has(id)) {
         used.add(id);
-        return tag;
+        return nextTag;
       }
       while (used.has(nextId)) nextId += 1;
       const replacement = nextId;
       used.add(replacement);
       nextId += 1;
       changed = true;
-      return tag.replace(/\bid="\d+"/, `id="${replacement}"`);
+      return nextTag.replace(/\bid="\d+"/, `id="${replacement}"`);
     });
     if (normalized !== original) zip.file(part, normalized);
   }
@@ -207,7 +226,7 @@ export async function renderGenerativeNativePrimitives(
     if (visible.length !== 1) throw new Error(`GENERATIVE_NATIVE_INPUT_INVALID: expected one visible slide, found ${visible.length}.`);
     presentation.addSlide("scene-source", visible[0].number, (target: any) => {
       // One generate element per semantic node keeps Automizer's generated object name tied to the
-      // Scene node id. Automizer appends a UUID, so the stable prefix remains machine-verifiable.
+      // Scene node id. Automizer appends a UUID; package normalization strips only that suffix.
       for (const node of nodes) {
         target.generate((slide: any, pptx: any) => drawPrimitive(slide, pptx, node, profile, assets), nativePrimitiveObjectName(node.id));
       }
@@ -215,9 +234,9 @@ export async function renderGenerativeNativePrimitives(
     await presentation.write(path.basename(resolvedOutput));
     if (!fs.existsSync(resolvedOutput)) throw new Error(`GENERATIVE_NATIVE_RENDER_FAILED: output was not produced at ${resolvedOutput}.`);
 
-    // pptx-automizer 0.9.3 imports PptxGenJS objects with their temporary-slide cNvPr ids. The
-    // first generated id can collide with an id already present on the template slide. Preserve all
-    // template ids and reassign only generated native objects before package validation.
+    // pptx-automizer 0.9.3 imports PptxGenJS objects with temporary-slide cNvPr ids and appends
+    // a UUID to generated names. Preserve every template-authored id/name, stabilize generated
+    // semantic names, and reassign only generated ids that collide with the template slide.
     await normalizeGeneratedDrawingIds(resolvedOutput);
     await pruneUnreachablePptxParts(resolvedOutput);
     return { outputPath: resolvedOutput, renderedNodeIds: nodes.map((node) => node.id) };
