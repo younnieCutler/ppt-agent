@@ -175,20 +175,17 @@ node dist/cli.js validate --spec <deck.json> --run-dir <run-dir>
 node dist/cli.js render --spec <deck.json> --out <draft.pptx> [--run-dir <run-dir>]
 node dist/cli.js qa --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--powerpoint]
 
-# 6.5. If pattern-resolve ran: for each slide, walk its ranked candidate shortlist and clone the
-#      first source-slide pattern that would actually carry the slide's real content and fit its
-#      required slots (patternFitsSlide, src/template-patterns.ts) — not unconditionally rank 1.
-#      --scratch is the generic render from step 6 above; --out replaces it as the deck actually
-#      released.
+# 6.5. For a raw source_slide_pattern template, render-pattern-skeleton is the adaptive runtime
+#      entry point. It walks each ranked exact-clone candidate, then runs the content-first adaptive
+#      policy when no candidate naturally carries the slide. --scratch is retained as a package
+#      input for compatibility; it is never selected as a final slide on this raw-template path.
 node dist/cli.js render-pattern-skeleton --spec <deck.json> --scratch <draft.pptx>     --template <path-to>.pptx --out <draft.pptx> --run-dir <run-dir>
-# → clones the chosen source slide, removes its example content, injects real DeckSpec content
-#   into its slots (never a shapeId or a coordinate — resolveSlotContent in
-#   src/template-patterns.ts), preserves everything the pattern did not touch, and writes
-#   <run-dir>/render-manifest.json ("renderer" | "pattern:<patternId>" per slide) and
-#   <run-dir>/pattern-selection.json (the chosen candidate's rank and every higher-ranked candidate
-#   rejected along the way, with why). A slide with no fitting candidate at any rank falls through
-#   to the generic render at the same position — legitimate for hybrid, and exactly what
-#   TEMPLATE_FIDELITY_UNPROVEN exists to catch on a pure source_slide_pattern template.
+# → writes <run-dir>/render-manifest.json ("pattern:<patternId>" or
+#   "adaptive:<component-family>" per slide) and <run-dir>/adaptive-selection.json. Both modes
+#   clone or transform template-native source components; a raw-template run never records
+#   "renderer". A slide is hard-failed only when exact_clone and adaptive_compose are both
+#   unsupported. The legacy generic fallback remains available only to the low-level
+#   applyPatternSkeleton API and non-raw/hybrid compatibility paths.
 ```
 
 A DeckSpec v2 is verified against its plan on `validate`, `render`, and `qa`: `planDigest` must equal
@@ -295,9 +292,9 @@ deterministic (`src/template-fidelity.ts`); none of them is a judgment call:
 - `TEMPLATE_FIDELITY_UNPROVEN` (hard) — a `source_slide_pattern` template rendered a slide with the
   generic renderer instead of a cloned pattern. Never fires for `hybrid`, where mixing both is
   legitimate.
-- `TEMPLATE_PATTERN_NOT_FOUND` (hard) — `pattern-resolve` produced an empty candidate shortlist for
-  a slide on a `source_slide_pattern` template (surfaced immediately by `pattern-resolve` itself,
-  and re-checked here).
+- `TEMPLATE_PATTERN_NOT_FOUND` (hard on the legacy skeleton path) — an empty exact-clone shortlist
+  remains unresolved. Raw adaptive runtime runs may defer an empty exact shortlist to
+  `TEMPLATE_COMPOSITION_UNSUPPORTED`, which is hard only when adaptive composition also fails.
 - `TEMPLATE_SLOT_OVERFLOW` (hard) / `TEMPLATE_SLOT_TRUNCATED` (risk) — injected content exceeds a
   slot's estimated capacity (`maxChars`, from the slot's own geometry — approximate, same caveat as
   every other text-budget check above). Hard when the slot is `required`; risk otherwise, since a

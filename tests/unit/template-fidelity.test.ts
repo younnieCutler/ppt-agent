@@ -37,6 +37,10 @@ describe("checkTemplatePatternNotFound", () => {
     expect(checkTemplatePatternNotFound("native_layout", { slides: [{ id: "S01", candidates: [] }] })).toHaveLength(0);
     expect(checkTemplatePatternNotFound("hybrid", { slides: [{ id: "S01", candidates: [] }] })).toHaveLength(0);
   });
+
+  it("defers an empty exact shortlist to the adaptive runtime when explicitly enabled", () => {
+    expect(checkTemplatePatternNotFound("source_slide_pattern", { slides: [{ id: "S01", candidates: [] }] }, { adaptiveRuntime: true })).toHaveLength(0);
+  });
 });
 
 describe("checkTemplateSlotCapacity", () => {

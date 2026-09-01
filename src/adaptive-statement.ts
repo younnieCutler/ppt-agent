@@ -114,20 +114,21 @@ function comparisonPanelTargets(plan: AdaptiveSlidePlan, components: TemplateCom
   });
 }
 
-function operationsFor(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact, intent: AdaptiveSlideIntent, layout: AdaptiveRenderableLayout): Parameters<typeof transformTemplateComponents>[3] {
+export function adaptiveOperationsForPlan(plan: AdaptiveSlidePlan, components: TemplateComponentsArtifact, intent?: AdaptiveSlideIntent, layout?: string): Parameters<typeof transformTemplateComponents>[3] {
   const byId = new Map(components.components.map((component) => [component.id, component]));
-  const used = new Set([...plan.placements.map((placement) => placement.componentId), ...(plan.media ? [plan.media.componentId] : [])]);
+  const used = new Set([...(plan.header ? [plan.header.componentId] : []), ...plan.placements.map((placement) => placement.componentId), ...(plan.media ? [plan.media.componentId] : [])]);
   const usage = new Map<string, number>();
   const bounds = new Map(components.components.map((component) => [component.id, { ...component.sourceBounds }]));
   const operations: Parameters<typeof transformTemplateComponents>[3] = [];
   if (layout === "comparison") {
+    if (!intent) throw new Error("ADAPTIVE_COMPARISON_UNSUPPORTED: semantic intent is required to couple native panels to adaptive groups.");
     for (const panel of comparisonPanelTargets(plan, components, intent)) {
       operations.push(...geometryOperations(panel.component.id, panel.component.sourceBounds, panel.bounds, components.canvas));
       bounds.set(panel.component.id, panel.bounds);
       used.add(panel.component.id);
     }
   }
-  for (const placement of plan.placements) {
+  for (const placement of [...(plan.header ? [plan.header] : []), ...plan.placements]) {
     const component = byId.get(placement.componentId);
     if (!component) throw new Error(`ADAPTIVE_TEMPLATE_PROVENANCE_MISSING: plan references unknown component '${placement.componentId}'.`);
     const count = usage.get(component.id) ?? 0;
@@ -214,7 +215,7 @@ export async function renderAdaptiveContent(templatePath: string, outputPath: st
   if (layout === "quantitative" && !sourceKinds.has("metric")) throw new Error("ADAPTIVE_QUANTITATIVE_UNSUPPORTED: quantitative requires a template-native metric component.");
   const plan = planAdaptiveSlide({ templateDigest: components.sourceDigest, designSystem, components, intent });
   if (plan.textAllocation.some((allocation) => allocation.fits === "no")) throw new Error(`ADAPTIVE_${layout.toUpperCase()}_UNSUPPORTED: text does not fit the calculated native component placement.`);
-  const operations = operationsFor(plan, components, intent, layout);
+  const operations = adaptiveOperationsForPlan(plan, components, intent, layout);
   const resolvedOutput = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
   if (physicalPath(templatePath) === physicalPath(resolvedOutput)) throw new Error("ADAPTIVE_STATEMENT_SOURCE_IMMUTABLE: outputPath must differ from the source template path.");

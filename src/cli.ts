@@ -25,6 +25,7 @@ import { applyPatternLabels, assertTemplatePatternsArtifact, compileTemplatePatt
 import { checkTemplateFidelityUnproven, checkTemplatePatternNotFound, checkTemplateSemanticContentDropped, checkTemplateSlotCapacity, templateFidelityQa } from "./template-fidelity";
 import { applyPatternSkeleton } from "./template";
 import { renderAdaptiveStatement } from "./adaptive-statement";
+import { renderAdaptiveRuntime } from "./adaptive-runtime";
 import { templateMapSchema } from "./organization";
 import { resolveTemplateSourceSpec } from "./template-source";
 import { createRunWorkspace, removeRunWorkspace } from "./workspace";
@@ -546,7 +547,10 @@ async function main(): Promise<void> {
     fs.writeFileSync(outputPath, JSON.stringify(patternPlan, null, 2));
     recordProvenance(runDir, { templatePatternsDigest: sha256File(patternsPath), patternPlanDigest: sha256File(outputPath) });
     const strategy = elements?.strategy ?? "native_layout";
-    const notFoundFindings = checkTemplatePatternNotFound(strategy, patternPlan);
+    const adaptiveRuntime = strategy === "source_slide_pattern"
+      && fs.existsSync(path.join(runDir, "template", "template-design-system.json"))
+      && fs.existsSync(path.join(runDir, "template", "template-components.json"));
+    const notFoundFindings = checkTemplatePatternNotFound(strategy, patternPlan, { adaptiveRuntime });
     if (notFoundFindings.length > 0) process.exitCode = 2;
     emit({ status: notFoundFindings.length > 0 ? "fail" : "pass", outputPath, slides: patternPlan.slides.length, findings: notFoundFindings }, { ...patternPlan, findings: notFoundFindings });
     return;
@@ -576,6 +580,19 @@ async function main(): Promise<void> {
     if (!provenance.templatePatternsDigest || sha256File(patternsPath) !== provenance.templatePatternsDigest) throw new Error("Skeleton render blocked: template-patterns.json changed after pattern resolution. Re-run pattern-resolve.");
     const patternPlan = readJson(patternPlanPath) as { slides: Array<{ id: string; candidates: Array<{ patternId: string; rank: number }> }> };
     const patternsById = new Map<string, TemplatePattern>(patternsArtifact.patterns.map((pattern) => [pattern.id, pattern]));
+    const renderStrategy = elements.strategy;
+    if (renderStrategy === "source_slide_pattern") {
+      const designSystemPath = path.join(runDir, "template", "template-design-system.json");
+      const componentsPath = path.join(runDir, "template", "template-components.json");
+      if (!fs.existsSync(designSystemPath) || !fs.existsSync(componentsPath)) throw new Error("Adaptive raw-template rendering requires template-design-system.json and template-components.json. Re-run template-analyze.");
+      const candidatesBySlide = new Map(patternPlan.slides.map((slide) => [slide.id, slide.candidates.map((candidate) => ({ rank: candidate.rank, pattern: patternsById.get(candidate.patternId) })).filter((candidate): candidate is { rank: number; pattern: TemplatePattern } => Boolean(candidate.pattern))]));
+      const runtime = await renderAdaptiveRuntime({ templatePath, scratchPath, outputPath: outPath, slides: deck.slides, candidatesBySlide, elements, designSystem: readJson(designSystemPath) as import("./template-design-system").TemplateDesignSystemArtifact, components: readJson(componentsPath) as import("./template-components").TemplateComponentsArtifact });
+      const manifestPath = path.join(runDir, "render-manifest.json");
+      fs.writeFileSync(path.join(runDir, "adaptive-selection.json"), JSON.stringify(runtime.decisions, null, 2));
+      fs.writeFileSync(manifestPath, JSON.stringify(runtime.manifest, null, 2));
+      emit({ status: "pass", outputPath: path.resolve(outPath), manifestPath, slides: runtime.manifest.length, rendererSlides: runtime.manifest.filter((entry) => entry.mode === "renderer").length }, runtime);
+      return;
+    }
     // Walk each slide's shortlist in rank order and take the first candidate that would actually
     // carry the slide's real content and fit its required slots — not unconditionally rank 1. A
     // rank-1 pattern that would silently drop a process's steps, or overflow its headline slot, is
@@ -588,10 +605,6 @@ async function main(): Promise<void> {
     // no-fitting-candidate slide into an immediate hard failure instead of a silent generic
     // redraw — see applyPatternSkeleton's own comment. Absent (template-analyze never wrote it
     // for some reason) falls back to the lenient default rather than guessing.
-    const elementsPathForRender = path.join(runDir, "template", "template-elements.json");
-    const renderStrategy = fs.existsSync(elementsPathForRender)
-      ? (readJson(elementsPathForRender) as { strategy: import("./template-analysis").TemplateStrategy }).strategy
-      : undefined;
     const manifest = await applyPatternSkeleton(templatePath, scratchPath, outPath, deck.slides, resolvedPatterns, { strategy: renderStrategy });
     // The record of which candidate was actually chosen (and why the ones ranked above it were
     // skipped) — render-manifest.json's mode already names the chosen pattern per slide, but not
