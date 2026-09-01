@@ -230,8 +230,8 @@ function repeatedOverflow(values: CoordinateObservation[], limit: number, direct
 function axisCoordinateFrame(lefts: CoordinateObservation[], rights: CoordinateObservation[], limit: number, axis: "x" | "y", activeSlideIds: Set<string>): { start: number; size: number; scale: number } {
   const maxOverflow = repeatedOverflow(rights, limit, "max", activeSlideIds);
   const minOverflow = repeatedOverflow(lefts, 0, "min", activeSlideIds);
-  if (rights.some(({ value }) => value > limit + COORDINATE_EPSILON) && maxOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds exceed the p:sldSz canvas without consistent repeated source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
-  if (lefts.some(({ value }) => value < -COORDINATE_EPSILON) && minOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds start before the p:sldSz canvas without consistent repeated source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
+  if (rights.some(({ value }) => value > limit + COORDINATE_EPSILON) && maxOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds exceed the p:sldSz canvas without consistent cross-slide source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
+  if (lefts.some(({ value }) => value < -COORDINATE_EPSILON) && minOverflow === undefined) throw new Error(`TEMPLATE_COORDINATE_SPACE_MISMATCH: ${axis}-axis adaptive bounds start before the p:sldSz canvas without consistent cross-slide source-frame evidence; fix extraction/transform coordinates instead of clamping.`);
   const start = minOverflow ?? 0;
   const end = maxOverflow ?? limit;
   const size = end - start;
@@ -255,39 +255,34 @@ function nearCoordinateEdge(value: number, edge: number): boolean {
   return Math.abs(value - edge) <= tolerance;
 }
 
-function canPreserveCanonicalOrigin(rect: { x: number; y: number; w: number; h: number }, space: TemplateCoordinateSpace): boolean {
-  if (space.mode !== "scaled") return false;
-  // When the inferred frame starts at the PowerPoint origin, the common real-world defect is an
-  // oversized text/container extent, not an alternate coordinate system. Preserve valid x/y and
-  // only trim the repeatedly proven far edge. Shifted/negative frames still use the affine path.
-  if (Math.abs(space.sourceFrame.x) > COORDINATE_EPSILON || Math.abs(space.sourceFrame.y) > COORDINATE_EPSILON) return false;
-  if (rect.x < -COORDINATE_EPSILON || rect.y < -COORDINATE_EPSILON || rect.x > space.canvas.w + COORDINATE_EPSILON || rect.y > space.canvas.h + COORDINATE_EPSILON) return false;
-  const right = rect.x + rect.w;
-  const bottom = rect.y + rect.h;
-  const sourceRight = space.sourceFrame.x + space.sourceFrame.w;
-  const sourceBottom = space.sourceFrame.y + space.sourceFrame.h;
-  const rightSafe = right <= space.canvas.w + COORDINATE_EPSILON || nearCoordinateEdge(right, sourceRight);
-  const bottomSafe = bottom <= space.canvas.h + COORDINATE_EPSILON || nearCoordinateEdge(bottom, sourceBottom);
-  return rightSafe && bottomSafe;
+function canonicalizeAxis(start: number, size: number, frameStart: number, frameSize: number, canvasSize: number, scale: number, identity: boolean): { start: number; end: number } {
+  const end = start + size;
+  const sourceEnd = frameStart + frameSize;
+  const startsInsideCanvas = start >= -COORDINATE_EPSILON && start <= canvasSize + COORDINATE_EPSILON;
+  const provenFarEdge = end <= canvasSize + COORDINATE_EPSILON || nearCoordinateEdge(end, sourceEnd);
+  // Mixed templates frequently contain a subset of oversized text frames while the authored origin
+  // remains the real PowerPoint canvas origin. Preserve each axis independently: an x overflow must
+  // never shift x merely because y needs affine normalization (and vice versa).
+  if (identity || (Math.abs(frameStart) <= COORDINATE_EPSILON && startsInsideCanvas && provenFarEdge)) {
+    return {
+      start: roundedCoordinate(Math.max(0, start)),
+      end: roundedCoordinate(Math.min(canvasSize, end)),
+    };
+  }
+  return {
+    start: roundedCoordinate((start - frameStart) * scale),
+    end: roundedCoordinate((end - frameStart) * scale),
+  };
 }
 
 export function canonicalizeRect(rect: { x: number; y: number; w: number; h: number }, space: TemplateCoordinateSpace): { x: number; y: number; w: number; h: number } {
-  if (space.mode === "identity" || canPreserveCanonicalOrigin(rect, space)) {
-    const x = roundedCoordinate(Math.max(0, rect.x));
-    const y = roundedCoordinate(Math.max(0, rect.y));
-    const right = roundedCoordinate(Math.min(space.canvas.w, rect.x + rect.w));
-    const bottom = roundedCoordinate(Math.min(space.canvas.h, rect.y + rect.h));
-    return { x, y, w: Math.max(0, right - x), h: Math.max(0, bottom - y) };
-  }
-  const x = roundedCoordinate((rect.x - space.sourceFrame.x) * space.scale.x);
-  const y = roundedCoordinate((rect.y - space.sourceFrame.y) * space.scale.y);
-  const right = roundedCoordinate((rect.x + rect.w - space.sourceFrame.x) * space.scale.x);
-  const bottom = roundedCoordinate((rect.y + rect.h - space.sourceFrame.y) * space.scale.y);
+  const x = canonicalizeAxis(rect.x, rect.w, space.sourceFrame.x, space.sourceFrame.w, space.canvas.w, space.scale.x, space.mode === "identity");
+  const y = canonicalizeAxis(rect.y, rect.h, space.sourceFrame.y, space.sourceFrame.h, space.canvas.h, space.scale.y, space.mode === "identity");
   return {
-    x,
-    y,
-    w: right - x,
-    h: bottom - y,
+    x: x.start,
+    y: y.start,
+    w: Math.max(0, x.end - x.start),
+    h: Math.max(0, y.end - y.start),
   };
 }
 
