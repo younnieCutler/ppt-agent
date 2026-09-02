@@ -26,6 +26,8 @@ feedback-cases/<case-id>.json
 CI prevents recurrence
 ```
 
+A user correction may also be the **first** event. A run can pass every automated gate and still violate the user's requested behavior. The system must not require its own prior failure classification before it is willing to record the correction.
+
 This is **not** a self-modifying agent. The runtime does not rewrite production code from feedback. It records evidence and makes regression promotion explicit and reviewable.
 
 ## Authority rule: user correction wins
@@ -66,7 +68,7 @@ node dist/feedback-cli.js diagnose \
   --summary "<current hypothesis>"
 ```
 
-If the user corrects that diagnosis, record the correction **before continuing investigation**:
+If the user corrects an existing diagnosis, record the correction **before continuing investigation**:
 
 ```sh
 node dist/feedback-cli.js correct \
@@ -76,7 +78,18 @@ node dist/feedback-cli.js correct \
   --evidence "user feedback"
 ```
 
-`correct` prints `status: accepted`. A subsequent `diagnose` is advisory and does not change the effective conclusion.
+If no failure case exists because the run was previously considered successful, accept the correction directly from the run:
+
+```sh
+node dist/feedback-cli.js correct \
+  --run-dir <run-dir> \
+  --case-id <reusable-case-id> \
+  --code <corrected-code> \
+  --summary "<user correction>" \
+  --evidence "user feedback"
+```
+
+This creates `feedback-case.json` with the user's correction as the first and effective event. `correct` prints `status: accepted`. A subsequent `diagnose` is advisory and does not change the effective conclusion.
 
 After the code fix exists:
 
@@ -97,7 +110,7 @@ node dist/feedback-cli.js promote \
   [--fixture tests/fixtures/<fixture>]
 ```
 
-Promotion copies the case into `feedback-cases/`. The case retains its full event history, including superseded automated diagnoses and the user correction that changed the accepted direction.
+Promotion copies the case into `feedback-cases/`. The case retains its full event history, including superseded automated diagnoses and the user correction that changed the accepted direction. Promotion is rejected until the case has a maintainer resolution and the declared regression test/fixture actually exists.
 
 ## What becomes a feedback case
 
