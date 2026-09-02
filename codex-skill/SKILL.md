@@ -25,11 +25,13 @@ copy that was maintained.
   switching to a generic redraw, or dropping logo/header/footer/vector chrome. A plausible-looking
   PPTX produced after bypassing a failed template gate is an invalid result.
 - **User correction is authoritative feedback.** If the user says the output is wrong, corrects your
-  diagnosis, identifies a missing requirement, or explains the actual failure path, record it with
-  `node dist/feedback-cli.js correct --case <run-dir>/feedback-case.json ...` before continuing the
-  investigation. Do not defend the previous automated diagnosis as authoritative. A later automated
-  diagnosis may be recorded only as an advisory hypothesis and must not overwrite the accepted user
-  correction. See `docs/feedback-learning-loop.md`.
+  diagnosis, identifies a missing requirement, or explains the actual failure path, record it before
+  continuing the investigation. Use `feedback-cli correct --case <case>` when a case already exists;
+  otherwise use `feedback-cli correct --run-dir <run-dir> ...` and the correction itself creates the
+  case. Do not require the system to admit/record its own failure before accepting the correction.
+  Do not defend the previous automated diagnosis as authoritative. A later automated diagnosis may
+  be recorded only as an advisory hypothesis and must not overwrite the accepted user correction.
+  See `docs/feedback-learning-loop.md`.
 - For a reusable product/runtime failure, record the failed run with `feedback-cli failure`; after the
   implementation has a real regression test, resolve and promote the case into `feedback-cases/`.
   Never claim that a failure has been learned from merely because it was discussed in chat.
