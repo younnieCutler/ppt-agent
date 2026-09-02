@@ -8,6 +8,7 @@ import {
   recordSystemDiagnosis,
   recordUserCorrection,
 } from "./feedback";
+import { recordUserCorrectionFromRun } from "./user-feedback";
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -50,6 +51,33 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "correct") {
+    const summary = option(args, "--summary");
+    const code = optionalOption(args, "--code");
+    const correctionEvidence = evidence(args);
+    const explicitCase = optionalOption(args, "--case");
+    const runDir = optionalOption(args, "--run-dir");
+    if (!explicitCase && !runDir) throw new Error("Missing correction target: pass --case <feedback-case.json> or --run-dir <run-dir>.");
+
+    if (explicitCase) {
+      const casePath = path.resolve(explicitCase);
+      const value = recordUserCorrection(casePath, { summary, code, evidence: correctionEvidence });
+      print({ status: "accepted", casePath, created: false, effectiveConclusion: effectiveFeedbackConclusion(value) });
+      return;
+    }
+
+    const result = recordUserCorrectionFromRun({
+      runDir: runDir!,
+      runId: optionalOption(args, "--run-id"),
+      summary,
+      code,
+      evidence: correctionEvidence,
+      caseId: optionalOption(args, "--case-id"),
+    });
+    print({ status: "accepted", casePath: result.casePath, created: result.created, effectiveConclusion: effectiveFeedbackConclusion(result.feedbackCase) });
+    return;
+  }
+
   const casePath = path.resolve(option(args, "--case"));
 
   if (command === "diagnose") {
@@ -59,16 +87,6 @@ async function main(): Promise<void> {
       evidence: evidence(args),
     });
     print({ status: "recorded", casePath, effectiveConclusion: effectiveFeedbackConclusion(value) });
-    return;
-  }
-
-  if (command === "correct") {
-    const value = recordUserCorrection(casePath, {
-      summary: option(args, "--summary"),
-      code: optionalOption(args, "--code"),
-      evidence: evidence(args),
-    });
-    print({ status: "accepted", casePath, effectiveConclusion: effectiveFeedbackConclusion(value) });
     return;
   }
 
