@@ -11,6 +11,7 @@ import {
   recordSystemDiagnosis,
   recordUserCorrection,
 } from "../../src/feedback";
+import { recordUserCorrectionFromRun } from "../../src/user-feedback";
 
 const tempDirs: string[] = [];
 
@@ -39,6 +40,27 @@ describe("persistent feedback learning loop", () => {
     expect(fs.existsSync(path.join(runDir, "failure-report.json"))).toBe(true);
     expect(fs.existsSync(result.casePath)).toBe(true);
     expect(result.feedbackCase.events[0]).toMatchObject({ source: "system", kind: "failure", code: "SPARSE_TEMPLATE_UNSUPPORTED" });
+  });
+
+  it("accepts a user correction even when the run had no prior recorded failure", () => {
+    const runDir = tempDir("feedback-success-was-wrong");
+    const result = recordUserCorrectionFromRun({
+      runDir,
+      runId: "run-success-001",
+      caseId: "user-found-missed-requirement",
+      code: "USER_CORRECTED_PRODUCT_GAP",
+      summary: "The run passed its gates, but it still violated the requested behavior.",
+      evidence: ["user feedback"],
+    });
+
+    expect(result.created).toBe(true);
+    expect(fs.existsSync(result.casePath)).toBe(true);
+    expect(result.feedbackCase.status).toBe("corrected");
+    expect(effectiveFeedbackConclusion(result.feedbackCase)).toMatchObject({
+      source: "user",
+      kind: "user_correction",
+      code: "USER_CORRECTED_PRODUCT_GAP",
+    });
   });
 
   it("treats a user correction as authoritative over the current automated diagnosis", () => {
