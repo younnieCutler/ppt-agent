@@ -7,6 +7,7 @@ import {
   loadFeedbackCase,
   promoteFeedbackCase,
   recordFailure,
+  recordResolution,
   recordSystemDiagnosis,
   recordUserCorrection,
 } from "../../src/feedback";
@@ -101,10 +102,38 @@ describe("persistent feedback learning loop", () => {
     expect(secondEvent?.supersedes).toEqual([firstEvent?.id]);
   });
 
-  it("promotes a corrected case into persistent regression knowledge without losing the correction", () => {
-    const root = tempDir("feedback-promote");
+  it("refuses to promote a case before it is resolved and covered by a real regression test", () => {
+    const root = tempDir("feedback-promote-guard");
     const runDir = path.join(root, ".ppt-agent", "runs", "run-001");
     fs.mkdirSync(runDir, { recursive: true });
+    const { casePath } = recordFailure({ runDir, stage: "render", code: "OUTPUT_WRONG", message: "Failure." });
+    recordUserCorrection(casePath, { summary: "Corrected requirement." });
+
+    expect(() => promoteFeedbackCase(casePath, {
+      projectDir: root,
+      expectedBehavior: "Must not regress.",
+      testPath: "tests/integration/missing.test.ts",
+    })).toThrow(/FEEDBACK_PROMOTION_UNRESOLVED/);
+
+    recordResolution(casePath, { summary: "Implementation fixed the corrected requirement." });
+    expect(() => promoteFeedbackCase(casePath, {
+      projectDir: root,
+      expectedBehavior: "Must not regress.",
+      testPath: "tests/integration/missing.test.ts",
+    })).toThrow(/FEEDBACK_PROMOTION_TEST_MISSING/);
+  });
+
+  it("promotes a resolved corrected case into persistent regression knowledge without erasing the correction", () => {
+    const root = tempDir("feedback-promote");
+    const runDir = path.join(root, ".ppt-agent", "runs", "run-001");
+    const testPath = path.join(root, "tests", "integration", "sparse-template-routing.test.ts");
+    const fixturePath = path.join(root, "tests", "fixtures", "sparse-template-4x3.pptx");
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.mkdirSync(path.dirname(testPath), { recursive: true });
+    fs.mkdirSync(path.dirname(fixturePath), { recursive: true });
+    fs.writeFileSync(testPath, "// regression placeholder for unit test\n");
+    fs.writeFileSync(fixturePath, "fixture");
+
     const { casePath } = recordFailure({
       runDir,
       stage: "template-routing",
@@ -117,7 +146,9 @@ describe("persistent feedback learning loop", () => {
       summary: "Treat the input as a brand shell: preserve 4:3/master/theme/chrome and generate semantic slide bodies.",
       code: "SPARSE_TEMPLATE_ROUTING_GAP",
     });
-    const userEventId = effectiveFeedbackConclusion(corrected)?.id;
+    const correctionId = effectiveFeedbackConclusion(corrected)?.id;
+    const resolved = recordResolution(casePath, { summary: "Sparse brand-shell routing implemented and regression-covered." });
+    expect(effectiveFeedbackConclusion(resolved)?.supersedes).toEqual([correctionId]);
 
     const result = promoteFeedbackCase(casePath, {
       projectDir: root,
@@ -130,7 +161,7 @@ describe("persistent feedback learning loop", () => {
     expect(result.promotedPath).toBe(path.join(root, "feedback-cases", "sparse-template-4x3.json"));
     expect(promoted.status).toBe("promoted");
     expect(promoted.regression?.testPath).toBe("tests/integration/sparse-template-routing.test.ts");
-    expect(promoted.effectiveConclusionEventId).toBe(userEventId);
-    expect(effectiveFeedbackConclusion(promoted)?.source).toBe("user");
+    expect(promoted.events.some((event) => event.id === correctionId && event.source === "user" && event.kind === "user_correction")).toBe(true);
+    expect(promoted.events.some((event) => event.kind === "promotion")).toBe(true);
   });
 });
