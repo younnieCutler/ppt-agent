@@ -88,6 +88,16 @@ function writeJson(filePath: string, value: unknown): void {
   }
 }
 
+function projectRelativeFile(projectDir: string, relativePath: string, label: string): string {
+  if (path.isAbsolute(relativePath)) throw new Error(`FEEDBACK_PROMOTION_${label}_INVALID: use a project-relative path, not an absolute path.`);
+  const root = path.resolve(projectDir);
+  const resolved = path.resolve(root, relativePath);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`FEEDBACK_PROMOTION_${label}_INVALID: path must stay inside the project.`);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) throw new Error(`FEEDBACK_PROMOTION_${label}_MISSING: ${relativePath}`);
+  return relative.split(path.sep).join("/");
+}
+
 export function feedbackCasePath(runDir: string): string {
   return path.join(path.resolve(runDir), "feedback-case.json");
 }
@@ -232,14 +242,17 @@ export function promoteFeedbackCase(casePath: string, input: {
   const value = loadFeedbackCase(casePath);
   const effective = effectiveFeedbackConclusion(value);
   if (!effective) throw new Error("FEEDBACK_PROMOTION_NO_CONCLUSION: record a diagnosis or user correction before promotion.");
+  if (value.status !== "resolved") throw new Error("FEEDBACK_PROMOTION_UNRESOLVED: record the implementation resolution before promotion.");
+  const testPath = projectRelativeFile(input.projectDir, input.testPath, "TEST");
+  const fixturePath = input.fixturePath ? projectRelativeFile(input.projectDir, input.fixturePath, "FIXTURE") : undefined;
   const at = now();
   const promotion: FeedbackEvent = feedbackEventSchema.parse({
     id: eventId("promotion"),
     at,
     source: "maintainer",
     kind: "promotion",
-    summary: `Promoted to regression coverage at ${input.testPath}.`,
-    evidence: [input.testPath, ...(input.fixturePath ? [input.fixturePath] : [])],
+    summary: `Promoted to regression coverage at ${testPath}.`,
+    evidence: [testPath, ...(fixturePath ? [fixturePath] : [])],
     supersedes: [],
   });
   const next: FeedbackCase = feedbackCaseSchema.parse({
@@ -249,8 +262,8 @@ export function promoteFeedbackCase(casePath: string, input: {
     events: [...value.events, promotion],
     regression: {
       expectedBehavior: input.expectedBehavior,
-      testPath: input.testPath,
-      ...(input.fixturePath ? { fixturePath: input.fixturePath } : {}),
+      testPath,
+      ...(fixturePath ? { fixturePath } : {}),
     },
   });
   writeJson(casePath, next);
