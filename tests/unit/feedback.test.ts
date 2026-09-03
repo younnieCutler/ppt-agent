@@ -63,6 +63,32 @@ describe("persistent feedback learning loop", () => {
     });
   });
 
+  it("preserves a correction-first case when a failure is recorded later", () => {
+    const runDir = tempDir("feedback-correction-before-failure");
+    const corrected = recordUserCorrectionFromRun({
+      runDir,
+      runId: "run-correction-first",
+      caseId: "correction-first",
+      summary: "The run violated the requested behavior despite passing automated gates.",
+    });
+    const correction = effectiveFeedbackConclusion(corrected.feedbackCase);
+
+    const failed = recordFailure({
+      runDir,
+      runId: "run-correction-first",
+      stage: "render",
+      code: "LATE_FAILURE_CLASSIFICATION",
+      message: "The failure was classified after the user correction was already accepted.",
+    });
+
+    expect(failed.feedbackCase.caseId).toBe("correction-first");
+    expect(failed.feedbackCase.status).toBe("corrected");
+    expect(effectiveFeedbackConclusion(failed.feedbackCase)?.id).toBe(correction?.id);
+    expect(failed.feedbackCase.events).toHaveLength(2);
+    expect(failed.feedbackCase.events[0]).toMatchObject({ source: "user", kind: "user_correction" });
+    expect(failed.feedbackCase.events[1]).toMatchObject({ source: "system", kind: "failure" });
+  });
+
   it("treats a user correction as authoritative over the current automated diagnosis", () => {
     const runDir = tempDir("feedback-user-wins");
     const { casePath } = recordFailure({
@@ -108,6 +134,22 @@ describe("persistent feedback learning loop", () => {
 
     expect(effective?.id).toBe(userEvent?.id);
     expect(effective?.source).toBe("user");
+    expect(lastEvent).toMatchObject({ source: "system", kind: "diagnosis", advisory: true });
+    expect(lastEvent?.supersedes).toEqual([]);
+  });
+
+  it("keeps automated diagnoses advisory after a corrected case is resolved", () => {
+    const runDir = tempDir("feedback-resolved-user-authority");
+    const { casePath } = recordFailure({ runDir, stage: "qa", code: "OUTPUT_WRONG", message: "Failure." });
+    recordUserCorrection(casePath, { summary: "User correction is authoritative." });
+    const resolved = recordResolution(casePath, { summary: "Implementation fixed the corrected requirement." });
+    const resolution = effectiveFeedbackConclusion(resolved);
+
+    const afterAutomation = recordSystemDiagnosis(casePath, { summary: "Late automated alternative hypothesis." });
+    const lastEvent = afterAutomation.events.at(-1);
+
+    expect(afterAutomation.status).toBe("resolved");
+    expect(effectiveFeedbackConclusion(afterAutomation)?.id).toBe(resolution?.id);
     expect(lastEvent).toMatchObject({ source: "system", kind: "diagnosis", advisory: true });
     expect(lastEvent?.supersedes).toEqual([]);
   });
@@ -185,5 +227,16 @@ describe("persistent feedback learning loop", () => {
     expect(promoted.regression?.testPath).toBe("tests/integration/sparse-template-routing.test.ts");
     expect(promoted.events.some((event) => event.id === correctionId && event.source === "user" && event.kind === "user_correction")).toBe(true);
     expect(promoted.events.some((event) => event.kind === "promotion")).toBe(true);
+  });
+
+  it("refuses to overwrite an existing promoted regression case with the same case id", () => {
+    const root = tempDir("feedback-promote-collision");
+    const testPath = path.join(root, "tests", "integration", "collision.test.ts");
+    fs.mkdirSync(path.dirname(testPath), { recursive: true });
+    fs.writeFileSync(testPath, "// regression placeholder\n");
+
+    const firstRun = path.join(root, ".ppt-agent", "runs", "run-001");
+    fs.mkdirSync(firstRun, { recursive: true });
+    const first = recordFailure({ firstRun: undefined } as never);
   });
 });
