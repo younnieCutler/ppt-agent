@@ -98,6 +98,10 @@ function projectRelativeFile(projectDir: string, relativePath: string, label: st
   return relative.split(path.sep).join("/");
 }
 
+function hasUserCorrection(value: FeedbackCase): boolean {
+  return value.events.some((event) => event.source === "user" && event.kind === "user_correction");
+}
+
 export function feedbackCasePath(runDir: string): string {
   return path.join(path.resolve(runDir), "feedback-case.json");
 }
@@ -121,7 +125,16 @@ export function recordFailure(input: {
 }): { report: FailureReport; feedbackCase: FeedbackCase; casePath: string; reportPath: string } {
   const resolvedRunDir = path.resolve(input.runDir);
   const runId = input.runId ?? path.basename(resolvedRunDir);
-  const caseId = safeCaseId(input.caseId ?? `${input.code}-${crypto.createHash("sha256").update(`${runId}|${input.stage}|${input.message}`).digest("hex").slice(0, 8)}`);
+  const casePath = feedbackCasePath(resolvedRunDir);
+  const existing = fs.existsSync(casePath) ? loadFeedbackCase(casePath) : undefined;
+  const caseId = existing?.caseId ?? safeCaseId(input.caseId ?? `${input.code}-${crypto.createHash("sha256").update(`${runId}|${input.stage}|${input.message}`).digest("hex").slice(0, 8)}`);
+  if (existing && input.caseId && safeCaseId(input.caseId) !== existing.caseId) {
+    throw new Error(`FEEDBACK_CASE_ID_MISMATCH: existing case '${existing.caseId}' does not match requested case '${safeCaseId(input.caseId)}'.`);
+  }
+  if (existing?.runId && input.runId && existing.runId !== input.runId) {
+    throw new Error(`FEEDBACK_RUN_ID_MISMATCH: existing run '${existing.runId}' does not match requested run '${input.runId}'.`);
+  }
+
   const at = now();
   const failure: FeedbackEvent = feedbackEventSchema.parse({
     id: eventId("failure"),
@@ -134,20 +147,25 @@ export function recordFailure(input: {
     evidence: input.evidence ?? [],
     supersedes: [],
   });
-  const feedbackCase: FeedbackCase = feedbackCaseSchema.parse({
-    version: 1,
-    caseId,
-    runId,
-    createdAt: at,
-    updatedAt: at,
-    status: "observed",
-    events: [failure],
-  });
-  const casePath = feedbackCasePath(resolvedRunDir);
+  const feedbackCase: FeedbackCase = existing
+    ? feedbackCaseSchema.parse({
+        ...existing,
+        updatedAt: at,
+        events: [...existing.events, failure],
+      })
+    : feedbackCaseSchema.parse({
+        version: 1,
+        caseId,
+        runId,
+        createdAt: at,
+        updatedAt: at,
+        status: "observed",
+        events: [failure],
+      });
   writeJson(casePath, feedbackCase);
   const report: FailureReport = failureReportSchema.parse({
     version: 1,
-    runId,
+    runId: existing?.runId ?? runId,
     at,
     stage: input.stage,
     code: input.code,
@@ -163,7 +181,7 @@ export function recordFailure(input: {
 export function recordSystemDiagnosis(casePath: string, input: { summary: string; code?: string; evidence?: string[] }): FeedbackCase {
   const value = loadFeedbackCase(casePath);
   const current = effectiveFeedbackConclusion(value);
-  const userHasAuthority = current?.source === "user" && current.kind === "user_correction";
+  const userHasAuthority = hasUserCorrection(value);
   const event: FeedbackEvent = feedbackEventSchema.parse({
     id: eventId("diagnosis"),
     at: now(),
@@ -245,6 +263,8 @@ export function promoteFeedbackCase(casePath: string, input: {
   if (value.status !== "resolved") throw new Error("FEEDBACK_PROMOTION_UNRESOLVED: record the implementation resolution before promotion.");
   const testPath = projectRelativeFile(input.projectDir, input.testPath, "TEST");
   const fixturePath = input.fixturePath ? projectRelativeFile(input.projectDir, input.fixturePath, "FIXTURE") : undefined;
+  const promotedPath = path.join(path.resolve(input.projectDir), "feedback-cases", `${safeCaseId(value.caseId)}.json`);
+  if (fs.existsSync(promotedPath)) throw new Error(`FEEDBACK_PROMOTION_CASE_EXISTS: ${path.relative(path.resolve(input.projectDir), promotedPath).split(path.sep).join("/")}`);
   const at = now();
   const promotion: FeedbackEvent = feedbackEventSchema.parse({
     id: eventId("promotion"),
@@ -267,7 +287,6 @@ export function promoteFeedbackCase(casePath: string, input: {
     },
   });
   writeJson(casePath, next);
-  const promotedPath = path.join(path.resolve(input.projectDir), "feedback-cases", `${safeCaseId(next.caseId)}.json`);
   writeJson(promotedPath, next);
   return { feedbackCase: next, promotedPath };
 }
