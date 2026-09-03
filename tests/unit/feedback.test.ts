@@ -237,6 +237,37 @@ describe("persistent feedback learning loop", () => {
 
     const firstRun = path.join(root, ".ppt-agent", "runs", "run-001");
     fs.mkdirSync(firstRun, { recursive: true });
-    const first = recordFailure({ firstRun: undefined } as never);
+    const first = recordFailure({
+      runDir: firstRun,
+      stage: "render",
+      code: "FIRST_FAILURE",
+      message: "First failure.",
+      caseId: "shared-regression-id",
+    });
+    recordResolution(first.casePath, { summary: "First implementation resolution." });
+    const firstPromotion = promoteFeedbackCase(first.casePath, {
+      projectDir: root,
+      expectedBehavior: "Protect the first regression.",
+      testPath: "tests/integration/collision.test.ts",
+    });
+    const originalPromoted = fs.readFileSync(firstPromotion.promotedPath, "utf8");
+
+    const secondRun = path.join(root, ".ppt-agent", "runs", "run-002");
+    fs.mkdirSync(secondRun, { recursive: true });
+    const second = recordFailure({
+      runDir: secondRun,
+      stage: "render",
+      code: "SECOND_FAILURE",
+      message: "Second failure.",
+      caseId: "shared-regression-id",
+    });
+    recordResolution(second.casePath, { summary: "Second implementation resolution." });
+
+    expect(() => promoteFeedbackCase(second.casePath, {
+      projectDir: root,
+      expectedBehavior: "Must not replace the first regression.",
+      testPath: "tests/integration/collision.test.ts",
+    })).toThrow(/FEEDBACK_PROMOTION_CASE_EXISTS/);
+    expect(fs.readFileSync(firstPromotion.promotedPath, "utf8")).toBe(originalPromoted);
   });
 });
