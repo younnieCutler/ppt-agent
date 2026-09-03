@@ -127,9 +127,10 @@ export function recordFailure(input: {
   const runId = input.runId ?? path.basename(resolvedRunDir);
   const casePath = feedbackCasePath(resolvedRunDir);
   const existing = fs.existsSync(casePath) ? loadFeedbackCase(casePath) : undefined;
-  const caseId = existing?.caseId ?? safeCaseId(input.caseId ?? `${input.code}-${crypto.createHash("sha256").update(`${runId}|${input.stage}|${input.message}`).digest("hex").slice(0, 8)}`);
-  if (existing && input.caseId && safeCaseId(input.caseId) !== existing.caseId) {
-    throw new Error(`FEEDBACK_CASE_ID_MISMATCH: existing case '${existing.caseId}' does not match requested case '${safeCaseId(input.caseId)}'.`);
+  const requestedCaseId = input.caseId ? safeCaseId(input.caseId) : undefined;
+  const caseId = existing?.caseId ?? requestedCaseId ?? safeCaseId(`${input.code}-${crypto.createHash("sha256").update(`${runId}|${input.stage}|${input.message}`).digest("hex").slice(0, 8)}`);
+  if (existing && requestedCaseId && requestedCaseId !== existing.caseId) {
+    throw new Error(`FEEDBACK_CASE_ID_MISMATCH: existing case '${existing.caseId}' does not match requested case '${requestedCaseId}'.`);
   }
   if (existing?.runId && input.runId && existing.runId !== input.runId) {
     throw new Error(`FEEDBACK_RUN_ID_MISMATCH: existing run '${existing.runId}' does not match requested run '${input.runId}'.`);
