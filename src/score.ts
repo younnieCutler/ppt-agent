@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { QaFinding } from "./qa";
 import type { DeckSpec } from "./schema";
+import { assertEvalGate } from "./eval-gate";
 
 // Quality scoring for the real-world eval set.
 //
@@ -150,6 +151,13 @@ export function recordRun(options: {
   if (tokens.measurement === "unavailable") {
     throw new Error("tokens.json reports measurement: \"unavailable\" — token telemetry failed for this run. Fix transcript attribution (--transcript/--session-id) and re-run `tokens` before recording.");
   }
+
+  // Benchmark-specific policy is intentionally separate from general deck generation. A fixed
+  // 8-slide business eval can enforce PRD §15's <30k target without pretending the same ceiling is
+  // valid for research-heavy or unusually large decks. If no policy.yaml exists, this is a no-op.
+  // When one does exist, the gate is recomputed here immediately before history mutation so a stale
+  // eval-gate.json cannot be used to smuggle a regressed run into the append-only record.
+  assertEvalGate({ projectDir: options.projectDir, runDir: resolved, benchmark: options.benchmark });
 
   const effective = tokens.tokenUsage.total.effective;
   const round = (value: number): number => Math.round(value * 100) / 100;
