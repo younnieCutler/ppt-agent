@@ -1,6 +1,7 @@
 import { allowedCompositions, compositionFamily, contentModelSchema, contractSchema, deckPlanSchema, deckSchema, type CompositionFamily, type ContentModel, type DeckPlan, type PlanVisualIntent, type SlideFunction, type SlideSpec, type SourceRef } from "./schema";
 import type { QaFinding } from "./qa";
 import { sha256 } from "./provenance";
+import { assertFullDeckAssemblyProvenance, runDirFromArgv } from "./full-deck-provenance";
 
 export const planningFindingSeverity = {
   SLIDE_THESIS_MISSING: "hard",
@@ -53,8 +54,6 @@ export function validateDeckPlan(planInput: unknown, contractInput: unknown, con
     if (!slide.thesis.trim()) findings.push(finding("SLIDE_THESIS_MISSING", "Every slide requires a thesis.", slide.id));
     if (slide.primaryEvidence.length === 0) findings.push(finding("PRIMARY_EVIDENCE_MISSING", "Every slide requires primary evidence.", slide.id));
     if (!contract.storyline.includes(slide.storyBeat)) findings.push(finding("PLAN_STORY_BEAT_DRIFT", `Story beat '${slide.storyBeat}' is absent from the contract storyline.`, slide.id));
-    // Authoring contexts hand a worker both evidence sets, so an unresolvable secondary ref is a
-    // dangling reference the worker would be asked to cite. Its own code keeps the diagnosis clear.
     for (const ref of slide.secondaryEvidence) {
       if (!refs.has(refKey(ref))) findings.push(finding("SECONDARY_EVIDENCE_NOT_IN_CONTENT_MODEL", `Secondary evidence '${refKey(ref)}' is absent from the ContentModel.`, slide.id));
     }
@@ -71,26 +70,29 @@ export function validateDeckPlan(planInput: unknown, contractInput: unknown, con
       }
     }
   }
-  // Planning is a strict gate on purpose: `composition-resolve` requires `pass`, so a risk finding
-  // blocks authoring until it is resolved or the plan is changed. A risk here is not "ship with a
-  // caveat" — it is a plan the shortlist would be resolved against, and every slide inherits it.
   return { plan, findings, status: findings.some((item) => item.severity === "hard") ? "fail" : findings.some((item) => item.severity === "risk") ? "review" : "pass" };
 }
 
 type CompositionPlanInput = { slides?: Array<{ id?: string; candidates?: Array<{ layout?: string; composition?: string }> }> };
 
-export function verifyDeckAgainstPlan(deckInput: unknown, planInput: unknown, compositionPlanInput: unknown): QaFinding[] {
+/**
+ * Verifies the DeckSpec against the plan and, when this process is operating on a run that used
+ * Full Deck Assembly, re-verifies that assembly's complete provenance chain too. `runDirInput` is
+ * explicit for library/tests; the CLI's existing callers get the same behavior via their
+ * `--run-dir` argument without widening every call site.
+ */
+export function verifyDeckAgainstPlan(deckInput: unknown, planInput: unknown, compositionPlanInput: unknown, runDirInput?: string): QaFinding[] {
   const deck = deckSchema.parse(deckInput);
   const plan = deckPlanSchema.parse(planInput);
   const compositionPlan = compositionPlanInput as CompositionPlanInput;
   const findings: QaFinding[] = [];
   const candidatesBySlide = new Map((compositionPlan.slides ?? []).map((slide) => [slide.id, slide.candidates ?? []]));
-  // A digest that is only checked for shape proves nothing: it has to be the digest of the plan the
-  // deck is being verified against, or a DeckSpec can carry any 64-character string and pass.
   const declared = deckInput as { version?: unknown; planDigest?: unknown };
   if (declared.version === 2 && declared.planDigest !== deckPlanDigest(plan)) {
     findings.push(finding("DECK_PLAN_DIGEST_MISMATCH", "DeckSpec v2 planDigest does not match the digest of deck-plan.json. Re-author the DeckSpec against the current plan."));
   }
+  const runDir = runDirInput ?? runDirFromArgv();
+  if (declared.version === 2 && runDir) assertFullDeckAssemblyProvenance(runDir, deckInput);
   if (deck.slides.length !== plan.slides.length) return [finding("PLAN_SLIDE_COUNT_MISMATCH", "DeckSpec and DeckPlan slide counts differ.")];
   deck.slides.forEach((slide, index) => {
     const intent = plan.slides[index];
