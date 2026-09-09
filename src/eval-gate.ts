@@ -2,9 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
+import { verifyBenchmarkRunBinding } from "./benchmark";
 
 export const evalPolicySchema = z.object({
   version: z.literal(1),
+  identity: z.object({
+    requireBoundRun: z.boolean(),
+  }).strict().default({ requireBoundRun: false }),
   measurement: z.object({
     requireMeasuredTokens: z.boolean(),
   }).strict(),
@@ -22,6 +26,7 @@ export const evalPolicySchema = z.object({
 export type EvalPolicy = z.infer<typeof evalPolicySchema>;
 
 export const evalGateFindingSeverity = {
+  BENCHMARK_BINDING_INVALID: "hard",
   TOKEN_MEASUREMENT_UNAVAILABLE: "hard",
   TOTAL_TOKEN_BUDGET_EXCEEDED: "hard",
   HARD_FAILURE_BUDGET_EXCEEDED: "hard",
@@ -153,6 +158,12 @@ export function evaluateBenchmarkRun(options: { projectDir: string; runDir: stri
   };
   const findings: EvalGateFinding[] = [];
 
+  if (policy.identity.requireBoundRun) {
+    const binding = verifyBenchmarkRunBinding(options.projectDir, runDir, options.benchmark);
+    if (binding.status !== "pass") {
+      findings.push(finding("BENCHMARK_BINDING_INVALID", binding.errors.join(" ")));
+    }
+  }
   if (policy.measurement.requireMeasuredTokens && tokens.measurement !== "measured") {
     findings.push(finding("TOKEN_MEASUREMENT_UNAVAILABLE", "Token measurement is unavailable. A benchmark cannot pass with an unmeasured cost denominator."));
   }

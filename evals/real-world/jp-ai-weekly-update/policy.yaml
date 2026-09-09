@@ -3,6 +3,11 @@ version: 1
 # This fixture is exactly the ordinary 8-slide moderate-complexity business case called out by
 # PRD_PRESENTATION_QUALITY §12–§15. The repo-wide PRD target is not a universal generation limit;
 # it becomes a hard gate only because this fixed benchmark opts into it here.
+identity:
+  # Prevent an unrelated deck/run from being recorded under this benchmark id. benchmark-start
+  # binds task.yaml, policy.yaml, contract.json, and every source file by SHA-256.
+  requireBoundRun: true
+
 measurement:
   requireMeasuredTokens: true
 
