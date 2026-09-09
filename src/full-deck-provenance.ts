@@ -1,12 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { deckV2Schema } from "./schema";
-import { deckPlanDigest } from "./planning";
+import { deckPlanSchema, deckV2Schema } from "./schema";
 import { pilotSpecArtifactSchema, pilotSpecDigest } from "./pilot-authoring";
 import { fullDeckDigest, fullSlideArtifactDigest } from "./full-deck-assembly";
 import { storylineBlueprintDigest } from "./storyline";
-import { sha256File, type ArtifactProvenance } from "./provenance";
+import { sha256, sha256File, type ArtifactProvenance } from "./provenance";
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const manifestSchema = z.object({
@@ -22,6 +21,10 @@ function readJson(filePath: string): unknown {
 
 function requireFile(filePath: string, message: string): void {
   if (!fs.existsSync(filePath)) throw new Error(message);
+}
+
+function normalizedDeckPlanDigest(input: unknown): string {
+  return sha256(JSON.stringify(deckPlanSchema.parse(input)));
 }
 
 function slideArtifactPath(runDir: string, slideId: string): string {
@@ -73,7 +76,7 @@ export function assertFullDeckAssemblyProvenance(runDirInput: string, deckInput:
   ] as const) requireFile(filePath, `Full-deck provenance blocked: ${label} is missing.`);
 
   const current = {
-    deckPlanDigest: deckPlanDigest(readJson(planPath)),
+    deckPlanDigest: normalizedDeckPlanDigest(readJson(planPath)),
     compositionPlanDigest: sha256File(compositionPath),
     storylineDigest: storylineBlueprintDigest(readJson(storylinePath)),
     pilotSpecDigest: pilotSpecDigest(readJson(pilotSpecPath)),
