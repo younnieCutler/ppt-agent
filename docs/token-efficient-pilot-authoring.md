@@ -15,10 +15,14 @@ StorylineBlueprint
   -> pilot approve
   -> slide-local authoring for non-pilot slides only
   -> deterministic full-deck assembly (0 model calls)
-  -> existing validate / render / QA / release
+  -> canonical validate / render / QA
+  -> tokens + quality score
+  -> benchmark eval gate
+  -> regression history
+  -> release
 ```
 
-The approved pilot slides are immutable inputs to full-deck assembly. `full-slide-context` and `full-deck slide-apply` reject those ids instead of spending model tokens to generate them a second time.
+The approved pilot slides are immutable inputs to full-deck assembly. `full-slide-context` and `full-deck slide-apply` reject those ids instead of spending model tokens to generate them a second time. Canonical `validate`, `render`, and `qa` also re-hash the full assembly provenance chain, including every stored non-pilot slide artifact, so post-assembly edits cannot bypass the gate.
 
 ## Commands after planning / style / composition
 
@@ -58,6 +62,31 @@ npm run full-deck -- assemble --run-dir <run-dir>
 ```
 
 Assembly is deterministic and makes no model call. Slides are ordered by DeckPlan. Pilot slides come directly from `pilot-spec.json`; only non-pilot slides come from `full-slides/`. The output is DeckSpec v2 with the current `planDigest`, so the existing `validate`, `render`, `qa` and release gates remain authoritative.
+
+## Measured evaluation and regression gate
+
+Token efficiency is not inferred from prompt size proxies. For a real-world benchmark, measure the actual host transcript, score the final rendered deck, then run the benchmark policy before recording history:
+
+```sh
+node dist/cli.js tokens --spec <run-dir>/deck.json --run-dir <run-dir> \
+  --benchmark jp-ai-weekly-update --transcript <session.jsonl>
+node dist/cli.js score --spec <run-dir>/deck.json --run-dir <run-dir> --scores <scores.json>
+npm run eval-gate -- --run-dir <run-dir> --benchmark jp-ai-weekly-update
+node dist/cli.js record --spec <run-dir>/deck.json --run-dir <run-dir> \
+  --benchmark jp-ai-weekly-update --version <version>
+```
+
+`record` recomputes the same gate immediately before appending history; a stale `eval-gate.json` cannot be used to bypass a regression. Benchmark limits live in `evals/real-world/<benchmark>/policy.yaml`, not in general generation code. This matters because PRD §15 explicitly describes `<30k` as an engineering target for ordinary 8–12 slide business presentations, not a universal hard limit for research-heavy decks.
+
+For `jp-ai-weekly-update`, the policy requires:
+
+- measured token telemetry; an unavailable denominator cannot pass as a zero-cost run;
+- **<30,000 total tokens** (exclusive), matching the PRD P0 target for this fixed 8-slide moderate-complexity task;
+- zero hard QA failures;
+- after the first passing record establishes a baseline, no decrease in raw quality score;
+- no decrease in quality per 10k effective tokens.
+
+The last two checks make the history Pareto-style: lowering tokens by sacrificing quality is not an improvement, and raising quality while spending proportionally more tokens is not an efficiency improvement.
 
 ## Token policy
 
