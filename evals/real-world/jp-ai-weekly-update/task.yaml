@@ -18,6 +18,18 @@ contract:
   aspectRatio: "16:9"
   presentationStyle: corporate
   designDirection: balanced
+  # This is the allowed StoryBeat vocabulary for the benchmark, not a pre-authored narrative. The
+  # host still has to produce and validate the StorylineBlueprint and DeckPlan from the source.
+  storyline:
+    - opening
+    - problem
+    - evidence
+    - insight
+    - implementation
+    - roadmap
+    - closing
+  brand:
+    kind: default
   fonts:
     heading: Meiryo
     body: Meiryo
