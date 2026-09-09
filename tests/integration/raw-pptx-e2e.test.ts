@@ -95,7 +95,29 @@ describe("raw .pptx E2E: template.pptx + goal", () => {
         const scratchPath = path.join(runDir, "scratch.pptx");
         cli(["render", "--spec", specPath, "--out", scratchPath, "--run-dir", runDir]);
         const finalPath = path.join(runDir, "final.pptx");
-        cli(["render-pattern-skeleton", "--spec", specPath, "--scratch", scratchPath, "--template", templatePath, "--out", finalPath, "--run-dir", runDir]);
+        const rawRenderArgs = ["render-pattern-skeleton", "--spec", specPath, "--scratch", scratchPath, "--template", templatePath, "--out", finalPath, "--run-dir", runDir];
+
+        // Raw-template rendering is a second render entry point, so it must repeat the same DeckSpec
+        // v2/DeckPlan provenance gate that the generic scratch render already passed. A plan edited
+        // after scratch generation cannot be allowed to produce the final deliverable.
+        const normalizedPlanPath = path.join(runDir, "deck-plan.json");
+        const originalPlan = fs.readFileSync(normalizedPlanPath, "utf8");
+        const changedPlan = JSON.parse(originalPlan);
+        changedPlan.slides[1].thesis = "Changed after scratch render";
+        fs.writeFileSync(normalizedPlanPath, JSON.stringify(changedPlan, null, 2));
+        expect(() => cli(rawRenderArgs)).toThrow();
+        fs.writeFileSync(normalizedPlanPath, originalPlan);
+
+        // pattern-plan.json is also a resolved authoring input. Changing even its bytes after
+        // pattern-resolve must invalidate the raw render rather than silently selecting from an
+        // unproven shortlist.
+        const patternPlanPath = path.join(runDir, "pattern-plan.json");
+        const originalPatternPlan = fs.readFileSync(patternPlanPath, "utf8");
+        fs.writeFileSync(patternPlanPath, `${originalPatternPlan}\n`);
+        expect(() => cli(rawRenderArgs)).toThrow();
+        fs.writeFileSync(patternPlanPath, originalPatternPlan);
+
+        cli(rawRenderArgs);
 
         const manifest = JSON.parse(fs.readFileSync(path.join(runDir, "render-manifest.json"), "utf8"));
         expect(manifest).toHaveLength(3);
