@@ -16,6 +16,14 @@ export type ArtifactProvenance = {
   storylinePlanQaDigest?: string;
   pilotSelectionDigest?: string;
   pilotContextDigest?: string;
+  pilotAuthoringContextDigest?: string;
+  pilotSpecDigest?: string;
+  pilotDeckDigest?: string;
+  pilotAuthoringQaDigest?: string;
+  pilotCoreQaDigest?: string;
+  pilotJudgeContextDigest?: string;
+  pilotVisualQaDigest?: string;
+  pilotApprovalDigest?: string;
   /**
    * What each derived artifact was derived *from*. File-by-file freshness cannot see a mixed run:
    * every file can match its own digest while a later artifact was produced from older roots.
@@ -30,6 +38,19 @@ export type ArtifactProvenance = {
     deckPlanDigest: string;
     contentModelDigest: string;
     storylinePlanQaDigest: string;
+  };
+  pilotSpecSource?: {
+    pilotSelectionDigest: string;
+    deckPlanDigest: string;
+    compositionPlanDigest: string;
+  };
+  pilotApprovalSource?: {
+    pilotSpecDigest: string;
+    pilotDeckDigest: string;
+    pilotCoreQaDigest: string;
+    pilotVisualQaDigest: string;
+    pilotPptxDigest: string;
+    renderProvenanceDigest: string;
   };
 };
 
