@@ -34,7 +34,7 @@ export const designRulesSchema = z.object({
     roles: z.record(typographyRoleRuleSchema),
     typeScale: numericVocabularySchema,
   }).strict(),
-  colors: z.object({ allowed: z.array(z.string()).min(1) }).strict(),
+  colors: z.object({ allowed: z.array(z.string()) }).strict(),
   geometry: z.object({
     contentFrame: rectSchema.optional(),
     outerMargins: rectSchema.optional(),
@@ -83,8 +83,8 @@ export function compileDesignRules(
     ...designSystem.colors.stroke,
     ...designSystem.colors.background,
   ]);
-  const artifact: DesignRulesArtifact = {
-    version: 1,
+  const artifact = {
+    version: 1 as const,
     compilerVersion: DESIGN_RULE_COMPILER_VERSION,
     sourceDigest: designSystem.sourceDigest,
     designSystemDigest: sha256(JSON.stringify(designSystem)),
@@ -98,7 +98,7 @@ export function compileDesignRules(
       roles: designSystem.typography.roles,
       typeScale: designSystem.typography.typeScale,
     },
-    colors: { allowed: allowedColors.length > 0 ? allowedColors : ["000000"] },
+    colors: { allowed: allowedColors },
     geometry: {
       contentFrame: designSystem.geometry.contentFrame,
       outerMargins: designSystem.geometry.outerMargins,
