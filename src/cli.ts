@@ -90,8 +90,6 @@ function assertFresh(runDir: string, provenance: Record<string, string>, inputs:
     const recorded = provenance[field];
     const filePath = path.join(path.resolve(runDir), fileName);
     if (!recorded) {
-      // An input that appeared after the digests were recorded was never part of what produced them,
-      // so resolving against it would silently mix two runs.
       if (fs.existsSync(filePath)) throw new Error(`Composition resolution blocked: ${fileName} exists but is not recorded in artifact-provenance.json. Re-run the phase that produces it.`);
       continue;
     }
@@ -100,8 +98,6 @@ function assertFresh(runDir: string, provenance: Record<string, string>, inputs:
   }
 }
 
-// The CLI is host-neutral: any agent host (Claude Code, Codex, a plain shell) can point it at the
-// project root. CLAUDE_PROJECT_DIR stays as a fallback so existing Claude Code installs keep working.
 function projectDirectory(): string {
   return process.env.PPT_AGENT_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 }
@@ -148,16 +144,12 @@ function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-// Every command below already writes its artifact to the run directory, so printing the whole blob
-// puts a second copy of it into the agent's conversation for no benefit. Default to a summary and
-// let the agent read the file when it actually needs the contents; `--print` restores full output.
 let fullOutput = false;
 
 function emit(summary: unknown, full: unknown): void {
   print(fullOutput ? full : summary);
 }
 
-/** Findings are what a failing run has to act on, so they survive the diet; a passing run gets counts. */
 function emitReport(report: { status: string; findings: Array<{ severity: string; code: string; slideId?: string; message: string }> }, outputPath: string): void {
   if (fullOutput) return print(report);
   const counts = report.findings.reduce<Record<string, number>>((tally, finding) => ({ ...tally, [finding.severity]: (tally[finding.severity] ?? 0) + 1 }), {});
@@ -166,16 +158,6 @@ function emitReport(report: { status: string; findings: Array<{ severity: string
     : { status: report.status, outputPath, findings: report.findings });
 }
 
-/**
- * Applies an authored replacement slide and closes the repair phase.
- *
- * The `markPhase` call is in a `finally` on purpose: `repair-context` already opened the repair
- * phase, and the turns spent authoring the replacement only fall inside the measurement window if
- * this closing boundary is recorded. If `applyRepair` (schema parse, invariant checks) or the
- * subsequent write / state update throws, skipping the mark would close the window back at
- * `repair-context` and drop the entire cost of the attempt from `tokens.json`. A failed repair
- * still cost tokens; the window has to span it.
- */
 export async function repairApply(args: string[]): Promise<void> {
   const specPath = option(args, "--spec");
   const runDir = option(args, "--run-dir");
@@ -233,11 +215,6 @@ export async function release(args: string[]): Promise<void> {
       if (!acceptRisk) throw new Error("Release blocked: visual-qa.json contains unresolved risk findings. Pass --accept-risk to release with warnings.");
       releaseStatus = "pass_with_warning";
     }
-    // Judgment is only meaningful about the file it actually looked at. Without this, a deck
-    // can be re-rendered after visual-qa passed and released without anyone re-judging it —
-    // the exact gap that let a stale render reach the Japan Career Agent deliverable. Both the
-    // run directory and its provenance record are required here, not best-effort: a release
-    // that skips them is exactly a release nobody can prove was judged.
     if (!runDir) {
       throw new Error("Release blocked: --run-dir is required alongside --visual-qa so the release can be checked against visual/render-provenance.json.");
     }
@@ -251,8 +228,6 @@ export async function release(args: string[]): Promise<void> {
       throw new Error("Release blocked: the PPTX being released does not match the PPTX visual-qa judged (visual/render-provenance.json digest mismatch). Re-run `visual` and `visual-qa` against the exact file being released.");
     }
   }
-  // Publish before touching anything else: the deliverable's existence must never depend on
-  // whether cleanup afterward succeeds.
   const resolvedOutPath = path.resolve(outPath);
   fs.mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
   fs.copyFileSync(path.resolve(pptxPath), resolvedOutPath);
@@ -262,10 +237,6 @@ export async function release(args: string[]): Promise<void> {
 
   let pdfOutputPath: string | undefined;
   if (publishPdf) {
-    // The PDF Visual QA actually judged, copied verbatim. Re-converting at release time is exactly
-    // how a Japan Career Agent deliverable ended up with a phantom duplicated headline that neither
-    // the DeckSpec nor the judged montage ever had — a different converter, run again, is a new
-    // artifact nobody re-judged.
     const judgedPdfPath = path.join(path.resolve(runDir!), "visual", "deck.pdf");
     if (!fs.existsSync(judgedPdfPath)) throw new Error(`Release blocked: --pdf requires ${judgedPdfPath} to exist. Re-run \`visual\` before releasing.`);
     pdfOutputPath = `${resolvedOutPath}.pdf`.replace(/\.pptx\.pdf$/, ".pdf");
@@ -278,8 +249,6 @@ export async function release(args: string[]): Promise<void> {
   let workspaceRemoved = false;
   let cleanupWarning: string | undefined;
   if (runDir && !keepWorkspace) {
-    // A cleanup failure must never retract or invalidate an already-published deliverable — it is
-    // logged and reported, not thrown, so the caller's success status still reflects reality.
     try {
       removeRunWorkspace(runDir);
       workspaceRemoved = true;
@@ -392,8 +361,6 @@ async function main(): Promise<void> {
     const runDir = option(args, "--run-dir");
     const templateDir = path.join(path.resolve(runDir), "template");
     const elementsPath = path.join(templateDir, "template-elements.json");
-    // Reuses template-analyze's own output when it already ran (the documented order), but does
-    // not require it — a montage is legitimately useful before deciding whether to analyze further.
     const slideCount = fs.existsSync(elementsPath) ? (readJson(elementsPath) as { slides: unknown[] }).slides.length : (await extractTemplateElements(input)).slides.length;
     const { rendered, montagePath } = await renderTemplatePreview(input, templateDir, slideCount);
     print({ status: "pass", montagePath, slides: rendered.length });
@@ -427,8 +394,6 @@ async function main(): Promise<void> {
     const normalizedPlanPath = path.join(runDir, "deck-plan.json");
     fs.writeFileSync(normalizedPlanPath, JSON.stringify(report.plan, null, 2));
     fs.writeFileSync(path.join(runDir, "content-qa.json"), JSON.stringify({ status: "pass", findings: [] }, null, 2));
-    // The run directory holds the copy every later stage re-hashes; a ContentModel that only ever
-    // existed at the caller's path cannot be checked for drift later.
     const runContentModelPath = path.join(runDir, "content-model.json");
     fs.writeFileSync(runContentModelPath, JSON.stringify(contentModel, null, 2));
     const reportPath = path.join(runDir, "planning-qa.json");
@@ -455,22 +420,15 @@ async function main(): Promise<void> {
     const runDir = path.resolve(option(args, "--run-dir"));
     const planningQaPath = path.join(runDir, "planning-qa.json");
     const provenancePath = path.join(runDir, "artifact-provenance.json");
-    // Strict planning gate: `review` (a risk finding) blocks too — see SKILL.md.
     if (!fs.existsSync(planningQaPath) || (readJson(planningQaPath) as { status?: string }).status !== "pass") throw new Error("Composition resolution requires a passing planning-qa.json (status must be `pass`; a `review` status means an unresolved risk finding).");
     if (!fs.existsSync(provenancePath)) throw new Error("Composition resolution requires artifact-provenance.json.");
     const provenance = readJson(provenancePath) as ArtifactProvenance & Record<string, string>;
     if (!provenance.contractDigest || !provenance.contentModelDigest) throw new Error("Composition resolution requires contract and ContentModel provenance.");
-    // Recording a digest and never re-checking it is not a provenance chain. Every upstream input
-    // is re-hashed here, so editing the contract, the ContentModel, or the reference selection after
-    // planning blocks resolution instead of silently resolving against a plan nobody re-validated.
     assertFresh(runDir, provenance, [
       ["contractDigest", "contract.json"],
       ["contentModelDigest", "content-model.json"],
       ["referenceSelectionDigest", "reference-selection.json"],
     ]);
-    // Style resolution is a prerequisite phase, and the style actually passed here is the one that
-    // must match it — checking only the run directory's copy would miss a --style-context pointing
-    // somewhere else entirely.
     if (!provenance.resolvedStyleDigest) throw new Error("Composition resolution requires style provenance. Run `style --run-dir` first.");
     if (sha256File(styleContextPath) !== provenance.resolvedStyleDigest) throw new Error("Composition resolution blocked: style-context.json changed after style resolution (artifact-provenance.json digest mismatch). Re-run `style`.");
     assertDerivedFrom(provenance);
@@ -479,9 +437,6 @@ async function main(): Promise<void> {
     const compositionPlan = resolveCompositionPlan(readJson(planPath), styleContext as never, {} as never);
     const outputPath = path.join(runDir, "composition-plan.json");
     fs.writeFileSync(outputPath, JSON.stringify(compositionPlan, null, 2));
-    // Hash the bytes actually on disk, not a re-serialization of the in-memory object: JSON.stringify
-    // without the pretty-print arguments produces different bytes than what was just written, so a
-    // digest computed either way never matches a later sha256File() freshness check against the file.
     recordProvenance(runDir, { compositionPlanDigest: sha256File(outputPath) });
     emit({ status: "pass", outputPath, slides: compositionPlan.slides.length }, compositionPlan);
     return;
@@ -534,7 +489,8 @@ async function main(): Promise<void> {
     const templatePath = option(args, "--template");
     const outPath = option(args, "--out");
     const runDir = path.resolve(option(args, "--run-dir"));
-    const deck = deckSchema.parse(readJson(specPath));
+    const rawDeck = readJson(specPath);
+    const deck = deckSchema.parse(rawDeck);
     const patternPlanPath = path.join(runDir, "pattern-plan.json");
     if (!fs.existsSync(patternPlanPath)) throw new Error(`Skeleton render requires ${patternPlanPath}. Run \`pattern-resolve\` first.`);
     const patternsPath = path.join(runDir, "template", "template-patterns.json");
@@ -550,6 +506,17 @@ async function main(): Promise<void> {
     if (!fs.existsSync(patternProvenance)) throw new Error("Skeleton render requires artifact-provenance.json. Run pattern-resolve first.");
     const provenance = readJson(patternProvenance) as ArtifactProvenance & Record<string, string>;
     if (!provenance.templatePatternsDigest || sha256File(patternsPath) !== provenance.templatePatternsDigest) throw new Error("Skeleton render blocked: template-patterns.json changed after pattern resolution. Re-run pattern-resolve.");
+    if (!provenance.patternPlanDigest || sha256File(patternPlanPath) !== provenance.patternPlanDigest) throw new Error("Skeleton render blocked: pattern-plan.json changed after pattern resolution. Re-run pattern-resolve.");
+
+    const isV2 = Boolean(rawDeck && typeof rawDeck === "object" && (rawDeck as { version?: unknown }).version === 2);
+    if (isV2) {
+      const planPath = path.join(runDir, "deck-plan.json");
+      const compositionPath = path.join(runDir, "composition-plan.json");
+      if (!fs.existsSync(planPath) || !fs.existsSync(compositionPath)) throw new Error("DeckSpec v2 raw render requires deck-plan.json and composition-plan.json in --run-dir.");
+      const findings = verifyDeckAgainstPlan(deck, readJson(planPath), readJson(compositionPath), runDir);
+      if (findings.length > 0) throw new Error(`DeckSpec v2 raw render violates its DeckPlan: ${findings.map((finding) => finding.code).join(", ")}`);
+    }
+
     const patternPlan = readJson(patternPlanPath) as { slides: Array<{ id: string; candidates: Array<{ patternId: string; rank: number }> }> };
     const patternsById = new Map<string, TemplatePattern>(patternsArtifact.patterns.map((pattern) => [pattern.id, pattern]));
     const renderStrategy = elements.strategy;
@@ -565,22 +532,9 @@ async function main(): Promise<void> {
       emit({ status: "pass", outputPath: path.resolve(outPath), manifestPath, slides: runtime.manifest.length, rendererSlides: runtime.manifest.filter((entry) => entry.mode === "renderer").length }, runtime);
       return;
     }
-    // Walk each slide's shortlist in rank order and take the first candidate that would actually
-    // carry the slide's real content and fit its required slots — not unconditionally rank 1. A
-    // rank-1 pattern that would silently drop a process's steps, or overflow its headline slot, is
-    // exactly the candidate rank 2/3 exist to fall back from. If no candidate fits, the slide gets
-    // no resolved pattern at all and falls through to the generic renderer (recorded as such in
-    // render-manifest.json) rather than clone a pattern that loses content.
     const deckSlidesById = new Map(deck.slides.map((slide) => [slide.id, slide]));
     const { resolvedPatterns, selectionLog } = selectPatternsForSlides(patternPlan, patternsById, deckSlidesById);
-    // Reading the strategy this run's own template-analyze already recorded is what turns a
-    // no-fitting-candidate slide into an immediate hard failure instead of a silent generic
-    // redraw — see applyPatternSkeleton's own comment. Absent (template-analyze never wrote it
-    // for some reason) falls back to the lenient default rather than guessing.
     const manifest = await applyPatternSkeleton(templatePath, scratchPath, outPath, deck.slides, resolvedPatterns, { strategy: renderStrategy });
-    // The record of which candidate was actually chosen (and why the ones ranked above it were
-    // skipped) — render-manifest.json's mode already names the chosen pattern per slide, but not
-    // its rank or what was rejected along the way.
     fs.writeFileSync(path.join(runDir, "pattern-selection.json"), JSON.stringify(selectionLog, null, 2));
     const manifestPath = path.join(runDir, "render-manifest.json");
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -637,9 +591,6 @@ async function main(): Promise<void> {
     const specPath = option(args, "--spec");
     const runDir = option(args, "--run-dir");
     const findingsPath = option(args, "--findings");
-    // Mandatory: judgment without the pptx that produced the render is judgment of nothing in
-    // particular. This is exactly the gap that let the Japan Career Agent deliverable diverge
-    // from what Visual QA actually looked at.
     const pptxPath = option(args, "--pptx");
     const deck = deckSchema.parse(readJson(specPath));
     const findings = readJson(findingsPath);
@@ -684,12 +635,7 @@ async function main(): Promise<void> {
     fs.mkdirSync(outDir, { recursive: true });
     const contextPath = path.join(outDir, "context.json");
     fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
-    // Opens the repair phase. `repair-apply` marks it again when the repair actually lands, and the
-    // later mark wins — so the measurement window covers the authoring turns in between rather than
-    // closing here, before the model has written anything. Marking here at all is what keeps an
-    // abandoned repair (context built, never applied) from vanishing from the accounting entirely.
     markPhase(runDir, "repair");
-    // The repair author needs the whole context, but it needs exactly one copy of it: read the file.
     emit({ status: "pass", slideId, outputPath: contextPath, findings: (context as { findings?: Array<{ code: string }> }).findings?.map((finding) => finding.code) ?? [] }, context);
     return;
   }
@@ -756,8 +702,6 @@ async function main(): Promise<void> {
       repairOverhead: report.repairOverhead,
       measurement: report.measurement,
     }, report);
-    // A measurement failure is not a passing run's silence — it is a distinct condition the
-    // caller must see, or a 0-token deck slips through as if telemetry had succeeded.
     if (report.measurement === "unavailable" && !hasFlag(args, "--allow-unmeasured")) process.exitCode = 2;
     return;
   }
@@ -859,8 +803,6 @@ async function main(): Promise<void> {
     const renderManifestPath = path.join(path.resolve(runDir), "render-manifest.json");
     const renderManifest = fs.existsSync(renderManifestPath) ? (readJson(renderManifestPath) as import("./template-fidelity").RenderManifestEntry[]) : undefined;
     const patternRenderedSlideIds = new Set((renderManifest ?? []).filter((entry) => entry.mode.startsWith("pattern:")).map((entry) => entry.slideId));
-    // A raw template's own grammar is the source of its native font vocabulary. Read the run-scoped
-    // artifact directly so cloned source-slide typography is not mistaken for substitution.
     const runGrammarPath = path.join(path.resolve(runDir), "template", "template-grammar.json");
     const runTemplateFonts = fs.existsSync(runGrammarPath) ? ((readJson(runGrammarPath) as { typography?: { families?: string[] } }).typography?.families ?? []) : [];
     const styleForFonts = runTemplateFonts.length > 0 ? { ...style, templateGrammar: { typography: { families: runTemplateFonts } } } : style;
@@ -868,16 +810,10 @@ async function main(): Promise<void> {
       ? await ooxmlQa(pptxPath, canonicalDeck, undefined, styleForFonts as never, patternRenderedSlideIds)
       : [{ severity: "hard" as const, code: "OOXML_INVALID", message: `Rendered PPTX does not exist: ${pptxPath}` }];
     let report = mergeFindings(structural, ooxmlFindings);
-    // The raw template path is the only source-slide fidelity source.
     const templateSource = resolveTemplateSourceSpec(canonicalDeck.contract);
     const sourceTemplatePath = templateSource
       ? path.resolve(projectDir, templateSource.path)
       : undefined;
-    // `render-pattern-skeleton` never even ran: no render-manifest.json exists at all. The block
-    // below (templateFidelityQa, which itself calls checkTemplateFidelityUnproven) only runs when
-    // renderManifest is truthy, so that check was entirely unreachable in exactly the case it
-    // exists to catch — going straight from a raw template to `render`+`qa` would otherwise allow
-    // a source_slide_pattern template to be redrawn generically without a manifest.
     if (!renderManifest && sourceTemplatePath && fs.existsSync(sourceTemplatePath)) {
       const elementsPathForStrategy = path.join(path.resolve(runDir), "template", "template-elements.json");
       const strategy = fs.existsSync(elementsPathForStrategy)
@@ -901,9 +837,6 @@ async function main(): Promise<void> {
             .filter((tuple): tuple is [string, (typeof patterns)[number]] => Boolean(tuple[1])),
         );
         const capacityFindings = checkTemplateSlotCapacity(canonicalDeck, chosenPatterns);
-        // Independent of, and never covered by, the REQUIRED_NATIVE_OBJECT_MISSING exemption for
-        // pattern-rendered slides above (that exemption is about connector/shape geometry; this is
-        // about whether the slide's actual grounded content reached a slot at all).
         const semanticContentFindings = checkTemplateSemanticContentDropped(canonicalDeck, chosenPatterns);
         report = mergeFindings(report, [...fidelityFindings, ...capacityFindings, ...semanticContentFindings]);
       }
@@ -925,7 +858,6 @@ async function main(): Promise<void> {
   throw new Error(`Unknown command: ${command}`);
 }
 
-// Only run the CLI when invoked directly, not when imported (e.g. by tests exercising `repairApply`).
 if (require.main === module) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
