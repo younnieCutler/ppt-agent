@@ -24,10 +24,13 @@ export type ArtifactProvenance = {
   pilotJudgeContextDigest?: string;
   pilotVisualQaDigest?: string;
   pilotApprovalDigest?: string;
+  fullSlideManifestDigest?: string;
+  fullDeckDigest?: string;
+  fullDeckAssemblyQaDigest?: string;
   /**
    * What each derived artifact was derived *from*. File-by-file freshness cannot see a mixed run:
    * every file can match its own digest while a later artifact was produced from older roots.
-   * These causal edges are verified before downstream planning/pilot work is allowed to proceed.
+   * These causal edges are verified before downstream planning/pilot/full-deck work is allowed to proceed.
    */
   referenceSelectionSource?: { contractDigest: string };
   resolvedStyleSource?: { contractDigest: string; referenceSelectionDigest?: string };
@@ -51,6 +54,14 @@ export type ArtifactProvenance = {
     pilotVisualQaDigest: string;
     pilotPptxDigest: string;
     renderProvenanceDigest: string;
+  };
+  fullDeckSource?: {
+    pilotApprovalDigest: string;
+    pilotSpecDigest: string;
+    deckPlanDigest: string;
+    compositionPlanDigest: string;
+    storylineDigest: string;
+    fullSlideManifestDigest: string;
   };
 };
 
