@@ -11,14 +11,26 @@ export type ArtifactProvenance = {
   compositionPlanDigest?: string;
   templatePatternsDigest?: string;
   patternPlanDigest?: string;
+  storylineDigest?: string;
+  storylineContextDigest?: string;
+  storylinePlanQaDigest?: string;
+  pilotSelectionDigest?: string;
+  pilotContextDigest?: string;
   /**
    * What each derived artifact was derived *from*. File-by-file freshness cannot see a mixed run:
-   * every file can match its own digest while the reference selection and the resolved style were
-   * produced from an older contract. These record the causal edge, and composition resolution
-   * verifies them.
+   * every file can match its own digest while a later artifact was produced from older roots.
+   * These causal edges are verified before downstream planning/pilot work is allowed to proceed.
    */
   referenceSelectionSource?: { contractDigest: string };
   resolvedStyleSource?: { contractDigest: string; referenceSelectionDigest?: string };
+  storylineSource?: { contractDigest: string; contentModelDigest: string };
+  storylinePlanQaSource?: { storylineDigest: string; deckPlanDigest: string };
+  pilotSource?: {
+    storylineDigest: string;
+    deckPlanDigest: string;
+    contentModelDigest: string;
+    storylinePlanQaDigest: string;
+  };
 };
 
 // Removed rather than kept as decoration: template-pack, deckSpecDigest, and pptxDigest were
