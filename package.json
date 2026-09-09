@@ -6,6 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "full-deck": "tsx src/full-deck-run-cli.ts",
     "pilot": "tsx src/pilot-run-cli.ts",
     "planning": "tsx src/planning-run-cli.ts",
     "test": "vitest run --no-file-parallelism",
