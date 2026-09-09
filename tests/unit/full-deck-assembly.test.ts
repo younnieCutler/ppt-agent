@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assembleFullDeck, buildFullSlideArtifact, validateFullSlideInput } from "../../src/full-deck-assembly";
+import { assembleFullDeck, buildFullSlideArtifact, fullSlideInputSchema, validateFullSlideInput } from "../../src/full-deck-assembly";
 
 const ref = { sourceId: "brief", excerptId: "E01" };
 const digests = {
@@ -69,7 +69,7 @@ const pilot = {
 };
 
 function artifact(index: number) {
-  return buildFullSlideArtifact({ version: 1, slide: slide(index) }, digests);
+  return buildFullSlideArtifact(fullSlideInputSchema.parse({ version: 1, slide: slide(index) }), digests);
 }
 
 describe("full deck assembly", () => {
@@ -79,9 +79,9 @@ describe("full deck assembly", () => {
     expect(result.pilotSlidesReused).toEqual(["S01", "S02", "S03"]);
     expect(result.authoredSlides).toEqual(["S04", "S05"]);
     expect(result.deck?.slides.map((item) => item.id)).toEqual(["S01", "S02", "S03", "S04", "S05"]);
-    expect(result.deck?.slides[0]).toEqual(pilot.slides[0]);
-    expect(result.deck?.slides[1]).toEqual(pilot.slides[1]);
-    expect(result.deck?.slides[2]).toEqual(pilot.slides[2]);
+    expect(result.deck?.slides[0]).toEqual(fullSlideInputSchema.parse({ version: 1, slide: pilot.slides[0] }).slide);
+    expect(result.deck?.slides[1]).toEqual(fullSlideInputSchema.parse({ version: 1, slide: pilot.slides[1] }).slide);
+    expect(result.deck?.slides[2]).toEqual(fullSlideInputSchema.parse({ version: 1, slide: pilot.slides[2] }).slide);
     expect((result.deck as { version?: number })?.version).toBe(2);
     expect((result.deck as { planDigest?: string })?.planDigest).toBe(digests.deckPlanDigest);
   });
