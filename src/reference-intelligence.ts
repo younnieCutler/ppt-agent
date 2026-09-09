@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { elementsDigest, type SemanticRole, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
+import { elementsDigest, semanticRoles, type SemanticRole, type TemplateElement, type TemplateElementsArtifact } from "./template-analysis";
 
 export const referenceBusinessRoles = [
   "unclassified",
@@ -23,30 +23,53 @@ export const referenceBusinessRoles = [
 export const referenceBusinessRoleSchema = z.enum(referenceBusinessRoles);
 export type ReferenceBusinessRole = z.infer<typeof referenceBusinessRoleSchema>;
 
-type Rect = { x: number; y: number; w: number; h: number };
+const rectSchema = z.object({ x: z.number(), y: z.number(), w: z.number().nonnegative(), h: z.number().nonnegative() }).strict();
+const templateElementTypeSchema = z.enum(["text", "shape", "line", "image", "chart", "table"]);
+const semanticRoleSchema = z.union([z.enum(semanticRoles), z.literal("unknown")]);
 
-export type ReferenceSlideProfile = {
-  slideId: string;
-  businessRole: ReferenceBusinessRole;
-  informationBlocks: number;
-  dominantElement?: { id: string; type: TemplateElement["type"]; role: SemanticRole | "unknown"; bounds: Rect };
-  nativeObjects: { text: number; shapes: number; lines: number; images: number; charts: number; tables: number };
-  geometry: {
-    titleRegion?: Rect;
-    bodyStart?: number;
-    footerRegion?: Rect;
-    alignmentAnchors: { x: number[]; y: number[] };
-    rowRhythm: number[];
-  };
-};
+export const referenceSlideProfileSchema = z.object({
+  slideId: z.string().min(1),
+  businessRole: referenceBusinessRoleSchema,
+  informationBlocks: z.number().int().nonnegative(),
+  dominantElement: z.object({
+    id: z.string().min(1),
+    type: templateElementTypeSchema,
+    role: semanticRoleSchema,
+    bounds: rectSchema,
+  }).strict().optional(),
+  nativeObjects: z.object({
+    text: z.number().int().nonnegative(),
+    shapes: z.number().int().nonnegative(),
+    lines: z.number().int().nonnegative(),
+    images: z.number().int().nonnegative(),
+    charts: z.number().int().nonnegative(),
+    tables: z.number().int().nonnegative(),
+  }).strict(),
+  geometry: z.object({
+    titleRegion: rectSchema.optional(),
+    bodyStart: z.number().optional(),
+    footerRegion: rectSchema.optional(),
+    alignmentAnchors: z.object({ x: z.array(z.number()), y: z.array(z.number()) }).strict(),
+    rowRhythm: z.array(z.number().positive()),
+  }).strict(),
+}).strict();
 
-export type ReferenceSlideProfilesArtifact = {
-  version: 1;
-  sourceDigest: string;
-  elementsDigest: string;
-  canvas: { w: number; h: number };
-  slides: ReferenceSlideProfile[];
-};
+export const referenceSlideProfilesArtifactSchema = z.object({
+  version: z.literal(1),
+  sourceDigest: z.string().min(1),
+  elementsDigest: z.string().min(1),
+  canvas: z.object({ w: z.number().positive(), h: z.number().positive() }).strict(),
+  slides: z.array(referenceSlideProfileSchema),
+}).strict().superRefine((artifact, ctx) => {
+  const ids = artifact.slides.map((slide) => slide.slideId);
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slides"], message: "Reference slide profiles must contain unique slideId values." });
+  }
+});
+
+export type ReferenceSlideProfile = z.infer<typeof referenceSlideProfileSchema>;
+export type ReferenceSlideProfilesArtifact = z.infer<typeof referenceSlideProfilesArtifactSchema>;
+type Rect = z.infer<typeof rectSchema>;
 
 const roleLabelSchema = z.object({
   slideId: z.string().min(1),
@@ -115,7 +138,7 @@ function profileSlide(slide: TemplateElementsArtifact["slides"][number]): Refere
   const titleElements = visible.filter((element) => element.role === "title");
   const footerElements = visible.filter((element) => element.role === "footer");
   const bodyCandidates = content.filter((element) => element.role !== "title" && element.role !== "subtitle" && element.role !== "eyebrow");
-  return {
+  return referenceSlideProfileSchema.parse({
     slideId: slide.id,
     businessRole: "unclassified",
     informationBlocks: content.length,
@@ -128,30 +151,31 @@ function profileSlide(slide: TemplateElementsArtifact["slides"][number]): Refere
       alignmentAnchors: alignmentAnchors(content),
       rowRhythm: rowRhythm(content),
     },
-  };
+  });
 }
 
 export function compileReferenceSlideProfiles(artifact: TemplateElementsArtifact): ReferenceSlideProfilesArtifact {
-  return {
+  return referenceSlideProfilesArtifactSchema.parse({
     version: 1,
     sourceDigest: artifact.source.sha256,
     elementsDigest: elementsDigest(artifact),
     canvas: artifact.source.slideSize,
     slides: artifact.slides.map(profileSlide),
-  };
+  });
 }
 
 export function applyReferenceSlideRoleLabels(
-  artifact: ReferenceSlideProfilesArtifact,
+  artifactInput: ReferenceSlideProfilesArtifact,
   labelsInput: unknown,
 ): ReferenceSlideProfilesArtifact {
+  const artifact = referenceSlideProfilesArtifactSchema.parse(artifactInput);
   const labels = referenceSlideRoleLabelsSchema.parse(labelsInput);
   const slideIds = new Set(artifact.slides.map((slide) => slide.slideId));
   const unknown = labels.filter((label) => !slideIds.has(label.slideId));
   if (unknown.length > 0) throw new Error(`Reference role label(s) target unknown slide(s): ${unknown.map((label) => label.slideId).join(", ")}.`);
   const byId = new Map(labels.map((label) => [label.slideId, label.businessRole]));
-  return {
+  return referenceSlideProfilesArtifactSchema.parse({
     ...artifact,
     slides: artifact.slides.map((slide) => ({ ...slide, businessRole: byId.get(slide.slideId) ?? slide.businessRole })),
-  };
+  });
 }
