@@ -1,0 +1,20 @@
+version: 1
+
+# This fixture is exactly the ordinary 8-slide moderate-complexity business case called out by
+# PRD_PRESENTATION_QUALITY §12–§15. The repo-wide PRD target is not a universal generation limit;
+# it becomes a hard gate only because this fixed benchmark opts into it here.
+measurement:
+  requireMeasuredTokens: true
+
+budgets:
+  # PRD §15 P0: ordinary 8–12 slide business presentations must stay below 30k total tokens.
+  totalTokensExclusiveMax: 30000
+  # Structural/native correctness remains independent of aggregate quality.
+  hardFailuresMax: 0
+
+regression:
+  # The first passing measured run establishes the history baseline. Thereafter a recorded run must
+  # be Pareto-non-regressing: quality may not fall, and quality per 10k effective tokens may not fall.
+  compareLatestRecorded: true
+  maxQualityScoreDrop: 0
+  maxQualityPer10kEffectiveTokensDrop: 0
