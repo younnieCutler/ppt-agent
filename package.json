@@ -6,6 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "eval-gate": "tsx src/eval-gate-cli.ts",
     "full-deck": "tsx src/full-deck-run-cli.ts",
     "pilot": "tsx src/pilot-run-cli.ts",
     "planning": "tsx src/planning-run-cli.ts",
