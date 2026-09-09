@@ -1,6 +1,6 @@
 ---
 name: ppt
-description: Create editable 16:9 PowerPoint decks from an approved DeckSpec, with deterministic rendering and structural QA.
+description: Create grounded, editable PowerPoint decks through storyline, pilot approval, deterministic assembly, and structural/visual QA.
 disable-model-invocation: true
 ---
 
@@ -106,73 +106,102 @@ Aspect ratio:
 
 ## The run, in dependency order
 
-A DeckSpec is authored **last**, against a validated plan and a resolved shortlist — not first. Each
-step records the digest of what it produced in `<run-dir>/artifact-provenance.json`, and the next
-step re-hashes those inputs and refuses to run against a changed one, so the order below is enforced
-by the CLI rather than by discipline.
+The full DeckSpec is **assembled last**, not authored in one model pass. Storyline and plan are
+validated first; a representative three-slide Pilot proves the narrative/design direction; only
+then are the remaining slides authored from slide-local contexts. Every phase records provenance,
+and downstream commands re-hash their inputs rather than trusting workflow discipline.
 
 ```sh
 npm run build
 
-# 1. Evidence. Every excerpt gets an id; sourceRefs cite it as excerptId.
-#    Write it wherever you like — plan-validate copies it to <run-dir>/content-model.json,
-#    which is the copy every later step re-hashes.
-
-# 2. Plan the deck before authoring any slide, and put the contract in the run directory.
+# 1. Evidence + StorylineBlueprint. Every excerpt gets an id; sourceRefs cite it as excerptId.
+#    Put the contract in the run directory first. The host may research/normalize sources, but the
+#    runtime only accepts the strict ContentModel and StorylineBlueprint artifacts it can validate.
 cp <contract.json> <run-dir>/contract.json
-node dist/cli.js plan-validate --plan <deck-plan.json> --content-model <content-model.json> --run-dir <run-dir> [--findings <plan-findings.json>]
-# → <run-dir>/deck-plan.json (normalized), planning-qa.json, artifact-provenance.json
-#   Hard findings here mean the plan is wrong; fix the plan, not the slides.
-#   Planning is a STRICT gate: composition-resolve requires status `pass`, so a risk finding
-#   (status `review`) blocks authoring too. Resolve it or change the plan — a risk in the plan is
-#   inherited by every slide resolved against it, which is not the same as a risk on one slide.
+npm run planning -- storyline-validate --run-dir <run-dir> \
+  --storyline <storyline.json> --content-model <content-model.json> [--findings <storyline-findings.json>]
+# → <run-dir>/storyline.json, storyline-qa.json, storyline-context.json, content-model.json
+#   status `review` or `fail` blocks downstream authoring. Fix the argument, not the slides.
 
-# 3. Reference retrieval, when the contract declares referenceIds. Before style resolution:
-#    the resolved style reads the selection.
-node dist/cli.js reference --contract <contract.json> --reference-root <ppt-master-path> --run-dir <run-dir> [--top-k 3]
+# 2. DeckPlan. The plan must pass both canonical grounding QA and Storyline alignment.
+node dist/cli.js plan-validate --plan <deck-plan.json> --content-model <content-model.json> \
+  --run-dir <run-dir> [--findings <plan-findings.json>]
+npm run planning -- storyline-plan-validate --run-dir <run-dir>
+# → planning-qa.json + storyline-plan-qa.json. Both must be `pass`.
 
-# 4. Style resolution. After references, before composition.
+# 3. Reference retrieval, when contract.referenceIds exists.
+node dist/cli.js reference --contract <contract.json> --reference-root <ppt-master-path> \
+  --run-dir <run-dir> [--top-k 3]
+
+# 4. Style resolution. Resolve once before any composition authoring.
 node dist/cli.js style --contract <contract.json> --run-dir <run-dir>
 
-# 5. Composition shortlist per slide. Refuses to run if any recorded input changed.
-node dist/cli.js composition-resolve --plan <run-dir>/deck-plan.json --style-context <run-dir>/style-context.json --run-dir <run-dir>
-# → <run-dir>/composition-plan.json — a ranked shortlist per slide, not a decision.
+# 5. Composition shortlist per slide.
+node dist/cli.js composition-resolve --plan <run-dir>/deck-plan.json \
+  --style-context <run-dir>/style-context.json --run-dir <run-dir>
+# → <run-dir>/composition-plan.json — ranked candidates, not a model-authored final choice.
 
-# 5.5. Only for a source_slide_pattern/hybrid template (design lives in the example slide bodies,
-#      not the master/layout — see "Template input" above). Skip entirely for native_layout.
+# 5.5. Raw source_slide_pattern/hybrid templates only. Skip for native_layout.
 node dist/cli.js pattern-resolve --plan <run-dir>/deck-plan.json --run-dir <run-dir>
-# → <run-dir>/pattern-plan.json — a ranked shortlist per slide, same shape as composition-plan.json.
-#   Requires <run-dir>/template/template-patterns.json (template-analyze) already produced.
 
-# 6. Author the DeckSpec v2 against the plan and the shortlist:
-#    version: 2, planDigest: the digest recorded as deckPlanDigest in artifact-provenance.json,
-#    one candidate chosen per slide from that slide's shortlist (any rank, with a reason).
+# 6. Select and author only the Pilot (default 3 representative slides; selection = 0 model calls).
+npm run planning -- pilot-select --run-dir <run-dir>
+npm run pilot -- context --run-dir <run-dir>
+# Read <run-dir>/pilot-authoring-context.json and author ONLY those selected slides as:
+# { "version": 1, "slides": [<SlideSpec>, ...] }
+npm run pilot -- apply --run-dir <run-dir> --slides <pilot-slides.json>
+# → pilot-spec.json + pilot-deck.json. Thesis/evidence/composition drift hard-fails here.
 
-node dist/cli.js validate --spec <deck.json> --run-dir <run-dir>
-node dist/cli.js render --spec <deck.json> --out <draft.pptx> [--run-dir <run-dir>]
-node dist/cli.js qa --spec <deck.json> --pptx <draft.pptx> --run-dir <run-dir> [--powerpoint]
+# 7. Render and approve the Pilot before spending tokens on the rest of the deck.
+# Generic path:
+node dist/cli.js render --spec <run-dir>/pilot-deck.json --out <pilot.pptx> \
+  --run-dir <run-dir> --allow-legacy
+# Raw-template path instead uses a generic scratch plus the canonical template runtime:
+node dist/cli.js render --spec <run-dir>/pilot-deck.json --out <pilot-scratch.pptx> \
+  --run-dir <run-dir> --allow-legacy
+node dist/cli.js render-pattern-skeleton --spec <run-dir>/pilot-deck.json \
+  --scratch <pilot-scratch.pptx> --template <path-to>.pptx --out <pilot.pptx> --run-dir <run-dir>
 
-# 6.5. For a raw source_slide_pattern template, render-pattern-skeleton is the adaptive runtime
-#      entry point. It walks each ranked exact-clone candidate, then runs the content-first adaptive
-#      policy when no candidate naturally carries the slide. --scratch is retained as a package
-#      input for compatibility; it is never selected as a final slide on this raw-template path.
-node dist/cli.js render-pattern-skeleton --spec <deck.json> --scratch <draft.pptx>     --template <path-to>.pptx --out <draft.pptx> --run-dir <run-dir>
-# → writes <run-dir>/render-manifest.json ("pattern:<patternId>" or
-#   "adaptive:<component-family>" per slide) and <run-dir>/adaptive-selection.json. Both modes
-#   clone or transform template-native source components; a raw-template run never records
-#   "renderer". A slide is hard-failed only when exact_clone and adaptive_compose are both
-#   unsupported. The legacy generic fallback remains available only to the low-level
-#   applyPatternSkeleton API and non-raw/hybrid compatibility paths.
+node dist/cli.js visual --spec <run-dir>/pilot-deck.json --pptx <pilot.pptx> --run-dir <run-dir>
+npm run pilot -- core-qa --run-dir <run-dir> --pptx <pilot.pptx>
+npm run pilot -- judge-context --run-dir <run-dir> --pptx <pilot.pptx>
+# Read the rendered Pilot + judge context, write closed-code findings, then:
+npm run pilot -- approve --run-dir <run-dir> --pptx <pilot.pptx> \
+  --findings <pilot-visual-findings.json>
+# Pilot approval requires pass. A risk is blocking here; do not multiply a known design defect.
+
+# 8. Author every NON-PILOT slide independently. Never re-author an approved Pilot slide.
+npm run pilot -- full-slide-context --run-dir <run-dir> --slide S04 --out <S04-context.json>
+# Read only S04-context.json; write { "version": 1, "slide": <SlideSpec> }.
+npm run full-deck -- slide-apply --run-dir <run-dir> --slide S04 --input <S04.json>
+# Repeat for each remaining id. slide-apply rechecks thesis, evidence, shortlist, and provenance.
+
+# 9. Deterministic assembly: 0 model calls. No deck.json exists until every non-pilot slide passed.
+npm run full-deck -- assemble --run-dir <run-dir>
+# → <run-dir>/deck.json, full-deck-assembly-qa.json, full-slide-manifest.json
+
+# 10. Canonical final validation/render/Core QA.
+node dist/cli.js validate --spec <run-dir>/deck.json --run-dir <run-dir>
+node dist/cli.js render --spec <run-dir>/deck.json --out <draft.pptx> --run-dir <run-dir>
+# Raw source_slide_pattern/hybrid path: use the render above as scratch, then:
+node dist/cli.js render-pattern-skeleton --spec <run-dir>/deck.json --scratch <draft.pptx> \
+  --template <path-to>.pptx --out <draft.raw.pptx> --run-dir <run-dir>
+node dist/cli.js qa --spec <run-dir>/deck.json --pptx <final-draft.pptx> --run-dir <run-dir> [--powerpoint]
 ```
 
-A DeckSpec v2 is verified against its plan on `validate`, `render`, and `qa`: `planDigest` must equal
-the digest of the current `deck-plan.json`, ids/story beats/theses must match it, every planned
-primary reference must appear with no unplanned ones, and the chosen layout/composition must be in
-that slide's shortlist. `DECK_PLAN_DIGEST_MISMATCH` means the plan moved after the deck was written —
-re-author the affected slides against the current plan rather than re-stamping the digest.
+For the generic path, `<final-draft.pptx>` is `<draft.pptx>`; for the raw-template path it is the
+output of `render-pattern-skeleton` (for example `<draft.raw.pptx>`). Do not run both generic and raw
+outputs through release as if they were equivalent artifacts.
 
-A legacy (unversioned) DeckSpec still renders with `--allow-legacy` and skips the plan verification
-entirely.
+DeckSpec v2 is verified against DeckPlan on `validate`, `render`, and `qa`: digest, ids, story beats,
+theses, evidence, and resolved composition shortlist must still match. When Full Deck Assembly was
+used, those same canonical gates additionally re-hash Storyline, Pilot approval, assembly QA,
+manifest, and every stored `full-slides/slide-*.json` artifact. Editing a non-pilot artifact after
+assembly therefore invalidates the assembled deck rather than silently changing its provenance.
+
+A legacy (unversioned) DeckSpec still renders with `--allow-legacy` for compatibility. The Pilot
+envelope uses that compatibility surface only to reuse the existing renderer; it is not a release
+artifact. The final assembled deck is DeckSpec v2 and must pass the full provenance chain.
 
 Use `managed_device` when recipients have the selected fonts. Core QA (font, native-object, rasterization, and font-embedding checks against the rendered PPTX's OOXML) runs on every platform and is the release bar. `--powerpoint` on Windows with Microsoft PowerPoint installed adds optional Level 3 verification (live text-overflow measurement); its absence never blocks a pass.
 
@@ -298,6 +327,7 @@ Writes `<run-dir>/p3-metrics.json` with a numerator/denominator per metric (bran
 ```sh
 node dist/cli.js tokens --spec <deck.json> --run-dir <run-dir> [--transcript <path> | --session-id <uuid>] [--since <iso>] [--until <iso>] [--allow-unmeasured]
 node dist/cli.js score  --spec <deck.json> --run-dir <run-dir> --scores <scores.json>
+npm run eval-gate -- --run-dir <run-dir> --benchmark <id>
 node dist/cli.js record --spec <deck.json> --run-dir <run-dir> --benchmark <id> --version <label>
 ```
 
@@ -309,7 +339,9 @@ Without `--transcript`, the project-slug directory can hold more than one sessio
 
 `score` takes `{ "scores": { <dimension>: 0-100 } }` covering every dimension in `src/score.ts` (`contentFidelity`, `narrativeQuality`, `visualHierarchy`, `semanticVisualization`, `referenceGrammarFit`, `layoutVariety`, `typographyReadability`, `purposeFit`, `antiSlop`). Weights live in code, not in your input, and `referenceGrammarFit` must be **omitted** when the contract declares no `referenceIds` — its weight is redistributed so a no-reference deck is not capped at 90. **A hard finding in `qa.json` or `visual-qa.json` fails the run whatever the dimensions say.**
 
-`record` appends one line to `evals/real-world/<benchmark>/history.jsonl` merging quality and tokens. It refuses to run without `tokens.json`, and refuses a `tokens.json` whose `measurement` is `"unavailable"` — quality is never recorded without its cost context, and a failed measurement is not a free one. Each record carries `tokensPerSlide`, `effectiveTokensPerSlide`, and `qualityPer10kEffectiveTokens` together, so a version whose score rose while its cost rose faster cannot read as an improvement.
+`eval-gate` is benchmark-scoped. If `evals/real-world/<benchmark>/policy.yaml` exists, it enforces that fixed benchmark's declared token/correctness budgets and compares the current run with the latest recorded history. `jp-ai-weekly-update` opts into PRD §15's `<30k total tokens` P0 target because it is the fixed ordinary 8-slide business case the target describes; research-heavy/general decks do not inherit that ceiling. The configured benchmark also rejects unavailable token measurement, hard failures, raw-quality regression, and quality-per-10k-effective-token regression.
+
+`record` appends one line to `evals/real-world/<benchmark>/history.jsonl` merging quality and tokens. It refuses to run without `tokens.json`, refuses a `tokens.json` whose `measurement` is `"unavailable"`, and **recomputes `eval-gate` immediately before append** when a benchmark policy exists. A stale `eval-gate.json` therefore cannot authorize a regressed run. Each record carries `tokensPerSlide`, `effectiveTokensPerSlide`, and `qualityPer10kEffectiveTokens` together, so a version whose score rose while its cost rose faster cannot read as an improvement.
 
 A repair extends the measurement window: `repair-context` opens the repair phase and `repair-apply` closes it, so the turns spent authoring the replacement slide are counted. Run `tokens` **after** `repair-apply`, not between the two.
 
