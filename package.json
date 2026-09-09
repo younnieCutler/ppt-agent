@@ -5,6 +5,7 @@
   "description": "A small, deterministic PPTX renderer with structural QA.",
   "type": "commonjs",
   "scripts": {
+    "benchmark": "tsx src/benchmark-cli.ts",
     "build": "tsc -p tsconfig.json",
     "eval-gate": "tsx src/eval-gate-cli.ts",
     "full-deck": "tsx src/full-deck-run-cli.ts",
