@@ -153,7 +153,8 @@ function resolvedStyleForRun(runDir: string, deck: DeckSpec): ResolvedPresentati
   const resolvedPath = path.join(path.resolve(runDir), "resolved-style.json");
   if (fs.existsSync(resolvedPath)) return readJson(resolvedPath) as ResolvedPresentationStyle;
   const referencePath = path.join(path.resolve(runDir), "reference-selection.json");
-  const references = fs.existsSync(referencePath) ? readJson(referencePath) as Parameters<typeof resolvePresentationStyle>[1]["referenceSelection"] : undefined;
+  type ResolveStyleOptions = NonNullable<Parameters<typeof resolvePresentationStyle>[1]>;
+  const references = fs.existsSync(referencePath) ? readJson(referencePath) as ResolveStyleOptions["referenceSelection"] : undefined;
   return resolvePresentationStyle(deck.contract, { projectDir: projectDirectory(), referenceSelection: references, legacyTheme: deck.theme });
 }
 
@@ -218,7 +219,7 @@ function renderProvenanceFindings(runDir: string, pptxPath: string, deck: DeckSp
   if (fs.existsSync(backendPath)) {
     const backend = readJson(backendPath) as { substitutedFonts?: unknown };
     if (Array.isArray(backend.substitutedFonts) && backend.substitutedFonts.length > 0) {
-      findings.push({ code: "RENDER_FONT_SUBSTITUTION", message: `Rendered output contains font substitution(s): ${backend.substitutedFonts.join(", ")}.` });
+      findings.push({ slideId: undefined, code: "RENDER_FONT_SUBSTITUTION", message: `Rendered output contains font substitution(s): ${backend.substitutedFonts.join(", ")}.` });
     }
   }
   return findings;
